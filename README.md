@@ -96,3 +96,4 @@ Couvre :
 `docs/ARCHITECTURE.md` détaille les conventions de signe, le layout du
 vecteur d'état, et comment ajouter un nouveau canal ionique ou un nouveau
 modèle de synapse.
+# dev
