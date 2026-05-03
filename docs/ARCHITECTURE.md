@@ -3,23 +3,77 @@
 ## Couches
 
 ```
-┌─────────────────────────────────────────────────┐
-│  NeuroSimApp  (SwiftUI / AppKit)                │
-│  ─ ContentView, NetworkEditorView, PlotView…    │
-│  ─ SimulationViewModel  (@MainActor, @Published)│
-└────────────────────┬────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  NeuroSimApp  (SwiftUI / AppKit)                            │
+│  ─ ContentView, NetworkEditorView, PlotView…                │
+│  ─ SimulationViewModel  (@MainActor, @Published)            │
+└────────────────────┬────────────────────────────────────────┘
                      │  dépend de
                      ▼
-┌─────────────────────────────────────────────────┐
-│  NeuroSimCore   (Foundation uniquement)         │
-│  ─ HHNeuron, IonChannel, channels concrets      │
-│  ─ Synapse, Network, Stimulus                   │
-│  ─ RK4 / ForwardEuler, Simulator                │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  NeuroSimCore   (Foundation uniquement)                     │
+│                                                             │
+│  ┌─ Numerics ─────────────────────────────────────────────┐ │
+│  │ DerivativeProvider, RK4, ForwardEuler                   │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                             │
+│  ┌─ Biophysics primitives ────────────────────────────────┐ │
+│  │ IonSpecies (Na/K/Ca/Cl/Mg) — valence + concentrations   │ │
+│  │ Nernst — reversal potential + GHK voltage equation       │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                             │
+│  ┌─ Channels & synapses ──────────────────────────────────┐ │
+│  │ IonChannel (Na+, K+, Leak, Ca_T)                        │ │
+│  │ Synapse (Chemical, GapJunction)                          │ │
+│  │ Stimulus (Pulse, Constant, Train, OU noise, Sum)         │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                             │
+│  ┌─ Topology / state vector ──────────────────────────────┐ │
+│  │ HHNeuron, Network, Simulator                            │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 `NeuroSimCore` est pur Foundation — il compile et se teste sur Linux, ce qui
 permet d'envisager du CI ou un backend de batch sans toucher à l'UI.
+
+## Couche biophysique : `IonSpecies` et `Nernst`
+
+`IonSpecies` est un type valeur (`struct Hashable + Sendable`) qui identifie
+une espèce ionique par son **symbole** et sa **valence**, et porte ses
+**concentrations canoniques** mammifères (mM) :
+
+| Espèce       | z   | [in] (mM) | [out] (mM) | E à 37 °C |
+|:-------------|:---:|----------:|-----------:|----------:|
+| `.sodium`    | +1  |      15.0 |      145.0 |   +60.6 mV |
+| `.potassium` | +1  |     140.0 |        4.0 |   −95.0 mV |
+| `.calcium`   | +2  |    0.0001 |        2.0 |  +132.3 mV |
+| `.chloride`  | −1  |      10.0 |      110.0 |   −64.1 mV |
+| `.magnesium` | +2  |       0.5 |        1.5 |   +14.7 mV |
+
+`Nernst.reversalPotential(species:in:out:T:)` calcule
+`E = (RT/zF) · ln([out]/[in])`, en **mV**, avec températures préconfigurées
+(`mammalianBodyTemperatureK = 310.15`, `roomTemperatureK = 295.15`,
+`squidTemperatureK = 279.45`).
+
+`Nernst.ghkVoltage(contributions:T:)` calcule le potentiel de repos d'une
+membrane perméable à plusieurs ions monovalents (Goldman-Hodgkin-Katz),
+utile pour ajuster la fuite d'un compartiment à un V_rest cible.
+
+### Couplage canal ↔ espèce
+
+Le protocole `IonChannel` expose une propriété optionnelle `species: IonSpecies?` :
+
+- `.sodium` pour `SodiumChannel`, `.potassium` pour `PotassiumChannel`,
+  `.calcium` pour `TTypeCalciumChannel` ;
+- **`nil` par défaut** (extension du protocole) — un canal qui ne déclare
+  rien (`LeakChannel`) reste rétro-compatible et garde son `reversal` libre.
+
+Une méthode helper `updateReversalFromNernst(in:out:T:)` met à jour
+`reversal` depuis des concentrations ; elle est *no-op* sur les canaux sans
+espèce, ce qui rend le code de la couche Compartment uniforme (il appelle la
+méthode sur tous les canaux ; ceux qui n'ont pas d'espèce sont simplement
+ignorés).
 
 ## Modèle de Hodgkin-Huxley
 
@@ -143,3 +197,57 @@ calcul vectoriel).
   l'addition à `iInj`.
 - `applySpike` modifie directement le vecteur d'état — c'est la seule
   porte d'entrée pour les événements discrets.
+
+## Roadmap (extensions planifiées)
+
+L'architecture évolue par étapes incrémentales — chaque étape laisse
+les tests précédents verts et ajoute ses propres tests. Statut au moment
+de cette révision :
+
+| Étape | Description                                                     | Statut    |
+|:-----:|:----------------------------------------------------------------|:----------|
+|  1a   | `IonSpecies` + `Nernst` (équations Nernst & GHK)                | ✅ fait   |
+|  1a+  | Premier canal calcium (`TTypeCalciumChannel`) — valide Nernst   | 🔧 en cours |
+|  1b   | `Compartment` — `HHNeuron` devient un Neuron à 1 compartiment    | ⏳ à venir |
+|  1c   | `AxialCoupling` — couplage électrique entre compartiments        | ⏳ à venir |
+|  2a   | Slots de concentration dans le vecteur d'état                    | ⏳ à venir |
+|  2b   | `ConcentrationDynamics` — d[ion]/dt avec décroissance simple     | ⏳ à venir |
+|  2c   | Reversals Nernst-recalculés en boucle d'intégration              | ⏳ à venir |
+|  3    | `Recorder` générique (V, gates, [ion], spike times) + multi-plot | ⏳ à venir |
+|  4    | Boucle de simulation sur queue dédiée + double buffer            | ⏳ à venir |
+|  5    | Multi-fenêtrage SwiftUI, document-based, éditeur de morphologie   | ⏳ à venir |
+|  6+   | Plasticité (STDP, STP), populations, sweeps de paramètres         | ⏳ futur   |
+
+### Compartiments (Étape 1b — résumé)
+
+L'idée : `Compartment` portera **ce que porte aujourd'hui `HHNeuron`**
+(V, capacité, canaux, slots de gates dans le state vector). Un `Neuron`
+multi-compartiment sera un graphe (typiquement un arbre) de `Compartment`
+reliés par des `AxialCoupling` (résistance axiale `g_ij`, modèle équivalent
+à une gap junction interne).
+
+- Le `HHNeuron` actuel devient un cas particulier *« neurone à 1
+  compartiment »* — l'API publique reste utilisable telle quelle.
+- La détection de spike se fait sur le compartiment marqué `isSomatic = true`.
+- Le couplage axial s'écrit `I_axial(i→j) = g_ij · (V_j − V_i)`,
+  même équation que `GapJunction`, donc on factorisera.
+
+### Concentrations (Étape 2 — résumé)
+
+Chaque `Compartment` portera un dictionnaire `[IonSpecies: Double]`
+de concentrations intracellulaires (mM), dont les valeurs vivent dans le
+state vector. La dynamique sera, par espèce :
+
+```
+d[X]/dt = - α · I_X / (z · F · vol)            ← influx via canaux X-spécifiques
+          - ([X] − [X]_rest) / τ_buffer         ← décroissance / tampon simple
+```
+
+Les canaux `IonChannel` qui déclarent un `species` verront leur
+`reversal` recalculé par Nernst à chaque pas d'intégration (via
+`updateReversalFromNernst`). Les canaux sans `species` (leak) gardent un
+`reversal` fixe.
+
+Le calcium est l'espèce où ça compte le plus (variation de plusieurs
+ordres de grandeur, gradient gigantesque). Les autres espèces (Na/K)
+seront optionnellement dynamiques selon le besoin de modélisation.
