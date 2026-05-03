@@ -28,8 +28,10 @@
 │  │ Stimulus (Pulse, Constant, Train, OU noise, Sum)         │ │
 │  └─────────────────────────────────────────────────────────┘ │
 │                                                             │
-│  ┌─ Topology / state vector ──────────────────────────────┐ │
-│  │ HHNeuron, Network, Simulator                            │ │
+│  ┌─ Compartments & topology ──────────────────────────────┐ │
+│  │ Compartment, AxialCoupling                              │ │
+│  │ HHNeuron (= [Compartment] + [AxialCoupling] + soma)     │ │
+│  │ Network, Simulator                                      │ │
 │  └─────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -207,9 +209,9 @@ de cette révision :
 | Étape | Description                                                     | Statut    |
 |:-----:|:----------------------------------------------------------------|:----------|
 |  1a   | `IonSpecies` + `Nernst` (équations Nernst & GHK)                | ✅ fait   |
-|  1a+  | Premier canal calcium (`TTypeCalciumChannel`) — valide Nernst   | 🔧 en cours |
-|  1b   | `Compartment` — `HHNeuron` devient un Neuron à 1 compartiment    | ⏳ à venir |
-|  1c   | `AxialCoupling` — couplage électrique entre compartiments        | ⏳ à venir |
+|  1a+  | Premier canal calcium (`TTypeCalciumChannel`) — valide Nernst   | ✅ fait   |
+|  1b   | `Compartment` — `HHNeuron` devient un conteneur de compartiments | ✅ fait   |
+|  1c   | `AxialCoupling` — couplage électrique entre compartiments        | ✅ fait   |
 |  2a   | Slots de concentration dans le vecteur d'état                    | ⏳ à venir |
 |  2b   | `ConcentrationDynamics` — d[ion]/dt avec décroissance simple     | ⏳ à venir |
 |  2c   | Reversals Nernst-recalculés en boucle d'intégration              | ⏳ à venir |
@@ -218,19 +220,49 @@ de cette révision :
 |  5    | Multi-fenêtrage SwiftUI, document-based, éditeur de morphologie   | ⏳ à venir |
 |  6+   | Plasticité (STDP, STP), populations, sweeps de paramètres         | ⏳ futur   |
 
-### Compartiments (Étape 1b — résumé)
+### Compartiments (Étape 1b — implémenté)
 
-L'idée : `Compartment` portera **ce que porte aujourd'hui `HHNeuron`**
-(V, capacité, canaux, slots de gates dans le state vector). Un `Neuron`
-multi-compartiment sera un graphe (typiquement un arbre) de `Compartment`
-reliés par des `AxialCoupling` (résistance axiale `g_ij`, modèle équivalent
-à une gap junction interne).
+`Compartment` (classe) porte **ce que portait avant `HHNeuron` en interne** :
+V, capacité, canaux, slots de gates dans le state vector. Un `HHNeuron` est
+maintenant **un conteneur de compartiments** électriquement couplés par des
+`AxialCoupling` (résistance axiale `g_ij`).
 
-- Le `HHNeuron` actuel devient un cas particulier *« neurone à 1
-  compartiment »* — l'API publique reste utilisable telle quelle.
-- La détection de spike se fait sur le compartiment marqué `isSomatic = true`.
-- Le couplage axial s'écrit `I_axial(i→j) = g_ij · (V_j − V_i)`,
-  même équation que `GapJunction`, donc on factorisera.
+- `HHNeuron(name:, channels:)` (l'init historique) reste utilisable —
+  il crée un neurone à 1 compartiment dont la propriété `soma` est ce
+  compartiment unique. **Aucun test pré-1b n'est invalidé.**
+- L'init multi-compartiment : `HHNeuron(name:, compartments:, couplings:, soma:)`.
+- La détection de spike se fait sur le compartiment désigné par
+  `somaCompartmentID`. Les stimuli et courants post-synaptiques
+  arrivent par défaut sur ce même compartiment.
+- Le couplage axial s'écrit `I(A → B) = g · (V_A − V_B)`, identique en
+  forme à `GapJunction`. Les deux types restent distincts (un est interne
+  à un neurone, l'autre entre neurones), mais on pourrait factoriser plus
+  tard si on en avait l'usage.
+
+#### State vector layout (post-1b)
+
+```
+[ neuron_0 state | neuron_1 state | … | synapse_0 state | … ]
+        ↓
+        [ comp_0 state | comp_1 state | … ]
+                ↓
+                [ V, gate_0_0, gate_0_1, …, gate_1_0, … ]
+```
+
+`Network.voltageIndex(of: neuronID)` retourne l'index du V du soma
+(rétrocompatible). `Network.voltageIndex(ofCompartment: compID)` permet
+d'inspecter n'importe quel compartiment explicitement (utile pour les
+plots multi-compartiments à venir).
+
+#### Limitations actuelles (à lever ultérieurement)
+
+- Les **synapses** (chimiques et gap-junctions inter-neurones) ciblent
+  toujours le soma post-synaptique. Cibler une dendrite spécifique
+  demandera d'ajouter un `targetCompartmentID` au protocole `Synapse`.
+- Les **stimuli** ne s'appliquent qu'au soma. Idem côté API.
+- L'**éditeur graphique** affiche encore un neurone = un nœud ; le
+  rendu hiérarchique de la morphologie viendra avec l'éditeur de
+  morphologie (Étape 5).
 
 ### Concentrations (Étape 2 — résumé)
 
