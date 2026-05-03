@@ -13,6 +13,7 @@ public final class SodiumChannel: IonChannel {
     public var name: String = "Na+"
     public var gMax: Double      // mS/cm²
     public var reversal: Double  // mV
+    public var species: IonSpecies? { .sodium }
 
     public init(gMax: Double = 120.0, reversal: Double = 50.0) {
         self.gMax = gMax

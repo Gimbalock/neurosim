@@ -27,6 +27,17 @@ public protocol IonChannel: AnyObject {
     /// Number of gating variables this channel carries in the state vector.
     var stateCount: Int { get }
 
+    /// The ion species this channel selectively conducts, if any. When
+    /// non-nil, the channel can have its `reversal` recomputed from
+    /// intracellular/extracellular concentrations of `species` via the
+    /// Nernst equation (see `updateReversalFromNernst`). When nil, the
+    /// channel is treated as mixed/non-selective (e.g. a passive leak that
+    /// lumps Na⁺ + K⁺ + Cl⁻) and keeps its `reversal` as a free parameter.
+    ///
+    /// Default is `nil` — existing channels stay backward-compatible without
+    /// changes; new channels override this to declare their carrier ion.
+    var species: IonSpecies? { get }
+
     /// Steady-state initial values for the gates at a given holding potential.
     func initialState(atVoltage v: Double) -> [Double]
 
@@ -38,6 +49,31 @@ public protocol IonChannel: AnyObject {
                          gates: ArraySlice<Double>,
                          into output: inout [Double],
                          offset: Int)
+}
+
+public extension IonChannel {
+    /// Default: channel doesn't declare an ion species. Keeps every channel
+    /// written before the IonSpecies layer existed conforming as-is.
+    var species: IonSpecies? { nil }
+
+    /// Recompute `reversal` (mV) from concentrations using the Nernst
+    /// equation. No-op for channels that don't declare a species — the
+    /// fixed `reversal` set at construction time is left untouched, which
+    /// is what you want for a mixed leak.
+    ///
+    /// - Parameters:
+    ///   - cIn: intracellular concentration of the channel's species.
+    ///   - cOut: extracellular concentration.
+    ///   - T: absolute temperature (K). Defaults to 37 °C.
+    func updateReversalFromNernst(concentrationIn cIn: Double,
+                                  concentrationOut cOut: Double,
+                                  temperatureK T: Double = Nernst.mammalianBodyTemperatureK) {
+        guard let sp = species else { return }
+        reversal = Nernst.reversalPotential(species: sp,
+                                            concentrationIn: cIn,
+                                            concentrationOut: cOut,
+                                            temperatureK: T)
+    }
 }
 
 /// A handful of helpers shared by HH-style channels (avoid singularities at

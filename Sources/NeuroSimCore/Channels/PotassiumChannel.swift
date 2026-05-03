@@ -11,6 +11,7 @@ public final class PotassiumChannel: IonChannel {
     public var name: String = "K+"
     public var gMax: Double      // mS/cm²
     public var reversal: Double  // mV
+    public var species: IonSpecies? { .potassium }
 
     public init(gMax: Double = 36.0, reversal: Double = -77.0) {
         self.gMax = gMax
