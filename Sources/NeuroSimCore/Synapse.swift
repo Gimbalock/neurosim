@@ -26,6 +26,14 @@ public protocol Synapse: AnyObject {
     /// axial coupling on their way to the soma).
     var postCompartmentID: UUID? { get set }
 
+    /// Plasticity weight — a dimensionless multiplicative scaler applied to
+    /// the post-synaptic current in addition to the static conductance.
+    /// Default is 1.0 (neutral). Use values < 1 for synaptic depression
+    /// (LTD) and > 1 for potentiation (LTP) without modifying `gMax` /
+    /// `conductance`, which are meant to represent the unmodulated
+    /// physiological peak. Setting `weight` to 0 silences the synapse.
+    var weight: Double { get set }
+
     /// Number of state variables this synapse owns in the global state vector.
     var stateCount: Int { get }
 
@@ -74,6 +82,7 @@ public final class ChemicalSynapse: Synapse {
     public var reversal: Double  // mV
     public var tauDecay: Double  // ms
     public var sMax: Double      // saturation cap on gating variable
+    public var weight: Double    // dimensionless plasticity multiplier (1.0 = neutral)
 
     public init(id: UUID = UUID(),
                 from pre: UUID,
@@ -82,7 +91,8 @@ public final class ChemicalSynapse: Synapse {
                 gMax: Double = 0.1,
                 reversal: Double = 0.0,
                 tauDecay: Double = 5.0,
-                sMax: Double = 1.0) {
+                sMax: Double = 1.0,
+                weight: Double = 1.0) {
         self.id = id
         self.preNeuronID = pre
         self.postNeuronID = post
@@ -91,6 +101,7 @@ public final class ChemicalSynapse: Synapse {
         self.reversal = reversal
         self.tauDecay = tauDecay
         self.sMax = sMax
+        self.weight = weight
     }
 
     public var stateCount: Int { 1 }
@@ -101,7 +112,9 @@ public final class ChemicalSynapse: Synapse {
                               vPre: Double,
                               vPost: Double) -> Double {
         let s = state[state.startIndex]
-        return gMax * s * (vPost - reversal)
+        // weight is a multiplicative plasticity scaler — default 1.0 means
+        // existing models reproduce previous behaviour exactly.
+        return weight * gMax * s * (vPost - reversal)
     }
 
     public func writeDerivatives(state: ArraySlice<Double>,
@@ -128,17 +141,20 @@ public final class GapJunction: Synapse {
     public var postNeuronID: UUID
     public var postCompartmentID: UUID?
     public var conductance: Double // mS/cm²
+    public var weight: Double      // dimensionless plasticity multiplier (1.0 = neutral)
 
     public init(id: UUID = UUID(),
                 from pre: UUID,
                 to post: UUID,
                 onCompartment compartment: UUID? = nil,
-                conductance: Double = 0.05) {
+                conductance: Double = 0.05,
+                weight: Double = 1.0) {
         self.id = id
         self.preNeuronID = pre
         self.postNeuronID = post
         self.postCompartmentID = compartment
         self.conductance = conductance
+        self.weight = weight
     }
 
     public var stateCount: Int { 0 }
@@ -150,7 +166,7 @@ public final class GapJunction: Synapse {
                               vPost: Double) -> Double {
         // Standard gap junction convention: positive current when V_post > V_pre
         // means current *leaves* the post-synaptic compartment, hyperpolarizing it.
-        conductance * (vPost - vPre)
+        weight * conductance * (vPost - vPre)
     }
 
     public func writeDerivatives(state: ArraySlice<Double>,

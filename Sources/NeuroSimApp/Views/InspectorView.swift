@@ -60,22 +60,22 @@ private struct EmptyInspector: View {
             Divider().padding(.vertical, 6)
             Text("Integration")
                 .font(.headline)
-            HStack {
-                Text("dt").frame(width: 30, alignment: .leading)
-                Slider(value: $vm.dt, in: 0.005...0.1, step: 0.005)
-                Text(String(format: "%.3f ms", vm.dt))
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(width: 70, alignment: .trailing)
-            }
+            NumericSlider(label: "dt",
+                          value: $vm.dt,
+                          range: 0.005...0.1,
+                          step: 0.005,
+                          format: "%.3f",
+                          unit: "ms",
+                          labelWidth: 90)
             Text("Window")
                 .font(.headline)
                 .padding(.top, 6)
-            HStack {
-                Slider(value: $vm.plotWindow, in: 50...2000, step: 25)
-                Text("\(Int(vm.plotWindow)) ms")
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(width: 70, alignment: .trailing)
-            }
+            NumericSlider(label: nil,
+                          value: $vm.plotWindow,
+                          range: 50...2000,
+                          step: 25,
+                          format: "%.0f",
+                          unit: "ms")
         }
     }
 }
@@ -97,7 +97,18 @@ private struct NeuronInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Neuron").font(.title3.bold())
+            HStack {
+                Text("Neuron").font(.title3.bold())
+                Spacer()
+                Button(role: .destructive) {
+                    vm.removeSelected()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Delete this neuron (or press Delete)")
+            }
 
             HStack {
                 Text("Name").frame(width: 90, alignment: .leading)
@@ -223,16 +234,15 @@ private struct CompartmentEditor: View {
                 ))
             }
 
-            HStack {
-                Text("Capacitance").frame(width: 90, alignment: .leading)
-                Slider(value: Binding(
-                    get: { compartment.capacitance },
-                    set: { compartment.capacitance = $0; vm.objectWillChange.send() }
-                ), in: 0.1...3.0)
-                Text(String(format: "%.2f µF/cm²", compartment.capacitance))
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(width: 90, alignment: .trailing)
-            }
+            NumericSlider(label: "Capacitance",
+                          value: Binding(
+                            get: { compartment.capacitance },
+                            set: { compartment.capacitance = $0; vm.objectWillChange.send() }
+                          ),
+                          range: 0.1...3.0,
+                          format: "%.2f",
+                          unit: "µF/cm²",
+                          labelWidth: 90)
 
             // Soma toggle / delete
             HStack(spacing: 8) {
@@ -313,6 +323,23 @@ private struct ChannelRow: View {
     let compartmentID: UUID
     let neuronID: UUID
 
+    /// Which kinetics-plot sheet (if any) is currently presented.
+    /// `nil` = no sheet. Optional-of-Mode lets us drive `.sheet(item:)`
+    /// instead of two booleans, which is cleaner.
+    @State private var plotMode: PlotPresentation? = nil
+
+    /// Sheet payload — wraps the plot mode in an Identifiable so SwiftUI
+    /// can use it as the sheet's `item:`.
+    private struct PlotPresentation: Identifiable {
+        let mode: ChannelKineticsView.Mode
+        var id: String {
+            switch mode {
+            case .steadyState: return "steadyState"
+            case .kinetics:    return "kinetics"
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -324,6 +351,26 @@ private struct ChannelRow: View {
                         .padding(.vertical, 1)
                         .background(.secondary.opacity(0.2), in: Capsule())
                 }
+                // Plot icons — only shown for HH-formalism channels (those
+                // that conform to HHGated). For a passive Leak channel
+                // there is nothing to plot, so we hide them entirely.
+                if channel is HHGated {
+                    Button {
+                        plotMode = .init(mode: .steadyState)
+                    } label: {
+                        Image(systemName: "waveform.path")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Plot steady-state activation x∞(V)")
+
+                    Button {
+                        plotMode = .init(mode: .kinetics)
+                    } label: {
+                        Image(systemName: "timer")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Plot gating time constants τ(V)")
+                }
                 Spacer()
                 Button(role: .destructive) {
                     vm.removeChannel(at: indexInCompartment,
@@ -334,29 +381,34 @@ private struct ChannelRow: View {
                 }
                 .buttonStyle(.borderless)
             }
-            HStack {
-                Text("g_max").frame(width: 60, alignment: .leading).font(.caption)
-                Slider(value: Binding(
-                    get: { channel.gMax },
-                    set: { channel.gMax = $0; vm.objectWillChange.send() }
-                ), in: 0...200)
-                Text(String(format: "%.2f", channel.gMax))
-                    .font(.system(.caption2, design: .monospaced))
-                    .frame(width: 50, alignment: .trailing)
-            }
-            HStack {
-                Text("E_rev").frame(width: 60, alignment: .leading).font(.caption)
-                Slider(value: Binding(
-                    get: { channel.reversal },
-                    set: { channel.reversal = $0; vm.objectWillChange.send() }
-                ), in: -100...140)
-                Text(String(format: "%.1f mV", channel.reversal))
-                    .font(.system(.caption2, design: .monospaced))
-                    .frame(width: 60, alignment: .trailing)
-            }
+            NumericSlider(label: "g_max",
+                          value: Binding(
+                            get: { channel.gMax },
+                            set: { channel.gMax = $0; vm.objectWillChange.send() }
+                          ),
+                          range: 0...200,
+                          format: "%.2f",
+                          unit: "mS/cm²",
+                          labelWidth: 90)
+            NumericSlider(label: "E_rev",
+                          value: Binding(
+                            get: { channel.reversal },
+                            set: { channel.reversal = $0; vm.objectWillChange.send() }
+                          ),
+                          range: -100...140,
+                          format: "%.1f",
+                          unit: "mV",
+                          labelWidth: 90)
         }
         .padding(8)
         .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 6))
+        .sheet(item: $plotMode) { presentation in
+            // Force-cast is safe here: the sheet can only be triggered
+            // from the buttons above, which are gated on `channel is HHGated`.
+            if let hh = channel as? HHGated {
+                ChannelKineticsView(channel: hh, mode: presentation.mode)
+            }
+        }
     }
 }
 
@@ -411,18 +463,21 @@ private struct CouplingsSection: View {
             Text("\(nameA) ↔ \(nameB)")
                 .font(.caption.monospaced())
                 .frame(width: 110, alignment: .leading)
-            Slider(value: Binding(
-                get: { coup.conductance },
-                set: { newValue in
-                    if let i = neuron.axialCouplings.firstIndex(where: { $0.id == coup.id }) {
-                        neuron.axialCouplings[i].conductance = newValue
-                        vm.objectWillChange.send()
+            NumericSlider(
+                label: nil,
+                value: Binding(
+                    get: { coup.conductance },
+                    set: { newValue in
+                        if let i = neuron.axialCouplings.firstIndex(where: { $0.id == coup.id }) {
+                            neuron.axialCouplings[i].conductance = newValue
+                            vm.objectWillChange.send()
+                        }
                     }
-                }
-            ), in: 0...5)
-            Text(String(format: "%.2f", coup.conductance))
-                .font(.system(.caption2, design: .monospaced))
-                .frame(width: 40, alignment: .trailing)
+                ),
+                range: 0...5,
+                format: "%.2f",
+                unit: "µS"
+            )
             Button(role: .destructive) {
                 vm.removeCoupling(coup.id, from: neuron.id)
             } label: {
@@ -498,25 +553,25 @@ private struct StimulusEditor: View {
 
             switch vm.network.stimuli[compartmentID] {
             case let s as ConstantStimulus:
-                doubleSlider("Amplitude (µA/cm²)", bind(s, \.amplitude), -20...30)
+                doubleSlider("Amplitude", "µA/cm²", bind(s, \.amplitude), -20...30)
             case let s as PulseStimulus:
-                doubleSlider("Start (ms)",     bind(s, \.start),     0...500)
-                doubleSlider("Duration (ms)",  bind(s, \.duration),  1...500)
-                doubleSlider("Amplitude (µA)", bind(s, \.amplitude), -20...30)
+                doubleSlider("Start",     "ms", bind(s, \.start),     0...500)
+                doubleSlider("Duration",  "ms", bind(s, \.duration),  1...500)
+                doubleSlider("Amplitude", "µA", bind(s, \.amplitude), -20...30)
             case let s as RampStimulus:
-                doubleSlider("Start (ms)",     bind(s, \.start),     0...500)
-                doubleSlider("Duration (ms)",  bind(s, \.duration),  1...500)
-                doubleSlider("From (µA)",      bind(s, \.from),     -20...30)
-                doubleSlider("To (µA)",        bind(s, \.to),       -20...30)
+                doubleSlider("Start",     "ms", bind(s, \.start),     0...500)
+                doubleSlider("Duration",  "ms", bind(s, \.duration),  1...500)
+                doubleSlider("From",      "µA", bind(s, \.from),     -20...30)
+                doubleSlider("To",        "µA", bind(s, \.to),       -20...30)
             case let s as TrainStimulus:
-                doubleSlider("Start (ms)",     bind(s, \.start),     0...500)
-                doubleSlider("Period (ms)",    bind(s, \.period),    1...200)
-                doubleSlider("Width (ms)",     bind(s, \.pulseWidth), 0.1...50)
-                doubleSlider("Amplitude (µA)", bind(s, \.amplitude),-20...30)
+                doubleSlider("Start",     "ms", bind(s, \.start),      0...500)
+                doubleSlider("Period",    "ms", bind(s, \.period),     1...200)
+                doubleSlider("Width",     "ms", bind(s, \.pulseWidth), 0.1...50)
+                doubleSlider("Amplitude", "µA", bind(s, \.amplitude), -20...30)
             case let s as OUNoiseStimulus:
-                doubleSlider("Mean (µA)",      bind(s, \.mean),     -20...30)
-                doubleSlider("Sigma",          bind(s, \.sigma),     0...20)
-                doubleSlider("Tau (ms)",       bind(s, \.tau),       0.5...100)
+                doubleSlider("Mean",      "µA", bind(s, \.mean),  -20...30)
+                doubleSlider("Sigma",     "µA", bind(s, \.sigma),   0...20)
+                doubleSlider("Tau",       "ms", bind(s, \.tau),    0.5...100)
             default:
                 EmptyView()
             }
@@ -540,15 +595,15 @@ private struct StimulusEditor: View {
 
     @ViewBuilder
     private func doubleSlider(_ label: String,
+                              _ unit: String,
                               _ binding: Binding<Double>,
                               _ range: ClosedRange<Double>) -> some View {
-        HStack {
-            Text(label).frame(width: 130, alignment: .leading).font(.caption)
-            Slider(value: binding, in: range)
-            Text(String(format: "%.2f", binding.wrappedValue))
-                .font(.system(.caption2, design: .monospaced))
-                .frame(width: 50, alignment: .trailing)
-        }
+        NumericSlider(label: label,
+                      value: binding,
+                      range: range,
+                      format: "%.2f",
+                      unit: unit,
+                      labelWidth: 90)
     }
 
     private func bind<T: AnyObject, V>(_ object: T,
@@ -568,36 +623,61 @@ private struct SynapseInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Synapse").font(.title3.bold())
+            HStack {
+                Text("Synapse").font(.title3.bold())
+                Spacer()
+                Button(role: .destructive) {
+                    vm.removeSelected()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Delete this synapse (or press Delete)")
+            }
 
             if let chem = synapse as? ChemicalSynapse {
                 Text("Chemical").font(.callout).foregroundStyle(.secondary)
                 connectivityLabel
-                paramSlider("g_max", value: Binding(
+                paramSlider("g_max", unit: "µS", value: Binding(
                     get: { chem.gMax },
                     set: { chem.gMax = $0; vm.objectWillChange.send() }
                 ), range: 0...3)
-                paramSlider("E_rev", value: Binding(
+                paramSlider("E_rev", unit: "mV", value: Binding(
                     get: { chem.reversal },
                     set: { chem.reversal = $0; vm.objectWillChange.send() }
                 ), range: -90...20)
-                paramSlider("τ_decay", value: Binding(
+                paramSlider("τ_decay", unit: "ms", value: Binding(
                     get: { chem.tauDecay },
                     set: { chem.tauDecay = max($0, 0.1); vm.objectWillChange.send() }
                 ), range: 0.5...50)
+                weightSlider
+                // Colour convention matches the post-synaptic dot in the
+                // canvas: red = excitatory, green = inhibitory.
                 Text(chem.reversal > -30 ? "Excitatory" : "Inhibitory")
                     .font(.caption)
-                    .foregroundStyle(chem.reversal > -30 ? .green : .red)
+                    .foregroundStyle(chem.reversal > -30 ? .red : .green)
             } else if let gap = synapse as? GapJunction {
                 Text("Electrical (gap junction)")
                     .font(.callout).foregroundStyle(.secondary)
                 connectivityLabel
-                paramSlider("g", value: Binding(
+                paramSlider("g", unit: "µS", value: Binding(
                     get: { gap.conductance },
                     set: { gap.conductance = $0; vm.objectWillChange.send() }
                 ), range: 0...1)
+                weightSlider
             }
         }
+    }
+
+    /// Plasticity weight (LTP/LTD-style multiplier). Lives on every
+    /// `Synapse`, so this slider is shown for both chemical and gap
+    /// junction inspectors. Default 1.0 means "no plasticity adjustment".
+    private var weightSlider: some View {
+        paramSlider("weight", unit: "", value: Binding(
+            get: { synapse.weight },
+            set: { synapse.weight = max(0, $0); vm.objectWillChange.send() }
+        ), range: 0...4)
     }
 
     private var connectivityLabel: some View {
@@ -613,14 +693,14 @@ private struct SynapseInspector: View {
     }
 
     private func paramSlider(_ label: String,
+                             unit: String,
                              value: Binding<Double>,
                              range: ClosedRange<Double>) -> some View {
-        HStack {
-            Text(label).frame(width: 60, alignment: .leading)
-            Slider(value: value, in: range)
-            Text(String(format: "%.2f", value.wrappedValue))
-                .font(.system(.caption, design: .monospaced))
-                .frame(width: 60, alignment: .trailing)
-        }
+        NumericSlider(label: label,
+                      value: value,
+                      range: range,
+                      format: "%.2f",
+                      unit: unit,
+                      labelWidth: 90)
     }
 }

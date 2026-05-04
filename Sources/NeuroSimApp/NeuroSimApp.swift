@@ -6,10 +6,23 @@
 //
 
 import SwiftUI
+import AppKit
 
 @main
 struct NeuroSimApp: App {
     @StateObject private var viewModel = SimulationViewModel.demoNetwork()
+
+    init() {
+        // Without a signed .app bundle, `swift run`-launched executables
+        // default to a non-regular activation policy: their windows show
+        // but cannot become the key window, so keyboard input goes to
+        // whichever app *was* frontmost (typically Xcode or Terminal).
+        // Forcing `.regular` and activating makes us a proper foreground
+        // app and lets text fields receive input. Harmless when wrapped
+        // in a real .app bundle later.
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
 
     var body: some Scene {
         WindowGroup("NeuroSim") {

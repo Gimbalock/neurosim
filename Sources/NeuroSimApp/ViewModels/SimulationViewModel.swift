@@ -27,6 +27,11 @@ final class SimulationViewModel: ObservableObject {
 
     @Published var network: Network
     @Published var selection: Selection = .none
+    /// Active editing tool. The canvas reads this to decide what mouse
+    /// events mean (select/move, drag synapse, click-to-add-neuron, …).
+    /// The tool palette in the sidebar binds to this through the VM so
+    /// the palette and canvas stay in sync.
+    @Published var activeTool: EditorTool = .select
 
     enum Selection: Equatable {
         case none
@@ -105,15 +110,35 @@ final class SimulationViewModel: ObservableObject {
         rebuildSimulator()
     }
 
-    func addSynapse(from preID: UUID, to postID: UUID) {
+    /// Add a chemical synapse between two neurons. `reversal` controls
+    /// whether it is excitatory (≈ 0 mV) or inhibitory (≈ -75 mV); the
+    /// tool palette passes the appropriate value depending on which
+    /// synapse tool was active when the user dragged.
+    func addSynapse(from preID: UUID, to postID: UUID, reversal: Double = 0.0) {
         guard preID != postID else { return }
         // Avoid duplicates of the same direction.
         if network.synapses.contains(where: {
             $0.preNeuronID == preID && $0.postNeuronID == postID
         }) { return }
         network.addSynapse(ChemicalSynapse(from: preID, to: postID,
-                                           gMax: 0.3, reversal: 0.0,
+                                           gMax: 0.3, reversal: reversal,
                                            tauDecay: 6.0))
+        rebuildSimulator()
+    }
+
+    /// Add an electrical synapse (gap junction) between two neurons.
+    /// Model: I = g · (V_pre − V_post), bidirectional. We avoid
+    /// duplicates in either direction since gap junctions are symmetric.
+    func addGapJunction(from preID: UUID, to postID: UUID, conductance: Double = 0.05) {
+        guard preID != postID else { return }
+        let alreadyConnected = network.synapses.contains { syn in
+            guard syn is GapJunction else { return false }
+            return (syn.preNeuronID == preID && syn.postNeuronID == postID)
+                || (syn.preNeuronID == postID && syn.postNeuronID == preID)
+        }
+        if alreadyConnected { return }
+        network.addSynapse(GapJunction(from: preID, to: postID,
+                                       conductance: conductance))
         rebuildSimulator()
     }
 
