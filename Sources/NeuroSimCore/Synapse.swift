@@ -18,6 +18,14 @@ public protocol Synapse: AnyObject {
     var preNeuronID: UUID { get }
     var postNeuronID: UUID { get }
 
+    /// Optional explicit target compartment within the post-synaptic neuron.
+    /// `nil` (default) means "the post neuron's soma" — the Network resolves
+    /// the actual compartment when routing currents. Set this to a specific
+    /// dendritic compartment to model dendritic synapses (EPSPs / IPSPs that
+    /// land away from the spike-initiation zone and are filtered by the
+    /// axial coupling on their way to the soma).
+    var postCompartmentID: UUID? { get set }
+
     /// Number of state variables this synapse owns in the global state vector.
     var stateCount: Int { get }
 
@@ -60,6 +68,7 @@ public final class ChemicalSynapse: Synapse {
     public let id: UUID
     public var preNeuronID: UUID
     public var postNeuronID: UUID
+    public var postCompartmentID: UUID?
 
     public var gMax: Double      // mS/cm²
     public var reversal: Double  // mV
@@ -69,6 +78,7 @@ public final class ChemicalSynapse: Synapse {
     public init(id: UUID = UUID(),
                 from pre: UUID,
                 to post: UUID,
+                onCompartment compartment: UUID? = nil,
                 gMax: Double = 0.1,
                 reversal: Double = 0.0,
                 tauDecay: Double = 5.0,
@@ -76,6 +86,7 @@ public final class ChemicalSynapse: Synapse {
         self.id = id
         self.preNeuronID = pre
         self.postNeuronID = post
+        self.postCompartmentID = compartment
         self.gMax = gMax
         self.reversal = reversal
         self.tauDecay = tauDecay
@@ -115,15 +126,18 @@ public final class GapJunction: Synapse {
     public let id: UUID
     public var preNeuronID: UUID
     public var postNeuronID: UUID
+    public var postCompartmentID: UUID?
     public var conductance: Double // mS/cm²
 
     public init(id: UUID = UUID(),
                 from pre: UUID,
                 to post: UUID,
+                onCompartment compartment: UUID? = nil,
                 conductance: Double = 0.05) {
         self.id = id
         self.preNeuronID = pre
         self.postNeuronID = post
+        self.postCompartmentID = compartment
         self.conductance = conductance
     }
 

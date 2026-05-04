@@ -157,12 +157,15 @@ public final class HHNeuron: Identifiable {
     /// `output`, with axial currents between this neuron's compartments
     /// applied internally.
     ///
-    /// `somaIInjected` is the external current density on the soma —
-    /// stimulus protocols + post-synaptic inputs. Other compartments
-    /// receive only axial currents; if you want stimulus on a dendrite,
-    /// extend this signature later (Step 5+).
+    /// `injectedByCompartment` maps each compartment ID to its external
+    /// injected current density (µA/cm²) — sum of any stimulus protocol
+    /// applied to that compartment plus any post-synaptic currents
+    /// landing on it. Compartments not present in the dictionary receive
+    /// zero external injection (they still receive axial currents from
+    /// neighbours, computed here). The Network builds this dictionary
+    /// before calling.
     public func writeDerivatives(localState: ArraySlice<Double>,
-                                 somaIInjected: Double,
+                                 injectedByCompartment: [UUID: Double],
                                  into output: inout [Double],
                                  offset: Int) {
         // 1. Per-compartment offsets within this neuron's slice.
@@ -201,10 +204,8 @@ public final class HHNeuron: Identifiable {
             let sliceEnd = sliceStart + comp.stateCount
             let compSlice = localState[sliceStart..<sliceEnd]
 
-            var iInj = iAxial[comp.id] ?? 0
-            if comp.id == somaCompartmentID {
-                iInj += somaIInjected
-            }
+            let iInj = (iAxial[comp.id] ?? 0)
+                     + (injectedByCompartment[comp.id] ?? 0)
 
             comp.writeDerivatives(localState: compSlice,
                                   iInjected: iInj,

@@ -39,21 +39,29 @@ final class TTypeCalciumChannelTests: XCTestCase {
 
     // MARK: - Gate steady-state values
 
-    /// At rest (-65 mV) the activation gate should be mostly closed.
-    func testActivationMostlyClosedAtRest() {
+    /// At rest (-65 mV) the channel as a whole should be functionally closed.
+    /// Note: m_inf alone is ~0.22 at -65 mV in the Destexhe parameterisation
+    /// (V_half = -57 mV, slope 6.2 mV), which is *normal* — what suppresses
+    /// the current at rest is the inactivation gate h, not m. The biologically
+    /// meaningful "openness" is `m² · h`, which should be tiny at rest.
+    func testChannelFunctionallyClosedAtRest() {
         let m = TTypeCalciumChannel.mInf(-65.0)
-        XCTAssertLessThan(m, 0.05,
-                          "m_inf(-65) should be < 5% (got \(m)) — T-channels are closed at rest.")
+        let h = TTypeCalciumChannel.hInf(-65.0)
+        let openFraction = m * m * h
+        XCTAssertLessThan(openFraction, 0.005,
+                          "m²·h(-65) should be < 0.5% (got \(openFraction)) — T-channels are functionally closed at rest.")
     }
 
-    /// At rest (-65 mV) the inactivation gate should be partially available.
-    /// Hodgkin-Huxley convention: h close to 1 = available (not inactivated).
-    func testInactivationMostlyAvailableAtRest() {
+    /// At rest (-65 mV) most T-channels are *inactivated* (h_inf small).
+    /// HH convention: h ≈ 1 = available, h ≈ 0 = inactivated. With V_half_h
+    /// around -81 mV (Destexhe), the cell needs to hyperpolarise to recover
+    /// h — this is the gating that gates the post-inhibitory rebound.
+    func testInactivationMostlyClosedAtRest() {
         let h = TTypeCalciumChannel.hInf(-65.0)
         XCTAssertGreaterThan(h, 0.001,
-                             "h_inf(-65) should be > 0 (some channels available, got \(h)).")
+                             "h_inf(-65) should be > 0 (a few channels still de-inactivated, got \(h)).")
         XCTAssertLessThan(h, 0.05,
-                          "h_inf(-65) should still be small at rest (mostly inactivated, got \(h)).")
+                          "h_inf(-65) should be small (mostly inactivated, got \(h)).")
     }
 
     /// On strong hyperpolarisation (-90 mV), inactivation lifts (h_inf → 1).

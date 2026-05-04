@@ -2,9 +2,15 @@
 //  InspectorView.swift
 //  NeuroSimApp
 //
-//  Right-hand inspector panel. Switches between three states based on the
-//  current selection: a neuron (with channels + stimulus), a synapse (with
-//  per-type parameters), or nothing (welcome / global parameters).
+//  Right-hand inspector panel. Three states based on selection:
+//   - empty   → integration / global parameters
+//   - neuron  → name + compartment list + per-compartment editor + couplings
+//   - synapse → chemical/gap-junction parameters
+//
+//  The neuron inspector is *compartment-aware*: every neuron-level edit goes
+//  through a compartment selector, so dendrites get first-class UI alongside
+//  the soma. The compartment editor itself hosts channel add/remove (Na+, K+,
+//  Leak, Ca-T) and stimulus configuration.
 //
 
 import SwiftUI
@@ -40,7 +46,7 @@ struct InspectorView: View {
     }
 }
 
-// MARK: - Empty state
+// MARK: - Empty / global parameters
 
 private struct EmptyInspector: View {
     @EnvironmentObject var vm: SimulationViewModel
@@ -74,16 +80,24 @@ private struct EmptyInspector: View {
     }
 }
 
-// MARK: - Neuron inspector
+// MARK: - Neuron inspector (compartment-aware)
 
 private struct NeuronInspector: View {
     @EnvironmentObject var vm: SimulationViewModel
     let neuron: HHNeuron
 
+    @State private var selectedCompartmentID: UUID? = nil
+
+    private var selectedCompartment: Compartment? {
+        guard let id = selectedCompartmentID
+                ?? neuron.compartments.first?.id
+        else { return nil }
+        return neuron.compartments.first(where: { $0.id == id })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Neuron")
-                .font(.title3.bold())
+            Text("Neuron").font(.title3.bold())
 
             HStack {
                 Text("Name").frame(width: 90, alignment: .leading)
@@ -93,59 +107,251 @@ private struct NeuronInspector: View {
                 ))
             }
 
+            Divider().padding(.vertical, 4)
+
+            // ─── Compartment list ──────────────────────────────
             HStack {
-                Text("Capacitance").frame(width: 90, alignment: .leading)
-                Slider(value: Binding(
-                    get: { neuron.capacitance },
-                    set: { neuron.capacitance = $0; vm.objectWillChange.send() }
-                ), in: 0.1...3.0)
-                Text(String(format: "%.2f µF/cm²", neuron.capacitance))
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(width: 90, alignment: .trailing)
+                Text("Compartments").font(.headline)
+                Spacer()
+                Button {
+                    if let new = vm.addCompartment(to: neuron.id) {
+                        selectedCompartmentID = new.id
+                    }
+                } label: {
+                    Label("Add", systemImage: "plus.circle")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+            }
+            CompartmentList(neuron: neuron, selection: $selectedCompartmentID)
+
+            // ─── Selected compartment editor ───────────────────
+            if let comp = selectedCompartment {
+                Divider().padding(.vertical, 4)
+                CompartmentEditor(neuron: neuron, compartment: comp,
+                                  selection: $selectedCompartmentID)
             }
 
-            Divider().padding(.vertical, 4)
-
-            Text("Ion channels").font(.headline)
-            ForEach(Array(neuron.channels.enumerated()), id: \.offset) { (_, ch) in
-                ChannelEditor(channel: ch)
+            // ─── Couplings ─────────────────────────────────────
+            if neuron.compartments.count > 1 {
+                Divider().padding(.vertical, 4)
+                CouplingsSection(neuron: neuron)
             }
-
-            Divider().padding(.vertical, 4)
-
-            Text("Stimulus").font(.headline)
-            StimulusEditor(neuronID: neuron.id)
+        }
+        .onAppear {
+            if selectedCompartmentID == nil {
+                selectedCompartmentID = neuron.somaCompartmentID
+            }
         }
     }
 }
 
-// MARK: - Channel editor
+// MARK: - Compartment list (selectable rows)
 
-private struct ChannelEditor: View {
+private struct CompartmentList: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let neuron: HHNeuron
+    @Binding var selection: UUID?
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(neuron.compartments, id: \.id) { comp in
+                let isSel = selection == comp.id
+                let isSoma = comp.id == neuron.somaCompartmentID
+                Button {
+                    selection = comp.id
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: isSoma ? "star.fill" : "circle")
+                            .foregroundStyle(isSoma ? .yellow : .secondary)
+                            .font(.caption)
+                        Text(comp.name)
+                            .font(.callout)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer()
+                        Text("\(comp.channels.count) ch")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        isSel ? Color.accentColor.opacity(0.18) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 5)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+// MARK: - Compartment editor (name, C_m, channels, stim)
+
+private struct CompartmentEditor: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let neuron: HHNeuron
+    let compartment: Compartment
+    @Binding var selection: UUID?
+
+    private var isSoma: Bool { compartment.id == neuron.somaCompartmentID }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Editing: \(compartment.name)")
+                    .font(.callout.bold())
+                if isSoma {
+                    Text("soma")
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.yellow.opacity(0.25),
+                                    in: Capsule())
+                        .foregroundStyle(.primary)
+                }
+                Spacer()
+            }
+
+            HStack {
+                Text("Name").frame(width: 90, alignment: .leading)
+                TextField("name", text: Binding(
+                    get: { compartment.name },
+                    set: { vm.renameCompartment(compartment.id, in: neuron.id, to: $0) }
+                ))
+            }
+
+            HStack {
+                Text("Capacitance").frame(width: 90, alignment: .leading)
+                Slider(value: Binding(
+                    get: { compartment.capacitance },
+                    set: { compartment.capacitance = $0; vm.objectWillChange.send() }
+                ), in: 0.1...3.0)
+                Text(String(format: "%.2f µF/cm²", compartment.capacitance))
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(width: 90, alignment: .trailing)
+            }
+
+            // Soma toggle / delete
+            HStack(spacing: 8) {
+                if !isSoma {
+                    Button {
+                        vm.setSoma(compartment.id, of: neuron.id)
+                    } label: {
+                        Label("Mark as soma", systemImage: "star")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                if !isSoma && neuron.compartments.count > 1 {
+                    Button(role: .destructive) {
+                        let toDelete = compartment.id
+                        // After deletion, fall back to soma in the picker.
+                        selection = neuron.somaCompartmentID
+                        vm.removeCompartment(toDelete, from: neuron.id)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+
+            Divider().padding(.vertical, 2)
+
+            // ─── Channels ──────────────────────────────────────
+            HStack {
+                Text("Ion channels").font(.subheadline.bold())
+                Spacer()
+                Menu {
+                    ForEach(ChannelKind.allCases) { kind in
+                        Button {
+                            vm.addChannel(kind, toCompartment: compartment.id,
+                                          in: neuron.id)
+                        } label: {
+                            Label(kind.rawValue, systemImage: kind.systemImage)
+                        }
+                    }
+                } label: {
+                    Label("Add", systemImage: "plus.circle")
+                        .labelStyle(.iconOnly)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+
+            if compartment.channels.isEmpty {
+                Text("No channels — passive compartment.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(Array(compartment.channels.enumerated()), id: \.offset) { (i, ch) in
+                    ChannelRow(channel: ch, indexInCompartment: i,
+                               compartmentID: compartment.id,
+                               neuronID: neuron.id)
+                }
+            }
+
+            Divider().padding(.vertical, 2)
+
+            // ─── Stimulus on this compartment ──────────────────
+            Text("Stimulus").font(.subheadline.bold())
+            StimulusEditor(compartmentID: compartment.id)
+        }
+    }
+}
+
+// MARK: - Channel row
+
+private struct ChannelRow: View {
     @EnvironmentObject var vm: SimulationViewModel
     let channel: IonChannel
+    let indexInCompartment: Int
+    let compartmentID: UUID
+    let neuronID: UUID
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(channel.name).font(.callout.bold())
             HStack {
-                Text("g_max").frame(width: 60, alignment: .leading)
+                Text(channel.name).font(.callout.bold())
+                if let species = channel.species {
+                    Text(species.symbol)
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.secondary.opacity(0.2), in: Capsule())
+                }
+                Spacer()
+                Button(role: .destructive) {
+                    vm.removeChannel(at: indexInCompartment,
+                                     fromCompartment: compartmentID,
+                                     in: neuronID)
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+            }
+            HStack {
+                Text("g_max").frame(width: 60, alignment: .leading).font(.caption)
                 Slider(value: Binding(
                     get: { channel.gMax },
                     set: { channel.gMax = $0; vm.objectWillChange.send() }
                 ), in: 0...200)
                 Text(String(format: "%.2f", channel.gMax))
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(width: 60, alignment: .trailing)
+                    .font(.system(.caption2, design: .monospaced))
+                    .frame(width: 50, alignment: .trailing)
             }
             HStack {
-                Text("E_rev").frame(width: 60, alignment: .leading)
+                Text("E_rev").frame(width: 60, alignment: .leading).font(.caption)
                 Slider(value: Binding(
                     get: { channel.reversal },
                     set: { channel.reversal = $0; vm.objectWillChange.send() }
-                ), in: -100...80)
+                ), in: -100...140)
                 Text(String(format: "%.1f mV", channel.reversal))
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.system(.caption2, design: .monospaced))
                     .frame(width: 60, alignment: .trailing)
             }
         }
@@ -154,11 +360,104 @@ private struct ChannelEditor: View {
     }
 }
 
-// MARK: - Stimulus editor
+// MARK: - Couplings section
+
+private struct CouplingsSection: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let neuron: HHNeuron
+
+    @State private var draftA: UUID? = nil
+    @State private var draftB: UUID? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Axial couplings").font(.headline)
+
+            if neuron.axialCouplings.isEmpty {
+                Text("No couplings — compartments float electrically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(neuron.axialCouplings, id: \.id) { coup in
+                    couplingRow(coup)
+                }
+            }
+
+            // Add a new coupling
+            HStack(spacing: 4) {
+                compartmentPicker("from", selection: $draftA)
+                Image(systemName: "arrow.left.and.right")
+                    .foregroundStyle(.secondary)
+                compartmentPicker("to", selection: $draftB)
+                Button {
+                    if let a = draftA, let b = draftB, a != b {
+                        vm.addCoupling(between: a, and: b, in: neuron.id)
+                        draftA = nil; draftB = nil
+                    }
+                } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .buttonStyle(.borderless)
+                .disabled(draftA == nil || draftB == nil || draftA == draftB)
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func couplingRow(_ coup: AxialCoupling) -> some View {
+        let nameA = neuron.compartments.first { $0.id == coup.compartmentA }?.name ?? "?"
+        let nameB = neuron.compartments.first { $0.id == coup.compartmentB }?.name ?? "?"
+        return HStack(spacing: 6) {
+            Text("\(nameA) ↔ \(nameB)")
+                .font(.caption.monospaced())
+                .frame(width: 110, alignment: .leading)
+            Slider(value: Binding(
+                get: { coup.conductance },
+                set: { newValue in
+                    if let i = neuron.axialCouplings.firstIndex(where: { $0.id == coup.id }) {
+                        neuron.axialCouplings[i].conductance = newValue
+                        vm.objectWillChange.send()
+                    }
+                }
+            ), in: 0...5)
+            Text(String(format: "%.2f", coup.conductance))
+                .font(.system(.caption2, design: .monospaced))
+                .frame(width: 40, alignment: .trailing)
+            Button(role: .destructive) {
+                vm.removeCoupling(coup.id, from: neuron.id)
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    private func compartmentPicker(_ placeholder: String,
+                                   selection: Binding<UUID?>) -> some View {
+        Menu {
+            ForEach(neuron.compartments, id: \.id) { comp in
+                Button(comp.name) { selection.wrappedValue = comp.id }
+            }
+        } label: {
+            let label = selection.wrappedValue.flatMap { id in
+                neuron.compartments.first { $0.id == id }?.name
+            } ?? placeholder
+            Text(label)
+                .font(.caption)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 4))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+}
+
+// MARK: - Stimulus editor (now compartment-keyed)
 
 private struct StimulusEditor: View {
     @EnvironmentObject var vm: SimulationViewModel
-    let neuronID: UUID
+    let compartmentID: UUID
 
     enum Kind: String, CaseIterable, Identifiable {
         case none, constant, pulse, ramp, train, ouNoise
@@ -176,7 +475,7 @@ private struct StimulusEditor: View {
     }
 
     private var currentKind: Kind {
-        switch vm.network.stimuli[neuronID] {
+        switch vm.network.stimuli[compartmentID] {
         case nil: return .none
         case is ConstantStimulus: return .constant
         case is PulseStimulus: return .pulse
@@ -197,7 +496,7 @@ private struct StimulusEditor: View {
             }
             .pickerStyle(.menu)
 
-            switch vm.network.stimuli[neuronID] {
+            switch vm.network.stimuli[compartmentID] {
             case let s as ConstantStimulus:
                 doubleSlider("Amplitude (µA/cm²)", bind(s, \.amplitude), -20...30)
             case let s as PulseStimulus:
@@ -236,7 +535,7 @@ private struct StimulusEditor: View {
         case .train:    s = TrainStimulus(start: 10, period: 30, pulseWidth: 5, amplitude: 12)
         case .ouNoise:  s = OUNoiseStimulus(mean: 5, sigma: 3, tau: 5)
         }
-        vm.setStimulus(s, on: neuronID)
+        vm.setStimulus(s, onCompartment: compartmentID)
     }
 
     @ViewBuilder
@@ -252,9 +551,6 @@ private struct StimulusEditor: View {
         }
     }
 
-    /// Bind a class-property to a SwiftUI Slider, pinging the ViewModel on
-    /// each write so dependent views (the network canvas, the plot legend)
-    /// refresh too.
     private func bind<T: AnyObject, V>(_ object: T,
                                        _ keyPath: ReferenceWritableKeyPath<T, V>) -> Binding<V> {
         Binding(
@@ -264,7 +560,7 @@ private struct StimulusEditor: View {
     }
 }
 
-// MARK: - Synapse inspector
+// MARK: - Synapse inspector (unchanged)
 
 private struct SynapseInspector: View {
     @EnvironmentObject var vm: SimulationViewModel
@@ -307,7 +603,12 @@ private struct SynapseInspector: View {
     private var connectivityLabel: some View {
         let pre  = vm.network.neurons.first { $0.id == synapse.preNeuronID }?.name  ?? "?"
         let post = vm.network.neurons.first { $0.id == synapse.postNeuronID }?.name ?? "?"
-        return Label("\(pre) → \(post)", systemImage: "arrow.right")
+        let target = synapse.postCompartmentID.flatMap { compID in
+            vm.network.neurons
+                .flatMap(\.compartments)
+                .first(where: { $0.id == compID })?.name
+        } ?? "soma"
+        return Label("\(pre) → \(post) [\(target)]", systemImage: "arrow.right")
             .font(.callout)
     }
 
@@ -323,4 +624,3 @@ private struct SynapseInspector: View {
         }
     }
 }
-

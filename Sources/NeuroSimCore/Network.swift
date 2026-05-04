@@ -13,11 +13,14 @@
 //  states, in declaration order. `rebuildLayout()` recomputes both the
 //  per-neuron and per-compartment offsets after every structural mutation.
 //
-//  Stimuli are still keyed by **neuron ID** and applied to that neuron's
-//  soma compartment. Synapses still connect neuron-to-neuron — the
-//  post-synaptic current lands on the post neuron's soma. Compartment-level
-//  stimulus / synapse targeting can be added later without changing the
-//  state-vector layout.
+//  Stimuli are keyed by **compartment ID** (Step 5+). The convenience
+//  `setStimulus(_:on:)` API still takes a neuron ID and routes the stimulus
+//  to that neuron's soma — backward-compatible for callers that don't care
+//  about dendritic targeting. To stim a specific compartment, use
+//  `setStimulus(_:onCompartment:)`.
+//
+//  Synapses target a specific compartment via `Synapse.postCompartmentID`;
+//  when that's `nil` the post neuron's soma is used as the landing point.
 //
 
 import Foundation
@@ -28,7 +31,10 @@ public final class Network: DerivativeProvider {
 
     public private(set) var neurons: [HHNeuron] = []
     public private(set) var synapses: [Synapse] = []
-    public var stimuli: [UUID: Stimulus] = [:] // keyed by neuron id
+    /// Stimuli keyed by **compartment ID**. Use `setStimulus(_:on:)` for the
+    /// soma-by-default API or `setStimulus(_:onCompartment:)` for explicit
+    /// dendritic targeting.
+    public var stimuli: [UUID: Stimulus] = [:]
 
     // MARK: - State layout (rebuilt after every structural mutation)
 
@@ -51,9 +57,16 @@ public final class Network: DerivativeProvider {
     }
 
     public func removeNeuron(id: UUID) {
+        // Capture this neuron's compartment IDs before removal so we can
+        // also drop any stimuli targeting them (stimuli are keyed by
+        // compartment, not neuron).
+        let compartmentIDs: Set<UUID> = neurons
+            .first(where: { $0.id == id })
+            .map { Set($0.compartments.map(\.id)) } ?? []
+
         neurons.removeAll { $0.id == id }
         synapses.removeAll { $0.preNeuronID == id || $0.postNeuronID == id }
-        stimuli.removeValue(forKey: id)
+        for cid in compartmentIDs { stimuli.removeValue(forKey: cid) }
         rebuildLayout()
     }
 
@@ -69,11 +82,21 @@ public final class Network: DerivativeProvider {
         rebuildLayout()
     }
 
+    /// Apply a stimulus to a neuron's **soma** (back-compat shim). Use
+    /// `setStimulus(_:onCompartment:)` to target a specific dendrite/axon
+    /// compartment instead.
     public func setStimulus(_ s: Stimulus?, on neuronID: UUID) {
+        guard let n = neurons.first(where: { $0.id == neuronID }) else { return }
+        setStimulus(s, onCompartment: n.somaCompartmentID)
+    }
+
+    /// Apply a stimulus to any compartment (soma, dendrite, axon hillock…).
+    /// Pass `nil` to remove a previously installed stimulus on that compartment.
+    public func setStimulus(_ s: Stimulus?, onCompartment compartmentID: UUID) {
         if let s = s {
-            stimuli[neuronID] = s
+            stimuli[compartmentID] = s
         } else {
-            stimuli.removeValue(forKey: neuronID)
+            stimuli.removeValue(forKey: compartmentID)
         }
     }
 
@@ -165,54 +188,63 @@ public final class Network: DerivativeProvider {
                                    time: Double,
                                    into output: inout [Double]) {
 
-        // 1. For each neuron, build the soma-injected current
-        //    (stimulus + Σ post-synaptic currents arriving on the soma)
-        //    and let the neuron write its compartments' derivatives,
-        //    handling axial coupling internally.
+        // 1. Per-neuron pass: build a per-compartment injected-current
+        //    dictionary (stimuli + synaptic currents) and let the neuron
+        //    write all its compartments' derivatives, handling axial
+        //    coupling internally.
         for n in neurons {
-            guard let off = neuronOffset[n.id],
-                  let somaIdx = compartmentOffset[n.somaCompartmentID]
-            else { continue }
+            guard let off = neuronOffset[n.id] else { continue }
             let neuronSlice = state[off..<(off + n.stateCount)]
-            let vPostSoma = state[somaIdx]
 
-            var iInjSoma = stimuli[n.id]?.current(at: time) ?? 0
+            // 1a. Stimuli on any of this neuron's compartments.
+            var iInj: [UUID: Double] = [:]
+            for comp in n.compartments {
+                if let stim = stimuli[comp.id] {
+                    iInj[comp.id, default: 0] += stim.current(at: time)
+                }
+            }
 
-            // Sum incoming synaptic currents — they target the soma.
+            // 1b. Incoming synaptic currents — each lands on the synapse's
+            //     postCompartmentID, falling back to the post neuron's soma.
             for synIdx in incomingByPost[n.id] ?? [] {
                 let syn = synapses[synIdx]
                 guard let synOff = synapseOffset[syn.id],
                       let preNeuron = neurons.first(where: { $0.id == syn.preNeuronID }),
                       let preSomaIdx = compartmentOffset[preNeuron.somaCompartmentID]
                 else { continue }
+                let targetCompID = syn.postCompartmentID ?? n.somaCompartmentID
+                guard let postIdx = compartmentOffset[targetCompID] else { continue }
+
                 let vPre = state[preSomaIdx]
+                let vPostTarget = state[postIdx]
                 let synSlice = state[synOff..<(synOff + syn.stateCount)]
                 // `currentToPost` returns I in the convention "positive =
-                // outward from the post compartment". We're adding to
-                // iInj (an injection), so flip the sign.
-                iInjSoma -= syn.currentToPost(state: synSlice,
-                                              vPre: vPre,
-                                              vPost: vPostSoma)
+                // outward from the post compartment". We're adding to an
+                // injection, so flip the sign.
+                iInj[targetCompID, default: 0] -= syn.currentToPost(
+                    state: synSlice, vPre: vPre, vPost: vPostTarget
+                )
             }
 
             n.writeDerivatives(localState: neuronSlice,
-                               somaIInjected: iInjSoma,
+                               injectedByCompartment: iInj,
                                into: &output,
                                offset: off)
         }
 
-        // 2. Synapse internal dynamics — unchanged. V_pre and V_post are
-        //    the soma voltages of the pre/post neurons.
+        // 2. Synapse internal dynamics. V_pre is the pre soma; V_post is
+        //    the actual target compartment voltage.
         for syn in synapses {
             guard let synOff = synapseOffset[syn.id],
                   let preNeuron = neurons.first(where: { $0.id == syn.preNeuronID }),
                   let postNeuron = neurons.first(where: { $0.id == syn.postNeuronID }),
-                  let preSomaIdx = compartmentOffset[preNeuron.somaCompartmentID],
-                  let postSomaIdx = compartmentOffset[postNeuron.somaCompartmentID]
+                  let preSomaIdx = compartmentOffset[preNeuron.somaCompartmentID]
             else { continue }
+            let targetCompID = syn.postCompartmentID ?? postNeuron.somaCompartmentID
+            guard let postIdx = compartmentOffset[targetCompID] else { continue }
             let synSlice = state[synOff..<(synOff + syn.stateCount)]
             let vPre = state[preSomaIdx]
-            let vPost = state[postSomaIdx]
+            let vPost = state[postIdx]
             syn.writeDerivatives(state: synSlice,
                                  vPre: vPre,
                                  vPost: vPost,

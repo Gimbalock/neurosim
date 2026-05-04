@@ -56,7 +56,11 @@ final class SimulationViewModel: ObservableObject {
 
     private var simulator: Simulator
     private var simTimer: Timer?
-    private let plotMaxSamples = 5_000
+    /// Hard memory cap on a single neuron's trace buffer. Time-based trimming
+    /// (`cutoff = simulator.time − plotWindow`) is the primary mechanism;
+    /// this is just a safety net so a runaway window can't blow up memory.
+    /// Sized to comfortably hold a 5 s window at current downsample stride.
+    private let plotMaxSamples = 100_000
     private let plotDownsampleStride: Int = 5  // store one in N integration steps
 
     // MARK: - Init
@@ -119,6 +123,119 @@ final class SimulationViewModel: ObservableObject {
         objectWillChange.send()
     }
 
+    // MARK: - Compartment mutations
+
+    /// Append a new compartment to a neuron and auto-couple it to the
+    /// current soma so it isn't electrically floating. Returns the new
+    /// compartment so callers can immediately select it in the UI.
+    @discardableResult
+    func addCompartment(to neuronID: UUID,
+                        name: String? = nil,
+                        channels: [IonChannel] = [LeakChannel()]) -> Compartment? {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }) else { return nil }
+        let label = name ?? "dend\(n.compartments.count)"
+        let comp = Compartment(name: label, channels: channels)
+        n.compartments.append(comp)
+        n.axialCouplings.append(
+            AxialCoupling(between: n.somaCompartmentID, and: comp.id, conductance: 0.5)
+        )
+        network.notifyStructuralChange()
+        rebuildSimulator()
+        return comp
+    }
+
+    /// Remove a compartment from a neuron (must not be the soma; the neuron
+    /// must keep at least one compartment). Drops any couplings touching it,
+    /// any stimulus targeting it, and demotes synapses targeting it back to
+    /// the soma fallback.
+    func removeCompartment(_ compID: UUID, from neuronID: UUID) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }) else { return }
+        guard compID != n.somaCompartmentID else { return }
+        guard n.compartments.count > 1 else { return }
+
+        n.compartments.removeAll { $0.id == compID }
+        n.axialCouplings.removeAll { $0.involves(compID) }
+        network.setStimulus(nil, onCompartment: compID)
+        for syn in network.synapses where syn.postCompartmentID == compID {
+            syn.postCompartmentID = nil   // gracefully fall back to soma
+        }
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
+    /// Promote a different compartment to be the spike-detection / default-
+    /// stim-target soma. The state-vector layout doesn't change, but the
+    /// semantics for spike dispatch and back-compat APIs do.
+    func setSoma(_ compID: UUID, of neuronID: UUID) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              n.compartments.contains(where: { $0.id == compID })
+        else { return }
+        n.somaCompartmentID = compID
+        objectWillChange.send()
+    }
+
+    func renameCompartment(_ compID: UUID, in neuronID: UUID, to newName: String) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              let comp = n.compartments.first(where: { $0.id == compID })
+        else { return }
+        comp.name = newName
+        objectWillChange.send()
+    }
+
+    // MARK: - Axial coupling mutations
+
+    func addCoupling(between aID: UUID,
+                     and bID: UUID,
+                     in neuronID: UUID,
+                     conductance: Double = 0.5) {
+        guard aID != bID,
+              let n = network.neurons.first(where: { $0.id == neuronID })
+        else { return }
+        let exists = n.axialCouplings.contains {
+            ($0.compartmentA == aID && $0.compartmentB == bID) ||
+            ($0.compartmentA == bID && $0.compartmentB == aID)
+        }
+        if exists { return }
+        n.axialCouplings.append(
+            AxialCoupling(between: aID, and: bID, conductance: conductance)
+        )
+        objectWillChange.send()
+    }
+
+    func removeCoupling(_ couplingID: UUID, from neuronID: UUID) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }) else { return }
+        n.axialCouplings.removeAll { $0.id == couplingID }
+        objectWillChange.send()
+    }
+
+    // MARK: - Channel mutations (per compartment)
+
+    /// Append a freshly-instantiated channel of the given kind to a
+    /// compartment. Changes the state-vector layout, so the simulator is
+    /// rebuilt and traces reseeded.
+    func addChannel(_ kind: ChannelKind,
+                    toCompartment compID: UUID,
+                    in neuronID: UUID) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              let comp = n.compartments.first(where: { $0.id == compID })
+        else { return }
+        comp.channels.append(kind.makeInstance())
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
+    func removeChannel(at index: Int,
+                       fromCompartment compID: UUID,
+                       in neuronID: UUID) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              let comp = n.compartments.first(where: { $0.id == compID }),
+              comp.channels.indices.contains(index)
+        else { return }
+        comp.channels.remove(at: index)
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
     /// Rebuild the simulator after any structural mutation that changes the
     /// state-vector layout.
     private func rebuildSimulator() {
@@ -142,6 +259,13 @@ final class SimulationViewModel: ObservableObject {
 
     func play() {
         guard !isRunning else { return }
+        // One-shot semantics: every Run starts a fresh sweep at t = 0 and
+        // auto-stops once the plotted window is full. Inline the reset here
+        // (rather than calling reset()) to avoid flipping isRunning twice.
+        simulator.reset()
+        simulationTime = 0
+        seedTraces()
+
         isRunning = true
         simulator.dt = dt
         simTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0,
@@ -164,12 +288,25 @@ final class SimulationViewModel: ObservableObject {
     }
 
     /// One UI frame of simulation work. Compute as many `dt` steps as needed
-    /// to make the simulated time advance at `realtimeFactor` × wall clock.
+    /// to make the simulated time advance at `realtimeFactor` × wall clock,
+    /// capped so the run stops cleanly when `simulationTime` reaches
+    /// `plotWindow` (the visualised duration).
     private func tick() {
+        // Stop cleanly when the configured run length is reached.
+        if simulator.time >= plotWindow {
+            pause()
+            return
+        }
+
         // Target: 1/60 s of wall ≈ realtimeFactor × 16.67 ms simulated.
         let frameDurationMs = 1000.0 / 60.0
         let simulatedMsPerFrame = frameDurationMs * realtimeFactor
-        let nSteps = max(1, Int((simulatedMsPerFrame / dt).rounded()))
+        var nSteps = max(1, Int((simulatedMsPerFrame / dt).rounded()))
+
+        // Don't overshoot the plotWindow on the last frame.
+        let remaining = plotWindow - simulator.time
+        let maxSteps = max(1, Int((remaining / dt).rounded()))
+        nSteps = min(nSteps, maxSteps)
 
         var newSamples: [(UUID, Double, Double)] = []
         newSamples.reserveCapacity(nSteps / plotDownsampleStride * network.neurons.count)
@@ -200,12 +337,24 @@ final class SimulationViewModel: ObservableObject {
 
     // MARK: - Stimulus accessors (used by the inspector)
 
+    /// Stimulus on the neuron's **soma** compartment (back-compat helper).
+    /// Use `network.stimuli[compartmentID]` for any other compartment.
     func stimulus(for neuronID: UUID) -> Stimulus? {
-        network.stimuli[neuronID]
+        guard let n = network.neurons.first(where: { $0.id == neuronID }) else { return nil }
+        return network.stimuli[n.somaCompartmentID]
     }
 
+    /// Apply a stimulus to a neuron's soma (back-compat).
     func setStimulus(_ s: Stimulus?, on neuronID: UUID) {
         network.setStimulus(s, on: neuronID)
+        objectWillChange.send()
+    }
+
+    /// Apply (or remove, when `s == nil`) a stimulus on a specific compartment.
+    /// Used by the multi-compartment inspector — lets dendritic/axonal stims
+    /// be configured directly from the GUI.
+    func setStimulus(_ s: Stimulus?, onCompartment compartmentID: UUID) {
+        network.setStimulus(s, onCompartment: compartmentID)
         objectWillChange.send()
     }
 
