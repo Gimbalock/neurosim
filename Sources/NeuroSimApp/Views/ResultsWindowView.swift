@@ -34,16 +34,25 @@ struct ResultsWindowView: View {
     @State private var pickerGroupID: UUID? = nil
     @State private var showingPicker = false
 
-    /// Chart groups in stable insertion order.
-    private var chartGroups: [(id: UUID, traces: [SimulationViewModel.SignalTrace])] {
+    /// Explicit display order for chart groups. Kept in sync with
+    /// vm.signalTraces: new groups appended at the end, deleted groups removed.
+    /// The user can reorder by dragging cards.
+    @State private var orderedGroupIDs: [UUID] = []
+
+/// Chart groups in user-defined display order.
+    private var orderedGroups: [(id: UUID, traces: [SimulationViewModel.SignalTrace])] {
+        let map = Dictionary(grouping: vm.signalTraces, by: \.chartGroupID)
+        return orderedGroupIDs.compactMap { id in map[id].map { (id: id, traces: $0) } }
+    }
+
+    /// Stable set of group IDs currently alive in vm.signalTraces.
+    private var liveGroupIDs: [UUID] {
         var seen: [UUID] = []
-        var map:  [UUID: [SimulationViewModel.SignalTrace]] = [:]
-        for trace in vm.signalTraces {
-            let g = trace.chartGroupID
-            if map[g] == nil { seen.append(g) }
-            map[g, default: []].append(trace)
+        var set = Set<UUID>()
+        for t in vm.signalTraces {
+            if set.insert(t.chartGroupID).inserted { seen.append(t.chartGroupID) }
         }
-        return seen.compactMap { id in map[id].map { (id: id, traces: $0) } }
+        return seen
     }
 
     var body: some View {
@@ -55,7 +64,7 @@ struct ResultsWindowView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(chartGroups, id: \.id) { group in
+                        ForEach(orderedGroups, id: \.id) { group in
                             SignalChartCard(
                                 groupID: group.id,
                                 traces: group.traces,
@@ -65,10 +74,33 @@ struct ResultsWindowView: View {
                                 }
                             )
                             .padding(.horizontal, 16)
+                            // Make the whole card draggable
+                            .draggable(group.id.uuidString) {
+                                dragPreview(for: group)
+                            }
+                            // Accept drops: move the dragged group before this one
+                            .dropDestination(for: String.self) { items, _ in
+                                guard let idStr = items.first,
+                                      let draggedID = UUID(uuidString: idStr),
+                                      draggedID != group.id
+                                else { return false }
+                                moveGroup(draggedID, beforeGroup: group.id)
+                                return true
+                            } isTargeted: { targeted in
+                                // Subtle border handled in SignalChartCard
+                                _ = targeted
+                            }
+                        }
+
+                        // Drop zone AFTER the last card (move to end)
+                        if orderedGroups.count > 1 {
+                            trailingDropZone
+                                .padding(.horizontal, 16)
                         }
                     }
                     .padding(.vertical, 16)
                 }
+                .onDrop(of: [.plainText], isTargeted: nil) { _, _ in false }
             }
         }
         .frame(minWidth: 640, minHeight: 480)
@@ -77,6 +109,75 @@ struct ResultsWindowView: View {
                 .environmentObject(vm)
                 .onDisappear { pickerGroupID = nil }
         }
+        // Sync orderedGroupIDs whenever the set of live groups changes
+        .onChange(of: liveGroupIDs) { _, newIDs in
+            syncOrder(with: newIDs)
+        }
+        .onAppear {
+            syncOrder(with: liveGroupIDs)
+        }
+    }
+
+    // MARK: - Drag helpers
+
+    @ViewBuilder
+    private func dragPreview(for group: (id: UUID, traces: [SimulationViewModel.SignalTrace])) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(group.traces) { t in
+                Text(t.label).font(.caption).lineLimit(1)
+            }
+        }
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: 240)
+    }
+
+    private var trailingDropZone: some View {
+        Color.accentColor.opacity(0.001)   // invisible but hittable
+            .frame(height: 24)
+            .dropDestination(for: String.self) { items, _ in
+                guard let idStr = items.first,
+                      let draggedID = UUID(uuidString: idStr)
+                else { return false }
+                // Move dragged group to the very end
+                if let idx = orderedGroupIDs.firstIndex(of: draggedID) {
+                    orderedGroupIDs.remove(at: idx)
+                    orderedGroupIDs.append(draggedID)
+                    reorderSignalTraces()
+                }
+                return true
+            }
+    }
+
+    // MARK: - Order management
+
+    private func syncOrder(with liveIDs: [UUID]) {
+        // Preserve existing order; append any new IDs; drop dead ones.
+        orderedGroupIDs = orderedGroupIDs.filter { liveIDs.contains($0) }
+        for id in liveIDs where !orderedGroupIDs.contains(id) {
+            orderedGroupIDs.append(id)
+        }
+    }
+
+    private func moveGroup(_ draggedID: UUID, beforeGroup targetID: UUID) {
+        guard let fromIdx = orderedGroupIDs.firstIndex(of: draggedID),
+              let toIdx   = orderedGroupIDs.firstIndex(of: targetID)
+        else { return }
+        orderedGroupIDs.remove(at: fromIdx)
+        let insertIdx = orderedGroupIDs.firstIndex(of: targetID) ?? orderedGroupIDs.endIndex
+        orderedGroupIDs.insert(draggedID, at: insertIdx)
+        _ = toIdx  // suppress warning
+        reorderSignalTraces()
+    }
+
+    /// Mirror orderedGroupIDs into vm.signalTraces so the sampling loop and
+    /// graph-config save/load stay consistent with the visual order.
+    private func reorderSignalTraces() {
+        var reordered: [SimulationViewModel.SignalTrace] = []
+        for gid in orderedGroupIDs {
+            reordered.append(contentsOf: vm.signalTraces.filter { $0.chartGroupID == gid })
+        }
+        vm.signalTraces = reordered
     }
 
     // MARK: - Control bar
@@ -190,6 +291,7 @@ private struct SignalChartCard: View {
     @EnvironmentObject var vm: SimulationViewModel
     let groupID: UUID
     let traces: [SimulationViewModel.SignalTrace]
+    var isDimmed: Bool = false
     var onAddToGroup: () -> Void
 
     @State private var yMin: Double = -90
@@ -207,12 +309,20 @@ private struct SignalChartCard: View {
         }
         .padding(12)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+        .opacity(isDimmed ? 0.45 : 1)
+        .animation(.easeInOut(duration: 0.15), value: isDimmed)
     }
 
     // MARK: - Header
 
     private var header: some View {
         HStack(alignment: .top, spacing: 6) {
+            // Drag handle — visual affordance; the actual drag is on the whole card
+            Image(systemName: "line.3.horizontal")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .help("Drag to reorder")
+
             // Legend: one label per trace with its colour dot
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Array(traces.enumerated()), id: \.element.id) { idx, trace in
