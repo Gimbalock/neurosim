@@ -334,6 +334,17 @@ final class SimulationViewModel: ObservableObject {
         rebuildSimulator()
     }
 
+    func addCustomChannel(_ definition: CustomChannelDefinition,
+                          toCompartment compID: UUID,
+                          in neuronID: UUID) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              let comp = n.compartments.first(where: { $0.id == compID })
+        else { return }
+        comp.channels.append(CustomChannel(definition: definition))
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
     func removeChannel(at index: Int,
                        fromCompartment compID: UUID,
                        in neuronID: UUID) {

@@ -74,22 +74,26 @@ public struct AxialCouplingDoc: Codable {
 // MARK: - Channels (discriminated by `kind`)
 
 public struct ChannelDoc: Codable {
-    public var kind:     String   // "sodium" | "potassium" | "leak" | "tTypeCalcium"
+    public var kind:     String   // "sodium" | "potassium" | "leak" | "tTypeCalcium" | "custom"
     public var gMax:     Double
     public var reversal: Double
     // Gate overrides — only gated channels fill these.
     // Each array entry encodes one gate's x∞ and τ overrides (may be nil).
     public var gateInfOverrides: [GateCurveDoc?]
     public var gateTauOverrides: [GateCurveDoc?]
+    // Full definition — only present for kind == "custom".
+    public var customDefinition: CustomChannelDefinition?
 
     public init(kind: String, gMax: Double, reversal: Double,
                 gateInfOverrides: [GateCurveDoc?] = [],
-                gateTauOverrides: [GateCurveDoc?] = []) {
+                gateTauOverrides: [GateCurveDoc?] = [],
+                customDefinition: CustomChannelDefinition? = nil) {
         self.kind = kind
         self.gMax = gMax
         self.reversal = reversal
         self.gateInfOverrides = gateInfOverrides
         self.gateTauOverrides = gateTauOverrides
+        self.customDefinition = customDefinition
     }
 }
 
@@ -373,6 +377,11 @@ private extension ChannelDoc {
             return ChannelDoc(kind: "tTypeCalcium", gMax: ca.gMax, reversal: ca.reversal,
                               gateInfOverrides: ca.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
                               gateTauOverrides: ca.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let cc as CustomChannel:
+            return ChannelDoc(kind: "custom", gMax: cc.gMax, reversal: cc.reversal,
+                              gateInfOverrides: cc.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: cc.gateTauOverrides.map { $0.map(GateCurveDoc.from) },
+                              customDefinition: cc.definition)
         default:
             return ChannelDoc(kind: "leak", gMax: ch.gMax, reversal: ch.reversal)
         }
@@ -396,6 +405,14 @@ private extension ChannelDoc {
             let ch = TTypeCalciumChannel(gMax: gMax, reversal: reversal)
             if infs.count == 2 { ch.gateInfOverrides = infs }
             if taus.count == 2 { ch.gateTauOverrides = taus }
+            return ch
+        case "custom":
+            guard let def = customDefinition else {
+                return LeakChannel(gMax: gMax, reversal: reversal)
+            }
+            let ch = CustomChannel(definition: def)
+            if infs.count == def.gates.count { ch.gateInfOverrides = infs }
+            if taus.count == def.gates.count { ch.gateTauOverrides = taus }
             return ch
         default: // "leak" or unknown
             return LeakChannel(gMax: gMax, reversal: reversal)

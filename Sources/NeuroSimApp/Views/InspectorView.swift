@@ -230,6 +230,9 @@ private struct CompartmentEditor: View {
     let compartment: Compartment
     @Binding var selection: UUID?
 
+    @State private var showLibrary = false
+    @State private var showCustomEditor = false
+
     private var isSoma: Bool { compartment.id == neuron.somaCompartmentID }
 
     var body: some View {
@@ -334,21 +337,38 @@ private struct CompartmentEditor: View {
             HStack {
                 Text("Ion channels").font(.subheadline.bold())
                 Spacer()
-                Menu {
-                    ForEach(ChannelKind.allCases) { kind in
-                        Button {
-                            vm.addChannel(kind, toCompartment: compartment.id,
-                                          in: neuron.id)
-                        } label: {
-                            Label(kind.rawValue, systemImage: kind.systemImage)
-                        }
-                    }
+                // "New custom…" opens the editor directly (no library step)
+                Button {
+                    showCustomEditor = true
+                } label: {
+                    Image(systemName: "wand.and.sparkles")
+                }
+                .buttonStyle(.borderless)
+                .help("Create a new custom channel")
+                // Library sheet (built-in + saved custom)
+                Button {
+                    showLibrary = true
                 } label: {
                     Label("Add", systemImage: "plus.circle")
                         .labelStyle(.iconOnly)
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .buttonStyle(.borderless)
+                .help("Add channel from library")
+            }
+            .sheet(isPresented: $showLibrary) {
+                ChannelLibrarySheet(compartmentID: compartment.id,
+                                    neuronID: neuron.id)
+                    .environmentObject(vm)
+            }
+            .sheet(isPresented: $showCustomEditor) {
+                CustomChannelEditorView(
+                    draft: CustomChannelDefinition(),
+                    onConfirm: { def in
+                        ChannelLibrary.shared.upsert(def)
+                        vm.addCustomChannel(def, toCompartment: compartment.id,
+                                            in: neuron.id)
+                    }
+                )
             }
 
             if compartment.channels.isEmpty {
