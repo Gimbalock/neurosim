@@ -20,9 +20,12 @@ public struct SimulationSample {
 public final class Simulator {
     public let network: Network
 
-    /// Integration step (ms). 0.01 ms is the customary HH default; lower it
-    /// if you add fast channels.
+    /// Integration step (ms). With Rush-Larsen or RK45 you can safely use
+    /// larger values (up to ~0.5 ms and ~1 ms respectively).
     public var dt: Double
+
+    /// Numerical method used to advance the state vector.
+    public var method: IntegrationMethod = .rushLarsen
 
     /// Threshold (mV) used for upward-crossing spike detection.
     public var spikeThreshold: Double = 0.0
@@ -58,10 +61,21 @@ public final class Simulator {
         for stim in network.stimuli.values { stim.reset() }
     }
 
-    /// Advance by exactly one `dt` and dispatch any spikes detected at the
-    /// end of the step.
+    /// Advance by one `dt` using the chosen integration method, then
+    /// dispatch any spikes detected at the new time.
     public func step() {
-        RK4.step(provider: network, state: &state, time: time, dt: dt)
+        switch method {
+        case .euler:
+            ForwardEuler.step(provider: network, state: &state, time: time, dt: dt)
+        case .rk2:
+            RK2.step(provider: network, state: &state, time: time, dt: dt)
+        case .rk4:
+            RK4.step(provider: network, state: &state, time: time, dt: dt)
+        case .rushLarsen:
+            RushLarsen.step(network: network, state: &state, time: time, dt: dt)
+        case .rk45:
+            RK45.step(provider: network, state: &state, time: time, dt: dt)
+        }
         time += dt
         dispatchSpikes()
     }

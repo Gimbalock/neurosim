@@ -9,7 +9,7 @@
 //
 //   - .select          : click to select neuron / synapse / nothing,
 //                        drag a neuron to move it.
-//   - .pan             : (placeholder — viewport panning not yet wired)
+//   - .pan             : drag the background to pan the viewport.
 //   - .addNeuron       : click an empty area to add a neuron at the click
 //                        site.
 //   - .addCompartment  : click a neuron to append a compartment to it.
@@ -21,12 +21,17 @@
 //                        on its soma.
 //   - .probe           : (placeholder — future hook into the Plots window).
 //
+//  Viewport: the canvas supports zoom (pinch / scroll-wheel) and pan
+//  (.pan tool or drag-background when pan is active).
+//  Neuron positions are stored in canvas space; screen space = canvas * scale + offset.
+//
 //  Live state: each neuron's fill colour reflects its instantaneous
 //  membrane potential (blue = hyperpolarised, white ~ rest, red = spiking).
 //
 
 import SwiftUI
 import NeuroSimCore
+import AppKit
 
 // MARK: - Canvas constants
 
@@ -38,21 +43,62 @@ private let kNeuronRadius: CGFloat = 32
 /// Radius of the small post-synaptic indicator dot.
 private let kSynapseDotRadius: CGFloat = 7
 
+// MARK: - Scroll-wheel zoom helper
+
+/// NSViewRepresentable that forwards NSEvent scroll-wheel events as a
+/// zoom delta to a callback. MagnificationGesture handles trackpad pinch;
+/// this handles the traditional scroll wheel on non-trackpad mice.
+private struct ScrollWheelReceiver: NSViewRepresentable {
+    let onScroll: (CGFloat) -> Void   // delta Y (positive = scroll down)
+
+    func makeNSView(context: Context) -> _ScrollView { _ScrollView(onScroll: onScroll) }
+    func updateNSView(_ v: _ScrollView, context: Context) { v.onScroll = onScroll }
+
+    class _ScrollView: NSView {
+        var onScroll: (CGFloat) -> Void
+        init(onScroll: @escaping (CGFloat) -> Void) {
+            self.onScroll = onScroll
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override var acceptsFirstResponder: Bool { false }
+        override func scrollWheel(with event: NSEvent) {
+            // Only intercept vertical scroll; horizontal is ignored (let
+            // SwiftUI handle it for any containing scroll view).
+            onScroll(event.scrollingDeltaY)
+        }
+    }
+}
+
+// MARK: - NetworkEditorView
+
 struct NetworkEditorView: View {
     @EnvironmentObject var vm: SimulationViewModel
     @State private var draftSynapse: DraftSynapse? = nil
+    /// Live drag position — stored locally so updating it does NOT trigger
+    /// vm.objectWillChange and does not cause chart views to re-render.
+    @State private var neuronDrag: NeuronDrag? = nil
+
+    // Viewport transform — canvas space → screen space:
+    //   screen = canvas * viewportScale + viewportOffset
+    @State private var viewportScale: CGFloat = 1.0
+    @State private var viewportOffset: CGSize = .zero
+
+    // Pan gesture bookkeeping
+    @State private var panLastTranslation: CGSize = .zero
 
     struct DraftSynapse {
         let fromID: UUID
-        var currentPoint: CGPoint
+        var currentPoint: CGPoint   // screen space
+    }
+
+    struct NeuronDrag {
+        let neuronID: UUID
+        var position: CGPoint   // canvas space
     }
 
     var body: some View {
         canvas
-            // Fill whatever space the parent (NavigationSplitView's content
-            // column) gives us — without this the canvas collapses to its
-            // intrinsic size and the focus ring stops short of the column
-            // edges.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -61,54 +107,160 @@ struct NetworkEditorView: View {
     private var canvas: some View {
         GeometryReader { proxy in
             ZStack {
-                // Background: catches clicks on empty space. We use the
-                // location-aware overload so the .addNeuron tool can place
-                // neurons exactly where the user clicks, not at canvas centre.
+                // Background — handles tap-to-deselect and pan gesture
                 Color(NSColor.textBackgroundColor)
                     .contentShape(Rectangle())
                     .onTapGesture(count: 1, coordinateSpace: .local) { location in
-                        handleCanvasTap(at: location)
+                        let canvasPoint = screenToCanvas(location)
+                        handleCanvasTap(at: canvasPoint)
                     }
+                    .gesture(backgroundPanGesture)
 
                 // Edges (drawn first so neurons sit on top)
                 ForEach(vm.network.synapses, id: \.id) { syn in
-                    SynapseEdgeView(synapse: syn)
+                    SynapseEdgeView(synapse: syn,
+                                    neuronDrag: neuronDrag,
+                                    viewportScale: viewportScale,
+                                    viewportOffset: viewportOffset)
                 }
 
                 // Draft connection arrow (during synapse-tool drag)
                 if let draft = draftSynapse,
                    let from = vm.network.neurons.first(where: { $0.id == draft.fromID }) {
-                    DraftEdgeShape(
-                        from: CGPoint(x: from.positionX, y: from.positionY),
-                        to: draft.currentPoint
-                    )
-                    .stroke(.blue, style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+                    let fromScreen = canvasToScreen(CGPoint(x: from.positionX,
+                                                           y: from.positionY))
+                    DraftEdgeShape(from: fromScreen, to: draft.currentPoint)
+                        .stroke(.blue, style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
                 }
 
                 // Nodes
                 ForEach(vm.network.neurons, id: \.id) { neuron in
-                    NeuronNodeView(neuron: neuron, draftSynapse: $draftSynapse)
+                    NeuronNodeView(neuron: neuron,
+                                   draftSynapse: $draftSynapse,
+                                   neuronDrag: $neuronDrag,
+                                   viewportScale: viewportScale,
+                                   viewportOffset: viewportOffset)
+                }
+
+                // Reset-view button — bottom-right corner of the canvas
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        resetViewButton
+                            .padding(10)
+                    }
                 }
             }
+            // Scroll-wheel zoom (intercepts NSEvent before SwiftUI sees it)
+            .background(
+                ScrollWheelReceiver { deltaY in
+                    // Zoom centred on the canvas centre (approximation; cursor
+                    // position is not available via NSEvent in this path on macOS).
+                    let factor: CGFloat = deltaY > 0 ? 0.9 : 1.1
+                    let newScale = min(max(viewportScale * factor, 0.1), 8.0)
+                    // Adjust offset to keep the visual centre fixed
+                    let centre = CGPoint(x: proxy.size.width / 2,
+                                        y: proxy.size.height / 2)
+                    let scaleRatio = newScale / viewportScale
+                    viewportOffset = CGSize(
+                        width:  centre.x + (viewportOffset.width  - centre.x) * scaleRatio,
+                        height: centre.y + (viewportOffset.height - centre.y) * scaleRatio
+                    )
+                    viewportScale = newScale
+                }
+            )
+            // Pinch-to-zoom (trackpad)
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { mag in
+                        let newScale = min(max(mag * viewportScale, 0.1), 8.0)
+                        _ = newScale   // will be committed on end
+                    }
+                    .onEnded { mag in
+                        let centre = CGPoint(x: proxy.size.width / 2,
+                                            y: proxy.size.height / 2)
+                        let newScale = min(max(viewportScale * mag, 0.1), 8.0)
+                        let scaleRatio = newScale / viewportScale
+                        viewportOffset = CGSize(
+                            width:  centre.x + (viewportOffset.width  - centre.x) * scaleRatio,
+                            height: centre.y + (viewportOffset.height - centre.y) * scaleRatio
+                        )
+                        viewportScale = newScale
+                    }
+            )
             .focusable()
             .onKeyPress(.delete) { vm.removeSelected(); return .handled }
             .onKeyPress(.deleteForward) { vm.removeSelected(); return .handled }
         }
     }
 
+    // MARK: - Reset-view button
+
+    private var resetViewButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                viewportScale = 1.0
+                viewportOffset = .zero
+            }
+        } label: {
+            Label("1:1", systemImage: "arrow.up.left.and.arrow.down.right")
+                .font(.caption.bold())
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Reset zoom and pan to 1:1")
+    }
+
+    // MARK: - Pan gesture (background drag when .pan tool is active)
+
+    private var backgroundPanGesture: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { v in
+                guard vm.activeTool == .pan else { return }
+                let delta = CGSize(
+                    width:  v.translation.width  - panLastTranslation.width,
+                    height: v.translation.height - panLastTranslation.height
+                )
+                viewportOffset = CGSize(
+                    width:  viewportOffset.width  + delta.width,
+                    height: viewportOffset.height + delta.height
+                )
+                panLastTranslation = v.translation
+            }
+            .onEnded { _ in panLastTranslation = .zero }
+    }
+
+    // MARK: - Coordinate helpers
+
+    /// Convert a screen-space point to canvas space.
+    func screenToCanvas(_ p: CGPoint) -> CGPoint {
+        CGPoint(
+            x: (p.x - viewportOffset.width)  / viewportScale,
+            y: (p.y - viewportOffset.height) / viewportScale
+        )
+    }
+
+    /// Convert a canvas-space point to screen space.
+    func canvasToScreen(_ p: CGPoint) -> CGPoint {
+        CGPoint(
+            x: p.x * viewportScale + viewportOffset.width,
+            y: p.y * viewportScale + viewportOffset.height
+        )
+    }
+
     // MARK: - Tool dispatch
 
-    private func handleCanvasTap(at location: CGPoint) {
+    private func handleCanvasTap(at canvasPoint: CGPoint) {
         switch vm.activeTool {
         case .select, .pan:
             vm.selection = .none
         case .addNeuron:
-            vm.addNeuron(at: Double(location.x), y: Double(location.y))
+            vm.addNeuron(at: Double(canvasPoint.x), y: Double(canvasPoint.y))
         case .addCompartment, .synapseExcitatory, .synapseInhibitory,
              .gapJunction, .axialCoupling, .stimulus, .probe:
-            // Empty-canvas click is meaningless for tools that act on a
-            // neuron — fall back to clearing the selection so it isn't
-            // confusing.
             vm.selection = .none
         }
     }
@@ -120,12 +272,38 @@ private struct NeuronNodeView: View {
     @EnvironmentObject var vm: SimulationViewModel
     let neuron: HHNeuron
     @Binding var draftSynapse: NetworkEditorView.DraftSynapse?
+    @Binding var neuronDrag: NetworkEditorView.NeuronDrag?
+    let viewportScale: CGFloat
+    let viewportOffset: CGSize
 
-    /// Captured at gesture start so we can interpret `value.translation`
-    /// (which is cumulative since drag start) as an absolute offset.
     @State private var dragOrigin: CGPoint? = nil
 
     private var radius: CGFloat { kNeuronRadius }
+
+    /// Canvas-space position (live during drag, committed otherwise).
+    private var canvasPosition: CGPoint {
+        if let drag = neuronDrag, drag.neuronID == neuron.id { return drag.position }
+        return CGPoint(x: neuron.positionX, y: neuron.positionY)
+    }
+
+    /// Screen-space position — what `.position()` needs.
+    private var screenPosition: CGPoint {
+        canvasToScreen(canvasPosition)
+    }
+
+    private func canvasToScreen(_ p: CGPoint) -> CGPoint {
+        CGPoint(
+            x: p.x * viewportScale + viewportOffset.width,
+            y: p.y * viewportScale + viewportOffset.height
+        )
+    }
+
+    private func screenToCanvas(_ p: CGPoint) -> CGPoint {
+        CGPoint(
+            x: (p.x - viewportOffset.width)  / viewportScale,
+            y: (p.y - viewportOffset.height) / viewportScale
+        )
+    }
 
     var body: some View {
         let isSelected = vm.selection == .neuron(neuron.id)
@@ -149,12 +327,7 @@ private struct NeuronNodeView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        // Read from positionX/Y directly — we update them live during drag,
-        // so the connected synapse arrows follow the node in real time.
-        .position(
-            x: CGFloat(neuron.positionX),
-            y: CGFloat(neuron.positionY)
-        )
+        .position(screenPosition)
         .gesture(nodeGesture)
         .onTapGesture { handleNeuronTap() }
     }
@@ -166,22 +339,15 @@ private struct NeuronNodeView: View {
         case .select, .pan, .addNeuron,
              .synapseExcitatory, .synapseInhibitory, .gapJunction,
              .axialCoupling:
-            // All of these select-on-tap; the actual tool action happens
-            // on drag (synapse, axial, gap junction) or empty-canvas click
-            // (addNeuron).
             vm.selection = .neuron(neuron.id)
         case .addCompartment:
             _ = vm.addCompartment(to: neuron.id)
             vm.selection = .neuron(neuron.id)
         case .stimulus:
-            // Drop a default pulse stimulus on the neuron's soma. The user
-            // can refine parameters in the inspector right after.
             let pulse = PulseStimulus(start: 10, duration: 50, amplitude: 10)
             vm.setStimulus(pulse, onCompartment: neuron.somaCompartmentID)
             vm.selection = .neuron(neuron.id)
         case .probe:
-            // Placeholder: in the future this will add the neuron's V(t)
-            // (or a chosen variable) as a trace in the Plots window.
             vm.selection = .neuron(neuron.id)
         }
     }
@@ -195,16 +361,26 @@ private struct NeuronNodeView: View {
                         dragOrigin = CGPoint(x: neuron.positionX, y: neuron.positionY)
                     }
                     let origin = dragOrigin ?? .zero
-                    vm.setNeuronPosition(
-                        neuron.id,
-                        x: Double(origin.x) + Double(value.translation.width),
-                        y: Double(origin.y) + Double(value.translation.height)
+                    // Translate screen-space drag delta back to canvas space
+                    let canvasDelta = CGSize(
+                        width:  value.translation.width  / viewportScale,
+                        height: value.translation.height / viewportScale
+                    )
+                    neuronDrag = NetworkEditorView.NeuronDrag(
+                        neuronID: neuron.id,
+                        position: CGPoint(
+                            x: origin.x + canvasDelta.width,
+                            y: origin.y + canvasDelta.height
+                        )
                     )
                 } else if tool.isSynapseTool {
-                    let origin = CGPoint(x: neuron.positionX, y: neuron.positionY)
+                    // Compute current tip in screen space
+                    let originScreen = canvasToScreen(
+                        CGPoint(x: neuron.positionX, y: neuron.positionY)
+                    )
                     let current = CGPoint(
-                        x: origin.x + value.translation.width,
-                        y: origin.y + value.translation.height
+                        x: originScreen.x + value.translation.width,
+                        y: originScreen.y + value.translation.height
                     )
                     if draftSynapse?.fromID != neuron.id {
                         draftSynapse = .init(fromID: neuron.id, currentPoint: current)
@@ -212,21 +388,31 @@ private struct NeuronNodeView: View {
                         draftSynapse?.currentPoint = current
                     }
                 }
-                // pan / addNeuron / addCompartment / axialCoupling / stimulus
-                // / probe — no-op on drag.
             }
             .onEnded { value in
                 let tool = vm.activeTool
                 if tool == .select {
+                    if let drag = neuronDrag, drag.neuronID == neuron.id {
+                        vm.setNeuronPosition(neuron.id,
+                                             x: Double(drag.position.x),
+                                             y: Double(drag.position.y))
+                    }
+                    neuronDrag = nil
                     dragOrigin = nil
                 } else if tool.isSynapseTool {
-                    let endPoint = CGPoint(
-                        x: neuron.positionX + Double(value.translation.width),
-                        y: neuron.positionY + Double(value.translation.height)
+                    // Convert end point to canvas space for hit-test
+                    let originScreen = canvasToScreen(
+                        CGPoint(x: neuron.positionX, y: neuron.positionY)
                     )
+                    let endScreen = CGPoint(
+                        x: originScreen.x + value.translation.width,
+                        y: originScreen.y + value.translation.height
+                    )
+                    let endCanvas = screenToCanvas(endScreen)
+                    let hitRadius = Double(kNeuronRadius)
                     if let target = vm.network.neurons.first(where: {
-                        hypot($0.positionX - Double(endPoint.x),
-                              $0.positionY - Double(endPoint.y)) < Double(radius)
+                        hypot($0.positionX - Double(endCanvas.x),
+                              $0.positionY - Double(endCanvas.y)) < hitRadius
                     }), target.id != neuron.id {
                         switch tool {
                         case .gapJunction:
@@ -242,12 +428,10 @@ private struct NeuronNodeView: View {
             }
     }
 
-    /// Map V (mV) to a fill colour: blue at hyperpolarised, white near rest,
-    /// red at depolarised / spiking.
     private func activityColor(v: Double) -> Color {
         let lo = -90.0, mid = -65.0, hi = 30.0
         if v <= mid {
-            let t = max(0, (v - lo) / (mid - lo)) // 0 → 1 from lo to mid
+            let t = max(0, (v - lo) / (mid - lo))
             return Color(red: t, green: t, blue: 1.0)
         } else {
             let t = min(1, (v - mid) / (hi - mid))
@@ -261,20 +445,29 @@ private struct NeuronNodeView: View {
 /// Curved-Bézier rendering of a synapse with a colour-coded post-synaptic
 /// dot that conveys directionality and excitatory/inhibitory nature.
 ///
-/// Geometry
-/// ────────
-/// We bow the curve to the *left* of the pre→post direction by a fixed
-/// fraction of the centre-to-centre distance. Because that rule is the
-/// same for every synapse, a reciprocal pair (A→B and B→A) bows in
-/// opposite directions and the two curves trace an ellipse around the
-/// two cells — exactly the look of textbook circuit diagrams.
-///
-/// The endpoints sit on each cell's circle edge (in the direction of the
-/// control point), so the curve always meets the cell tangentially and
-/// adapts in real time when neurons are dragged.
+/// All geometry is computed in screen space (canvas coords * scale + offset)
+/// so the curves follow neurons correctly during zoom and pan.
 private struct SynapseEdgeView: View {
     @EnvironmentObject var vm: SimulationViewModel
     let synapse: Synapse
+    let neuronDrag: NetworkEditorView.NeuronDrag?
+    let viewportScale: CGFloat
+    let viewportOffset: CGSize
+
+    /// Canvas-space centre of a neuron (respects live drag).
+    private func canvasPos(of neuron: HHNeuron) -> CGPoint {
+        if let drag = neuronDrag, drag.neuronID == neuron.id { return drag.position }
+        return CGPoint(x: neuron.positionX, y: neuron.positionY)
+    }
+
+    /// Screen-space centre of a neuron.
+    private func screenPos(of neuron: HHNeuron) -> CGPoint {
+        let cp = canvasPos(of: neuron)
+        return CGPoint(
+            x: cp.x * viewportScale + viewportOffset.width,
+            y: cp.y * viewportScale + viewportOffset.height
+        )
+    }
 
     var body: some View {
         if let pre = vm.network.neurons.first(where: { $0.id == synapse.preNeuronID }),
@@ -282,44 +475,31 @@ private struct SynapseEdgeView: View {
             let isSelected = vm.selection == .synapse(synapse.id)
             let color = edgeColor(isSelected: isSelected)
 
+            // Scale neuron radius to screen space so endpoints sit on the
+            // visible circle edges regardless of zoom level.
             let geom = SynapseGeometry(
-                pre: CGPoint(x: pre.positionX, y: pre.positionY),
-                post: CGPoint(x: post.positionX, y: post.positionY),
-                neuronRadius: kNeuronRadius,
+                pre: screenPos(of: pre),
+                post: screenPos(of: post),
+                neuronRadius: kNeuronRadius * viewportScale,
                 straight: synapse is GapJunction
             )
 
             ZStack {
-                // Visible curve
                 SynapseCurveShape(geom: geom)
                     .stroke(color,
                             style: StrokeStyle(lineWidth: isSelected ? 3 : 2,
                                                lineCap: .round))
 
-                // Wider invisible curve for easier hit-testing. Note we
-                // intentionally do NOT add `.contentShape(Rectangle())`
-                // here — for a bowed curve, the bounding rectangle of the
-                // stroke covers a huge area, and using it for hit-testing
-                // would catch clicks far from the curve and prevent the
-                // user from deselecting by clicking on empty canvas.
-                // The default hit area of the stroke (the 16-pt wide band)
-                // is exactly what we want.
                 SynapseCurveShape(geom: geom)
                     .stroke(Color.white.opacity(0.001), lineWidth: 16)
                     .onTapGesture { vm.selection = .synapse(synapse.id) }
 
-                // Synapse marker — the visual signature of the connection
-                // type. Chemical synapses get a colour-coded directional
-                // dot at the post-synaptic edge; gap junctions get a
-                // resistor zigzag at the curve apex (bidirectional).
                 if synapse is GapJunction {
                     if let mid = geom.midPoint, let tan = geom.midTangent {
-                        // Wider invisible stroke for easier hit-testing.
                         ResistorMarker(center: mid, tangent: tan,
                                        length: 30, amplitude: 5, peakCount: 4)
                             .stroke(Color.white.opacity(0.001), lineWidth: 18)
                             .onTapGesture { vm.selection = .synapse(synapse.id) }
-                        // Visible resistor.
                         ResistorMarker(center: mid, tangent: tan,
                                        length: 30, amplitude: 5, peakCount: 4)
                             .stroke(Color.orange,
@@ -343,19 +523,11 @@ private struct SynapseEdgeView: View {
         }
     }
 
-    /// Curve stroke colour. Mirrors `dotColor` but goes grey when not
-    /// selected so the dot stays the focal point.
     private func edgeColor(isSelected: Bool) -> Color {
         if isSelected { return .accentColor }
         return Color.primary.opacity(0.6)
     }
 
-    /// Colour of the post-synaptic indicator dot.
-    /// Convention used here (chosen by Gwen):
-    ///   - red   = excitatory  (reversal > -30 mV, depolarising)
-    ///   - green = inhibitory  (reversal ≤ -30 mV, hyperpolarising)
-    /// (This is the inverse of the most common textbook convention; the
-    /// app sticks with the user's preference.)
     private var dotColor: Color {
         if let chem = synapse as? ChemicalSynapse {
             return chem.reversal > -30 ? .red : .green
@@ -367,25 +539,16 @@ private struct SynapseEdgeView: View {
 
 // MARK: - Shapes & geometry
 
-/// Pre-computed geometry for a single synapse curve. Captured in one
-/// place so both the curve shape and the post-synaptic dot draw against
-/// the same numbers.
+/// Pre-computed geometry for a single synapse curve.
 ///
-/// When `straight` is true the curve degenerates to a straight line
-/// (the quadratic-Bézier control point sits exactly on the chord
-/// midpoint). Used for gap junctions, which are bidirectional and look
-/// more like wires than directional projections.
+/// Inputs are in **screen space** — callers must transform canvas positions
+/// to screen positions before constructing this struct.
 private struct SynapseGeometry {
     let pre: CGPoint
     let post: CGPoint
     let neuronRadius: CGFloat
     var straight: Bool = false
 
-    /// Quadratic-Bézier control point. For chemical synapses we push it
-    /// perpendicular-LEFT of the pre→post direction (giving the bowed
-    /// look and producing an ellipse for reciprocal pairs). For gap
-    /// junctions we leave it on the midpoint, so the path renders as a
-    /// straight line.
     var controlPoint: CGPoint? {
         let dx = post.x - pre.x
         let dy = post.y - pre.y
@@ -394,28 +557,21 @@ private struct SynapseGeometry {
         let mid = CGPoint(x: (pre.x + post.x) / 2, y: (pre.y + post.y) / 2)
         if straight { return mid }
         let ux = dx / dist, uy = dy / dist
-        // Left-perpendicular in the screen coordinate system (y goes down).
         let perpX = -uy, perpY = ux
-        // Bow proportional to distance, with a comfortable minimum so even
-        // close-by neurons get a visible curvature.
         let bow = max(28, dist * 0.22)
         return CGPoint(x: mid.x + bow * perpX, y: mid.y + bow * perpY)
     }
 
-    /// Curve start point: pre cell edge in the direction of the control point.
     var startPoint: CGPoint? {
         guard let cp = controlPoint else { return nil }
         return edgePoint(of: pre, towards: cp)
     }
 
-    /// Curve end point: post cell edge in the direction of the control point.
     var endPoint: CGPoint? {
         guard let cp = controlPoint else { return nil }
         return edgePoint(of: post, towards: cp)
     }
 
-    /// Midpoint of the quadratic Bézier (t = 0.5):
-    ///   B(0.5) = 0.25·start + 0.5·control + 0.25·end
     var midPoint: CGPoint? {
         guard let s = startPoint, let cp = controlPoint, let e = endPoint
         else { return nil }
@@ -423,10 +579,6 @@ private struct SynapseGeometry {
                        y: 0.25 * s.y + 0.5 * cp.y + 0.25 * e.y)
     }
 
-    /// Unit tangent at the curve midpoint. For a quadratic Bézier the
-    /// derivative at t = 0.5 simplifies to (end − start), independent of
-    /// the control point — so the tangent at the apex is parallel to the
-    /// chord between the two endpoints.
     var midTangent: CGVector? {
         guard let s = startPoint, let e = endPoint else { return nil }
         let dx = e.x - s.x
@@ -446,8 +598,6 @@ private struct SynapseGeometry {
     }
 }
 
-/// Quadratic Bézier path from one neuron's edge to another's, bowing
-/// to the LEFT of the pre→post direction.
 private struct SynapseCurveShape: Shape {
     let geom: SynapseGeometry
 
@@ -463,16 +613,9 @@ private struct SynapseCurveShape: Shape {
     }
 }
 
-/// Textbook electrical-resistor zigzag, used as the gap-junction marker.
-/// Drawn centred on `center`, oriented along `tangent`. The shape is
-/// purely geometric so it can be `stroke()`d in any colour and width.
-///
-/// Pattern: a baseline line that pops up/down `peakCount` times, then
-/// returns to the baseline. With `peakCount = 4` you get the classic
-/// 4-zigzag European resistor symbol.
 private struct ResistorMarker: Shape {
     let center: CGPoint
-    let tangent: CGVector   // unit vector along the resistor's axis
+    let tangent: CGVector
     let length: CGFloat
     let amplitude: CGFloat
     let peakCount: Int
@@ -484,12 +627,10 @@ private struct ResistorMarker: Shape {
         let segLen = length / CGFloat(segCount)
         let halfLen = length / 2
 
-        // Move to the start of the axis (on the baseline).
         let start = CGPoint(x: center.x - tangent.dx * halfLen,
                             y: center.y - tangent.dy * halfLen)
         path.move(to: start)
 
-        // Draw the alternating peaks.
         for i in 1...peakCount {
             let alongDist = -halfLen + CGFloat(i) * segLen
             let sign: CGFloat = (i % 2 == 1) ? 1 : -1
@@ -500,7 +641,6 @@ private struct ResistorMarker: Shape {
             path.addLine(to: peak)
         }
 
-        // Close back to the baseline at the far end.
         let end = CGPoint(x: center.x + tangent.dx * halfLen,
                           y: center.y + tangent.dy * halfLen)
         path.addLine(to: end)

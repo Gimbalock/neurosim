@@ -52,11 +52,96 @@ final class SimulationViewModel: ObservableObject {
         var id: Double { t }
     }
 
+    // MARK: - Signal traces (Results window)
+
+    struct SignalTrace: Identifiable {
+        let id: UUID
+        var chartGroupID: UUID   // traces sharing this ID are rendered on the same chart
+        var signal: TracedSignal
+        var label: String
+        var points: [PlotPoint]
+    }
+
+    @Published var signalTraces: [SignalTrace] = []
+    /// Incremented each time the simulation reaches its natural end (plotWindow).
+    /// Chart cards observe this to trigger autoscale.
+    @Published private(set) var autoscaleGeneration: Int = 0
+
+    /// Add a new signal. Pass `groupID` to overlay it on an existing chart;
+    /// omit (or pass nil) to open it on its own new chart.
+    func addSignalTrace(_ signal: TracedSignal, toGroup groupID: UUID? = nil) {
+        guard !signalTraces.contains(where: { $0.signal == signal }) else { return }
+        let label = signal.displayLabel(in: network)
+        signalTraces.append(SignalTrace(id: UUID(),
+                                        chartGroupID: groupID ?? UUID(),
+                                        signal: signal,
+                                        label: label, points: []))
+    }
+
+    func removeSignalTrace(id: UUID) {
+        signalTraces.removeAll { $0.id == id }
+    }
+
+    func clearSignalTraces() {
+        signalTraces.removeAll()
+    }
+
+    // MARK: - Graph config persistence
+
+    private struct GraphConfig: Codable {
+        struct Entry: Codable {
+            var signal: TracedSignal
+            var groupID: UUID
+        }
+        var entries: [Entry]
+        var plotWindow: Double
+    }
+
+    func saveGraphConfig() {
+        let entries = signalTraces.map {
+            GraphConfig.Entry(signal: $0.signal, groupID: $0.chartGroupID)
+        }
+        let config = GraphConfig(entries: entries, plotWindow: plotWindow)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(config) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "graph_config.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    func loadGraphConfig() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let data = try? Data(contentsOf: url),
+              let config = try? JSONDecoder().decode(GraphConfig.self, from: data)
+        else { return }
+        plotWindow = config.plotWindow
+        signalTraces = config.entries.map { entry in
+            SignalTrace(id: UUID(),
+                        chartGroupID: entry.groupID,
+                        signal: entry.signal,
+                        label: entry.signal.displayLabel(in: network),
+                        points: [])
+        }
+    }
+
     // MARK: - Run state
 
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var simulationTime: Double = 0
-    @Published var dt: Double = 0.01
+    @Published var dt: Double = 0.05 {
+        didSet { simulator.dt = dt }
+    }
+    @Published var integrationMethod: IntegrationMethod = .rushLarsen {
+        didSet { simulator.method = integrationMethod }
+    }
+    /// Non-nil when the simulation was halted due to numerical divergence.
+    @Published private(set) var divergenceError: String? = nil
     @Published var realtimeFactor: Double = 1.0  // 1.0 = real-time; >1 = accelerated
 
     private var simulator: Simulator
@@ -65,8 +150,8 @@ final class SimulationViewModel: ObservableObject {
     /// (`cutoff = simulator.time − plotWindow`) is the primary mechanism;
     /// this is just a safety net so a runaway window can't blow up memory.
     /// Sized to comfortably hold a 5 s window at current downsample stride.
-    private let plotMaxSamples = 100_000
-    private let plotDownsampleStride: Int = 5  // store one in N integration steps
+    private let plotMaxSamples = 500_000
+    private let plotDownsampleStride: Int = 1
 
     // MARK: - Init
 
@@ -276,6 +361,7 @@ final class SimulationViewModel: ObservableObject {
         var t: [UUID: [PlotPoint]] = [:]
         for n in network.neurons { t[n.id] = [] }
         traces = t
+        for i in signalTraces.indices { signalTraces[i].points = [] }
     }
 
     // MARK: - Run / pause / reset
@@ -284,15 +370,14 @@ final class SimulationViewModel: ObservableObject {
 
     func play() {
         guard !isRunning else { return }
-        // One-shot semantics: every Run starts a fresh sweep at t = 0 and
-        // auto-stops once the plotted window is full. Inline the reset here
-        // (rather than calling reset()) to avoid flipping isRunning twice.
+        divergenceError = nil
         simulator.reset()
         simulationTime = 0
         seedTraces()
 
         isRunning = true
         simulator.dt = dt
+        simulator.method = integrationMethod
         simTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0,
                                         repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -307,6 +392,7 @@ final class SimulationViewModel: ObservableObject {
 
     func reset() {
         pause()
+        divergenceError = nil
         simulator.reset()
         simulationTime = 0
         seedTraces()
@@ -320,6 +406,7 @@ final class SimulationViewModel: ObservableObject {
         // Stop cleanly when the configured run length is reached.
         if simulator.time >= plotWindow {
             pause()
+            autoscaleGeneration += 1
             return
         }
 
@@ -336,27 +423,66 @@ final class SimulationViewModel: ObservableObject {
         var newSamples: [(UUID, Double, Double)] = []
         newSamples.reserveCapacity(nSteps / plotDownsampleStride * network.neurons.count)
 
+        // Accumulate signal trace points locally to avoid repeated Published mutations.
+        var newSignalPoints: [[PlotPoint]] = signalTraces.isEmpty
+            ? [] : Array(repeating: [], count: signalTraces.count)
+
         for i in 0..<nSteps {
             simulator.step()
+
+            // Detect numerical divergence (NaN or |V| > 1000 mV on any compartment).
+            let diverged = network.neurons.contains { n in
+                guard let idx = network.voltageIndex(of: n.id) else { return false }
+                let v = simulator.state[idx]
+                return v.isNaN || v.isInfinite || abs(v) > 1_000
+            }
+            if diverged {
+                pause()
+                divergenceError = "Divergence numérique détectée à t=\(String(format: "%.2f", simulator.time)) ms. Réduisez dt (recommandé : ≤ 0.05 ms pour HH+RK4)."
+                return
+            }
+
             if i % plotDownsampleStride == 0 {
                 for n in network.neurons {
                     if let idx = network.voltageIndex(of: n.id) {
                         newSamples.append((n.id, simulator.time, simulator.state[idx]))
                     }
                 }
+                if !signalTraces.isEmpty {
+                    let t  = simulator.time
+                    let st = simulator.state
+                    for j in signalTraces.indices {
+                        if let v = signalTraces[j].signal.value(
+                            state: st, network: network, time: t) {
+                            newSignalPoints[j].append(PlotPoint(t: t, v: v))
+                        }
+                    }
+                }
             }
         }
 
         simulationTime = simulator.time
+        let cutoff = simulator.time - plotWindow
+
         for (id, t, v) in newSamples {
             var arr = traces[id] ?? []
             arr.append(PlotPoint(t: t, v: v))
-            let cutoff = simulator.time - plotWindow
             while let first = arr.first, first.t < cutoff { arr.removeFirst() }
             if arr.count > plotMaxSamples {
                 arr.removeFirst(arr.count - plotMaxSamples)
             }
             traces[id] = arr
+        }
+
+        for j in signalTraces.indices {
+            signalTraces[j].points.append(contentsOf: newSignalPoints[j])
+            while let first = signalTraces[j].points.first, first.t < cutoff {
+                signalTraces[j].points.removeFirst()
+            }
+            if signalTraces[j].points.count > plotMaxSamples {
+                signalTraces[j].points.removeFirst(
+                    signalTraces[j].points.count - plotMaxSamples)
+            }
         }
     }
 
@@ -381,6 +507,66 @@ final class SimulationViewModel: ObservableObject {
     func setStimulus(_ s: Stimulus?, onCompartment compartmentID: UUID) {
         network.setStimulus(s, onCompartment: compartmentID)
         objectWillChange.send()
+    }
+
+    // MARK: - Document (save / load / new)
+
+    /// URL of the file currently open on disk, nil when unsaved.
+    @Published private(set) var documentURL: URL?
+
+    /// Display name shown in the window title bar.
+    var documentName: String {
+        documentURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
+    }
+
+    func newNetwork() {
+        pause()
+        network = Network()
+        documentURL = nil
+        rebuildSimulator()
+    }
+
+    func saveNetwork() {
+        if let url = documentURL {
+            writeDocument(to: url)
+        } else {
+            saveNetworkAs()
+        }
+    }
+
+    func saveNetworkAs() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "\(documentName).neurosim.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        documentURL = url
+        writeDocument(to: url)
+    }
+
+    func openNetwork() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        loadDocument(from: url)
+    }
+
+    private func writeDocument(to url: URL) {
+        let doc = NetworkDocument.from(network)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(doc) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private func loadDocument(from url: URL) {
+        guard let data = try? Data(contentsOf: url),
+              let doc = try? JSONDecoder().decode(NetworkDocument.self, from: data)
+        else { return }
+        pause()
+        network = doc.toNetwork()
+        documentURL = url
+        rebuildSimulator()
     }
 
     // MARK: - Export

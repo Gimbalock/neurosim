@@ -182,6 +182,57 @@ public final class Network: DerivativeProvider {
         (outgoingByPre[neuronID] ?? []).map { synapses[$0] }
     }
 
+    // MARK: - State-vector introspection (for the results window)
+
+    /// The compartment with the given ID, searched across all neurons.
+    public func compartment(id compartmentID: UUID) -> Compartment? {
+        for n in neurons {
+            if let c = n.compartments.first(where: { $0.id == compartmentID }) { return c }
+        }
+        return nil
+    }
+
+    /// Global state-vector index of gate `gateIndex` of channel `channelIndex`
+    /// within compartment `compartmentID`. Returns nil if out of range.
+    public func gateStateIndex(channelIndex: Int,
+                               gateIndex: Int,
+                               inCompartment compartmentID: UUID) -> Int? {
+        guard let compStart = compartmentOffset[compartmentID],
+              let comp = compartment(id: compartmentID),
+              comp.channels.indices.contains(channelIndex)
+        else { return nil }
+        let ch = comp.channels[channelIndex]
+        guard gateIndex < ch.stateCount else { return nil }
+        var off = compStart + 1
+        for i in 0..<channelIndex { off += comp.channels[i].stateCount }
+        return off + gateIndex
+    }
+
+    /// Info bundle needed to compute a synapse's post-synaptic current from
+    /// the global state vector. Returns nil for unknown synapse IDs or when
+    /// pre/post neurons can't be resolved.
+    public struct SynapseCurrentInfo {
+        public let synapse: Synapse
+        public let stateOffset: Int   // first slot of this synapse in state[]
+        public let vPreIndex: Int     // index of V_pre (soma of pre-neuron)
+        public let vPostIndex: Int    // index of V_post (target compartment)
+    }
+
+    public func synapseCurrentInfo(id synapseID: UUID) -> SynapseCurrentInfo? {
+        guard let syn = synapses.first(where: { $0.id == synapseID }),
+              let stateOff = synapseOffset[syn.id],
+              let preN = neurons.first(where: { $0.id == syn.preNeuronID }),
+              let vPreIdx = compartmentOffset[preN.somaCompartmentID]
+        else { return nil }
+        let targetCompID = syn.postCompartmentID
+            ?? neurons.first(where: { $0.id == syn.postNeuronID })?.somaCompartmentID
+        guard let tID = targetCompID,
+              let vPostIdx = compartmentOffset[tID]
+        else { return nil }
+        return SynapseCurrentInfo(synapse: syn, stateOffset: stateOff,
+                                  vPreIndex: vPreIdx, vPostIndex: vPostIdx)
+    }
+
     // MARK: - DerivativeProvider
 
     public func computeDerivatives(state: [Double],

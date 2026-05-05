@@ -60,13 +60,36 @@ private struct EmptyInspector: View {
             Divider().padding(.vertical, 6)
             Text("Integration")
                 .font(.headline)
+
+            // Method picker
+            Picker("Méthode", selection: $vm.integrationMethod) {
+                ForEach(IntegrationMethod.allCases) { m in
+                    Text(m.rawValue).tag(m)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text(vm.integrationMethod.shortDescription)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // dt slider — range adapts to selected method
             NumericSlider(label: "dt",
                           value: $vm.dt,
-                          range: 0.005...0.1,
+                          range: 0.001...max(0.1, vm.integrationMethod.maxSafeDt),
                           step: 0.005,
                           format: "%.3f",
                           unit: "ms",
                           labelWidth: 90)
+
+            if vm.dt > vm.integrationMethod.maxSafeDt {
+                Label("dt dépasse la limite recommandée (\(String(format: "%.3f", vm.integrationMethod.maxSafeDt)) ms)",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text("Window")
                 .font(.headline)
                 .padding(.top, 6)
@@ -243,6 +266,42 @@ private struct CompartmentEditor: View {
                           format: "%.2f",
                           unit: "µF/cm²",
                           labelWidth: 90)
+
+            // Geometry
+            Text("Géométrie")
+                .font(.subheadline.weight(.medium))
+                .padding(.top, 4)
+
+            NumericSlider(label: "Diamètre",
+                          value: Binding(
+                            get: { compartment.diameter },
+                            set: { compartment.diameter = $0; vm.objectWillChange.send() }
+                          ),
+                          range: 1...500,
+                          format: "%.1f",
+                          unit: "µm",
+                          labelWidth: 90)
+
+            NumericSlider(label: "Longueur",
+                          value: Binding(
+                            get: { compartment.length },
+                            set: { compartment.length = $0; vm.objectWillChange.send() }
+                          ),
+                          range: 1...2000,
+                          format: "%.1f",
+                          unit: "µm",
+                          labelWidth: 90)
+
+            // Read-only area display
+            HStack {
+                Text("Surface")
+                    .font(.caption)
+                    .frame(width: 90, alignment: .leading)
+                Spacer()
+                Text(String(format: "%.2e cm²", compartment.area))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
 
             // Soma toggle / delete
             HStack(spacing: 8) {

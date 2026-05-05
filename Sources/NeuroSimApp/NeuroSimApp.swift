@@ -31,7 +31,17 @@ struct NeuroSimApp: App {
                 .frame(minWidth: 1100, minHeight: 700)
         }
         .commands {
-            CommandGroup(replacing: .newItem) { } // we don't open documents — yet
+            CommandGroup(replacing: .newItem) {
+                Button("New Network") { viewModel.newNetwork() }
+                    .keyboardShortcut("n", modifiers: [.command])
+                Button("Open…") { viewModel.openNetwork() }
+                    .keyboardShortcut("o", modifiers: [.command])
+                Divider()
+                Button("Save") { viewModel.saveNetwork() }
+                    .keyboardShortcut("s", modifiers: [.command])
+                Button("Save As…") { viewModel.saveNetworkAs() }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+            }
             CommandMenu("Simulation") {
                 Button("Run / Pause") { viewModel.toggleRunning() }
                     .keyboardShortcut(.space, modifiers: [])
@@ -40,7 +50,23 @@ struct NeuroSimApp: App {
                 Divider()
                 Button("Export traces (CSV)…") { viewModel.exportTracesCSV() }
                     .keyboardShortcut("e", modifiers: [.command])
+                Divider()
+                OpenResultsMenuItem()
             }
         }
+
+        Window("Results", id: "results") {
+            ResultsWindowView()
+                .environmentObject(viewModel)
+        }
+    }
+}
+
+// Helper View so `openWindow` environment action is accessible inside Commands.
+private struct OpenResultsMenuItem: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Results Window") { openWindow(id: "results") }
+            .keyboardShortcut("g", modifiers: [.command])
     }
 }

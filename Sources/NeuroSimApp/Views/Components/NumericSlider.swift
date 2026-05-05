@@ -25,7 +25,7 @@ struct NumericSlider: View {
 
     // MARK: - Inputs
 
-    let label: String?
+    var label: String? = nil
     @Binding var value: Double
     let range: ClosedRange<Double>
     var step: Double? = nil
@@ -36,6 +36,8 @@ struct NumericSlider: View {
     /// Width of the unit suffix slot. Always reserved (even when `unit`
     /// is nil) so that fields line up vertically across rows.
     var unitWidth: CGFloat = 50
+    /// When false the slider is hidden and only the label + field + unit show.
+    var showSlider: Bool = true
 
     // MARK: - State
 
@@ -51,7 +53,7 @@ struct NumericSlider: View {
                     .frame(width: labelWidth, alignment: .leading)
             }
 
-            slider
+            if showSlider { slider }
 
             TextField("", text: $textInput)
                 .textFieldStyle(.roundedBorder)

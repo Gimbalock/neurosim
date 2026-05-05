@@ -32,6 +32,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var vm: SimulationViewModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,6 +41,11 @@ struct ContentView: View {
                     .navigationSplitViewColumnWidth(56)
             } content: {
                 NetworkEditorView()
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 0)
+                            .stroke(Color.accentColor.opacity(0.5), lineWidth: 1.5)
+                            .allowsHitTesting(false)
+                    )
                     .navigationSplitViewColumnWidth(min: 400, ideal: 700)
             } detail: {
                 InspectorView()
@@ -47,10 +53,64 @@ struct ContentView: View {
             }
             .navigationSplitViewStyle(.balanced)
 
+            // Bottom status bar
             Divider()
+            HStack(spacing: 12) {
+                // Simulation time
+                HStack(spacing: 3) {
+                    Text("t =")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(String(format: "%.1f ms", vm.simulationTime))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.primary)
+                }
 
-            PlotView()
-                .frame(height: 220)
+                Divider().frame(height: 14)
+
+                // dt
+                HStack(spacing: 3) {
+                    Text("dt =")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(String(format: "%.3f ms", vm.dt))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.primary)
+                }
+
+                Divider().frame(height: 14)
+
+                // Neuron / synapse count
+                Text("\(vm.network.neurons.count) neuron\(vm.network.neurons.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(vm.network.synapses.count) synapse\(vm.network.synapses.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if let err = vm.divergenceError {
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                }
+
+                // Status indicator
+                Circle()
+                    .fill(vm.divergenceError != nil ? Color.red :
+                          vm.isRunning ? Color.green : Color.secondary.opacity(0.4))
+                    .frame(width: 7, height: 7)
+                Text(vm.divergenceError != nil ? "Divergence" :
+                     vm.isRunning ? "Running" : "Paused")
+                    .font(.caption)
+                    .foregroundStyle(vm.divergenceError != nil ? .red :
+                                     vm.isRunning ? .primary : .secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(.bar)
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -61,22 +121,29 @@ struct ContentView: View {
                 Button(action: vm.reset) {
                     Label("Reset", systemImage: "arrow.counterclockwise")
                 }
+                Button { openWindow(id: "results") } label: {
+                    Label("Results", systemImage: "chart.xyaxis.line")
+                }
+                .help("Open Results window (⌘G)")
                 Button(action: vm.exportTracesCSV) {
                     Label("Export CSV", systemImage: "square.and.arrow.up")
                 }
             }
             ToolbarItemGroup(placement: .status) {
-                Text(String(format: "t = %.1f ms", vm.simulationTime))
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                NumericSlider(label: "Speed",
-                              value: $vm.realtimeFactor,
-                              range: 0.25...20.0,
-                              format: "%.2f",
-                              unit: "x",
-                              labelWidth: 44,
-                              fieldWidth: 56)
-                    .frame(width: 260)
+                // Speed — compact editable field, no slider
+                HStack(spacing: 4) {
+                    Text("Speed")
+                        .font(.caption)
+                    NumericSlider(value: $vm.realtimeFactor,
+                                  range: 0.1...50.0,
+                                  format: "%.2f",
+                                  fieldWidth: 52,
+                                  unitWidth: 0,
+                                  showSlider: false)
+                    Text("×")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

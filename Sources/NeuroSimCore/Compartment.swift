@@ -34,6 +34,31 @@ public final class Compartment: Identifiable {
     /// HH default and a reasonable starting point for mammalian neurons too.
     public var capacitance: Double
 
+    /// Soma/dendrite diameter (µm). Used to compute membrane area and to
+    /// convert between current density (µA/cm²) and absolute current (pA).
+    public var diameter: Double
+
+    /// Compartment length (µm). For soma use diameter (sphere approximation).
+    /// For dendrites this is the cylinder length.
+    public var length: Double
+
+    /// Membrane area (cm²) — sphere model: A = π·d² for a sphere of diameter d.
+    /// 1 µm = 1e-4 cm, so 1 µm² = 1e-8 cm².
+    public var area: Double { Double.pi * diameter * diameter * 1e-8 }
+
+    /// Cross-sectional area (cm²) for axial current: A = π·(d/2)².
+    public var crossSectionArea: Double { Double.pi * (diameter / 2) * (diameter / 2) * 1e-8 }
+
+    /// Convert a current density (µA/cm²) to absolute current (pA).
+    public func densityToPicoAmps(_ density: Double) -> Double {
+        density * area * 1e6  // µA/cm² × cm² = µA; × 1e6 = pA
+    }
+
+    /// Convert an absolute current (pA) to current density (µA/cm²).
+    public func picoAmpsToDensity(_ pA: Double) -> Double {
+        (pA * 1e-6) / area   // pA → µA; / cm² = µA/cm²
+    }
+
     /// Voltage-gated channels populating this compartment's membrane.
     /// Order is significant only insofar as it fixes the layout of gates in
     /// the state vector — the physics is symmetric in channel ordering.
@@ -42,10 +67,14 @@ public final class Compartment: Identifiable {
     public init(id: UUID = UUID(),
                 name: String = "compartment",
                 capacitance: Double = 1.0,
+                diameter: Double = 20.0,
+                length: Double = 20.0,
                 channels: [IonChannel] = []) {
         self.id = id
         self.name = name
         self.capacitance = capacitance
+        self.diameter = diameter
+        self.length = length
         self.channels = channels
     }
 
