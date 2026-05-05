@@ -238,6 +238,33 @@ struct CustomChannelEditorView: View {
                 TextField("e.g. Kv4.2", text: $draft.name)
             }
 
+            // Ion species picker
+            HStack {
+                Text("Ion").frame(width: 80, alignment: .leading)
+                Picker("", selection: $draft.ionSymbol) {
+                    Text("None / mixed").tag(Optional<String>.none)
+                    Divider()
+                    ForEach(IonSpecies.allCanonical, id: \.symbol) { sp in
+                        Text("\(sp.symbol)\(sp.valence > 0 ? "+" : "")  (\(sp.valence > 0 ? "+" : "")\(sp.valence))")
+                            .tag(Optional(sp.symbol))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .onChange(of: draft.ionSymbol) { _, sym in
+                    if let sp = sym.flatMap(IonSpecies.canonical(symbol:)) {
+                        draft.reversal = sp.defaultReversal()
+                    }
+                }
+                if let sym = draft.ionSymbol,
+                   let sp = IonSpecies.canonical(symbol: sym) {
+                    Text(ionLabel(sp))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
             NumericSlider(label: "g_max",
                           value: $draft.gMax,
                           range: 0...200,
@@ -251,7 +278,23 @@ struct CustomChannelEditorView: View {
                           format: "%.1f",
                           unit: "mV",
                           labelWidth: 80)
+
+            if let sym = draft.ionSymbol,
+               let sp = IonSpecies.canonical(symbol: sym) {
+                Text("E_rev (Nernst) = \(String(format: "%.1f", sp.defaultReversal())) mV  ·  [in]=\(concentrationLabel(sp.defaultConcentrationIn)) [out]=\(concentrationLabel(sp.defaultConcentrationOut)) mM")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    private func ionLabel(_ sp: IonSpecies) -> String {
+        "[in]=\(concentrationLabel(sp.defaultConcentrationIn)) mM  [out]=\(concentrationLabel(sp.defaultConcentrationOut)) mM"
+    }
+
+    private func concentrationLabel(_ c: Double) -> String {
+        c < 0.01 ? String(format: "%.1e", c) : String(format: "%.1f", c)
     }
 
     // MARK: - Gates section

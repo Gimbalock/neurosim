@@ -68,20 +68,25 @@ public struct GateDef: Codable, Identifiable, Equatable {
 public struct CustomChannelDefinition: Codable, Identifiable, Equatable {
     public var id: UUID
     public var name: String
+    /// Symbol of the carried ion species, e.g. "Na", "K", "Ca", "Cl".
+    /// `nil` means mixed / non-selective (no Nernst auto-update).
+    public var ionSymbol: String?
     public var reversal: Double   // mV
     public var gMax: Double       // mS/cm²
     public var gates: [GateDef]
 
     public init(id: UUID = UUID(),
                 name: String = "Custom",
+                ionSymbol: String? = nil,
                 reversal: Double = 0,
                 gMax: Double = 1,
                 gates: [GateDef] = [GateDef()]) {
-        self.id       = id
-        self.name     = name
-        self.reversal = reversal
-        self.gMax     = gMax
-        self.gates    = gates.isEmpty ? [GateDef()] : gates
+        self.id        = id
+        self.name      = name
+        self.ionSymbol = ionSymbol
+        self.reversal  = reversal
+        self.gMax      = gMax
+        self.gates     = gates.isEmpty ? [GateDef()] : gates
     }
 }
 
@@ -97,7 +102,7 @@ public final class CustomChannel: IonChannel, HHGated {
     public var name:     String { get { definition.name }    set { definition.name = newValue } }
     public var gMax:     Double { get { definition.gMax }    set { definition.gMax = newValue } }
     public var reversal: Double { get { definition.reversal} set { definition.reversal = newValue } }
-    public var species:  IonSpecies? { nil }
+    public var species:  IonSpecies? { definition.ionSymbol.flatMap(IonSpecies.canonical(symbol:)) }
     public var stateCount: Int { definition.gates.count }
 
     // HHGated protocol

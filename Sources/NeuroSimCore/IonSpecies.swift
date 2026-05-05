@@ -86,6 +86,17 @@ public struct IonSpecies: Hashable, Sendable {
         defaultConcentrationOut: 1.5
     )
 
+    // MARK: - Registry
+
+    /// All canonical species, ordered for UI display.
+    public static let allCanonical: [IonSpecies] = [.sodium, .potassium, .calcium, .chloride, .magnesium]
+
+    /// Look up a canonical species by its symbol (case-sensitive).
+    /// Returns nil when the symbol is unknown or nil.
+    public static func canonical(symbol: String) -> IonSpecies? {
+        allCanonical.first { $0.symbol == symbol }
+    }
+
     // MARK: - Convenience
 
     /// Reversal potential at this species' default concentrations (mV).
