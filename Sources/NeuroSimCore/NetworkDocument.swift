@@ -34,33 +34,44 @@ public struct NeuronDoc: Codable {
     public var axialCouplings:  [AxialCouplingDoc]
 }
 
+public struct ConcentrationDynamicDoc: Codable {
+    public var ionSymbol: String
+    public var restingConc: Double
+    public var tauDecay: Double
+}
+
 public struct CompartmentDoc: Codable {
-    public var id:          UUID
-    public var name:        String
-    public var capacitance: Double
-    public var diameter:    Double
-    public var length:      Double
-    public var channels:    [ChannelDoc]
+    public var id:                    UUID
+    public var name:                  String
+    public var capacitance:           Double
+    public var diameter:              Double
+    public var length:                Double
+    public var channels:              [ChannelDoc]
+    public var concentrationDynamics: [ConcentrationDynamicDoc]
 
     public init(id: UUID, name: String, capacitance: Double,
                 diameter: Double = 20.0, length: Double = 20.0,
-                channels: [ChannelDoc]) {
-        self.id          = id
-        self.name        = name
-        self.capacitance = capacitance
-        self.diameter    = diameter
-        self.length      = length
-        self.channels    = channels
+                channels: [ChannelDoc],
+                concentrationDynamics: [ConcentrationDynamicDoc] = []) {
+        self.id                    = id
+        self.name                  = name
+        self.capacitance           = capacitance
+        self.diameter              = diameter
+        self.length                = length
+        self.channels              = channels
+        self.concentrationDynamics = concentrationDynamics
     }
 
     public init(from decoder: Decoder) throws {
-        let c        = try decoder.container(keyedBy: CodingKeys.self)
-        id           = try c.decode(UUID.self,   forKey: .id)
-        name         = try c.decode(String.self, forKey: .name)
-        capacitance  = try c.decode(Double.self, forKey: .capacitance)
-        diameter     = try c.decodeIfPresent(Double.self, forKey: .diameter) ?? 20.0
-        length       = try c.decodeIfPresent(Double.self, forKey: .length)   ?? 20.0
-        channels     = try c.decode([ChannelDoc].self, forKey: .channels)
+        let c                  = try decoder.container(keyedBy: CodingKeys.self)
+        id                     = try c.decode(UUID.self,   forKey: .id)
+        name                   = try c.decode(String.self, forKey: .name)
+        capacitance            = try c.decode(Double.self, forKey: .capacitance)
+        diameter               = try c.decodeIfPresent(Double.self, forKey: .diameter) ?? 20.0
+        length                 = try c.decodeIfPresent(Double.self, forKey: .length)   ?? 20.0
+        channels               = try c.decode([ChannelDoc].self, forKey: .channels)
+        concentrationDynamics  = try c.decodeIfPresent([ConcentrationDynamicDoc].self,
+                                                       forKey: .concentrationDynamics) ?? []
     }
 }
 
@@ -280,12 +291,17 @@ public extension NetworkDocument {
         let neuronDocs = network.neurons.map { n -> NeuronDoc in
             let compDocs = n.compartments.map { comp -> CompartmentDoc in
                 CompartmentDoc(
-                    id:          comp.id,
-                    name:        comp.name,
-                    capacitance: comp.capacitance,
-                    diameter:    comp.diameter,
-                    length:      comp.length,
-                    channels:    comp.channels.map(ChannelDoc.from))
+                    id:                    comp.id,
+                    name:                  comp.name,
+                    capacitance:           comp.capacitance,
+                    diameter:              comp.diameter,
+                    length:                comp.length,
+                    channels:              comp.channels.map(ChannelDoc.from),
+                    concentrationDynamics: comp.concentrationDynamics.map {
+                        ConcentrationDynamicDoc(ionSymbol: $0.ionSymbol,
+                                                restingConc: $0.restingConc,
+                                                tauDecay: $0.tauDecay)
+                    })
             }
             let couplingDocs = n.axialCouplings.map { ac in
                 AxialCouplingDoc(id: ac.id,
@@ -321,12 +337,18 @@ public extension NetworkDocument {
 
         for nd in neurons {
             let comps = nd.compartments.map { cd -> Compartment in
-                Compartment(id:          cd.id,
-                            name:        cd.name,
-                            capacitance: cd.capacitance,
-                            diameter:    cd.diameter,
-                            length:      cd.length,
-                            channels:    cd.channels.map { $0.toChannel() })
+                let comp = Compartment(id:          cd.id,
+                                       name:        cd.name,
+                                       capacitance: cd.capacitance,
+                                       diameter:    cd.diameter,
+                                       length:      cd.length,
+                                       channels:    cd.channels.map { $0.toChannel() })
+                comp.concentrationDynamics = cd.concentrationDynamics.map {
+                    ConcentrationDynamic(ionSymbol: $0.ionSymbol,
+                                         restingConc: $0.restingConc,
+                                         tauDecay: $0.tauDecay)
+                }
+                return comp
             }
             let couplings = nd.axialCouplings.map { ac in
                 AxialCoupling(id:          ac.id,

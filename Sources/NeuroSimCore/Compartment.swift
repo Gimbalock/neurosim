@@ -25,6 +25,19 @@
 
 import Foundation
 
+public struct ConcentrationDynamic: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var ionSymbol: String    // "Ca", "Na", "K", etc.
+    public var restingConc: Double  // mM — concentration au repos / équilibre
+    public var tauDecay: Double     // ms — constante de temps de la pompe/buffer
+
+    public init(id: UUID = UUID(), ionSymbol: String,
+                restingConc: Double, tauDecay: Double = 100) {
+        self.id = id; self.ionSymbol = ionSymbol
+        self.restingConc = restingConc; self.tauDecay = tauDecay
+    }
+}
+
 public final class Compartment: Identifiable {
 
     public let id: UUID
@@ -64,25 +77,35 @@ public final class Compartment: Identifiable {
     /// the state vector — the physics is symmetric in channel ordering.
     public var channels: [IonChannel]
 
+    /// Ion concentration dynamics tracked in this compartment.
+    public var concentrationDynamics: [ConcentrationDynamic] = []
+
     public init(id: UUID = UUID(),
                 name: String = "compartment",
                 capacitance: Double = 1.0,
                 diameter: Double = 20.0,
                 length: Double = 20.0,
-                channels: [IonChannel] = []) {
+                channels: [IonChannel] = [],
+                concentrationDynamics: [ConcentrationDynamic] = []) {
         self.id = id
         self.name = name
         self.capacitance = capacitance
         self.diameter = diameter
         self.length = length
         self.channels = channels
+        self.concentrationDynamics = concentrationDynamics
+    }
+
+    /// Compartment volume (L) — cylinder model: π·(d/2)²·length, d/length in µm.
+    public var volume: Double {
+        Double.pi * (diameter / 2) * (diameter / 2) * length * 1e-15
     }
 
     // MARK: - State vector
 
-    /// Total state slots this compartment owns: 1 (V) + Σ channel gate counts.
+    /// Total state slots this compartment owns: 1 (V) + Σ channel gate counts + concentration slots.
     public var stateCount: Int {
-        1 + channels.reduce(0) { $0 + $1.stateCount }
+        1 + channels.reduce(0) { $0 + $1.stateCount } + concentrationDynamics.count
     }
 
     /// Initial state at a given resting potential — V at v0, every gate at
@@ -92,6 +115,9 @@ public final class Compartment: Identifiable {
         s.reserveCapacity(stateCount)
         for ch in channels {
             s.append(contentsOf: ch.initialState(atVoltage: v0))
+        }
+        for dyn in concentrationDynamics {
+            s.append(dyn.restingConc)
         }
         return s
     }
@@ -136,5 +162,34 @@ public final class Compartment: Identifiable {
         }
         // Cm · dV/dt = -I_ionic + I_inj
         output[offset] = (-iIonic + iInjected) / capacitance
+
+        // Concentration dynamics — Euler (concentrations slow, τ >> dt)
+        let totalGateSlots = channels.reduce(0) { $0 + $1.stateCount }
+        for (i, dyn) in concentrationDynamics.enumerated() {
+            let concLocalIdx = localState.startIndex + 1 + totalGateSlots + i
+            let conc = localState[concLocalIdx]
+
+            // Sum currents (µA/cm²) from all channels of this ion species
+            var iTotal = 0.0
+            var gatePtr = localState.startIndex + 1
+            for ch in channels {
+                if ch.species?.symbol == dyn.ionSymbol {
+                    let gates = localState[gatePtr..<(gatePtr + ch.stateCount)]
+                    iTotal += ch.current(voltage: v, gates: gates)
+                }
+                gatePtr += ch.stateCount
+            }
+            // I_µA = I (µA/cm²) × area (cm²)
+            let iAbs_muA = iTotal * area
+
+            guard let sp = IonSpecies.canonical(symbol: dyn.ionSymbol) else {
+                output[offset + 1 + totalGateSlots + i] = 0; continue
+            }
+            let z = Double(sp.valence)
+            // d[X]/dt (mM/ms) = -I_µA × 1e-6 / (z × F × vol_L) - ([X] - [X]_rest) / τ
+            output[offset + 1 + totalGateSlots + i] =
+                -(iAbs_muA * 1e-6) / (z * Nernst.F * volume)
+                - (conc - dyn.restingConc) / max(dyn.tauDecay, 0.01)
+        }
     }
 }

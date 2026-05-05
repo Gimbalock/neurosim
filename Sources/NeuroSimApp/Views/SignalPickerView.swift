@@ -92,6 +92,20 @@ struct SignalPickerView: View {
                           signal: stimSignal, groupID: targetGroupID, isPresented: $isPresented)
             }
         }
+
+        // Ion concentration signals (only shown for ions actively tracked)
+        ForEach(comp.concentrationDynamics, id: \.ionSymbol) { dyn in
+            let concSignal = TracedSignal.ionConcentration(neuronID: neuron.id,
+                                                           compartmentID: comp.id,
+                                                           ionSymbol: dyn.ionSymbol)
+            let concLabel = hasMultiComp
+                ? "\(neuron.name) · \(comp.name)  [\(dyn.ionSymbol)]_in(t)  [mM]"
+                : "\(neuron.name)  [\(dyn.ionSymbol)]_in(t)  [mM]"
+            if matches(concLabel) {
+                SignalRow(label: concLabel, icon: "atom", color: .cyan,
+                          signal: concSignal, groupID: targetGroupID, isPresented: $isPresented)
+            }
+        }
     }
 
     @ViewBuilder

@@ -39,10 +39,13 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
     /// Injected current from the stimulus protocol on a compartment.
     case stimulusCurrent(compartmentID: UUID)
 
+    /// Intracellular concentration of an ion species (mM), tracked in a compartment.
+    case ionConcentration(neuronID: UUID, compartmentID: UUID, ionSymbol: String)
+
         // MARK: - Codable
 
     private enum CodingKeys: String, CodingKey {
-        case kind, neuronID, compartmentID, channelIndex, gateIndex, synapseID
+        case kind, neuronID, compartmentID, channelIndex, gateIndex, synapseID, ionSymbol
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -72,6 +75,11 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case let .stimulusCurrent(comp):
             try c.encode("stimulusCurrent", forKey: .kind)
             try c.encode(comp, forKey: .compartmentID)
+        case let .ionConcentration(n, comp, sym):
+            try c.encode("ionConcentration", forKey: .kind)
+            try c.encode(n, forKey: .neuronID)
+            try c.encode(comp, forKey: .compartmentID)
+            try c.encode(sym, forKey: .ionSymbol)
         }
     }
 
@@ -97,6 +105,11 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
             self = .synapticCurrent(synapseID: try c.decode(UUID.self, forKey: .synapseID))
         case "stimulusCurrent":
             self = .stimulusCurrent(compartmentID: try c.decode(UUID.self, forKey: .compartmentID))
+        case "ionConcentration":
+            self = .ionConcentration(
+                neuronID:      try c.decode(UUID.self,   forKey: .neuronID),
+                compartmentID: try c.decode(UUID.self,   forKey: .compartmentID),
+                ionSymbol:     try c.decode(String.self, forKey: .ionSymbol))
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c,
                 debugDescription: "Unknown TracedSignal kind: \(kind)")
@@ -113,6 +126,7 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case let .synapticGating(s):         return "sg-\(s)"
         case let .synapticCurrent(s):        return "isyn-\(s)"
         case let .stimulusCurrent(c):        return "istim-\(c)"
+        case let .ionConcentration(_, c, sym): return "conc-\(c)-\(sym)"
         }
     }
 
@@ -174,6 +188,11 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
             let nName = n?.name ?? "?"
             let cName = c?.name ?? "?"
             return "\(nName) · \(cName)  I_inj(t)"
+
+        case let .ionConcentration(nID, cID, sym):
+            let n = network.neurons.first { $0.id == nID }
+            let c = n?.compartments.first { $0.id == cID }
+            return "\(n?.name ?? "?") · \(c?.name ?? "?")  [\(sym)]_in(t)"
         }
     }
 
@@ -186,6 +205,7 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case .synapticGating:            return ""
         case .synapticCurrent:           return "µA/cm²"
         case .stimulusCurrent:           return "µA/cm²"
+        case .ionConcentration:          return "mM"
         }
     }
 
@@ -195,6 +215,7 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case .voltage:         return -90...60
         case .gate:            return 0...1
         case .synapticGating:  return 0...1
+        case .ionConcentration: return nil
         default:               return nil    // auto-scale currents
         }
     }
@@ -259,6 +280,12 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
 
         case let .stimulusCurrent(cID):
             return network.stimuli[cID]?.current(at: time) ?? 0
+
+        case let .ionConcentration(_, cID, sym):
+            guard let idx = network.concentrationStateIndex(compartmentID: cID, ionSymbol: sym),
+                  state.indices.contains(idx)
+            else { return nil }
+            return state[idx]
         }
     }
 }

@@ -385,6 +385,9 @@ private struct CompartmentEditor: View {
             }
 
             Divider().padding(.vertical, 2)
+            ConcentrationTrackingSection(compartment: compartment)
+
+            Divider().padding(.vertical, 2)
 
             // ─── Stimulus on this compartment ──────────────────
             Text("Stimulus").font(.subheadline.bold())
@@ -691,6 +694,98 @@ private struct StimulusEditor: View {
             get: { object[keyPath: keyPath] },
             set: { object[keyPath: keyPath] = $0; vm.objectWillChange.send() }
         )
+    }
+}
+
+// MARK: - Concentration tracking section
+
+private struct ConcentrationTrackingSection: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let compartment: Compartment
+
+    // Ions that have at least one channel conducting them
+    private var conductedIons: [IonSpecies] {
+        var seen = Set<String>()
+        var result: [IonSpecies] = []
+        for ch in compartment.channels {
+            if let sp = ch.species, !seen.contains(sp.symbol) {
+                seen.insert(sp.symbol)
+                result.append(sp)
+            }
+        }
+        return result
+    }
+
+    var body: some View {
+        if conductedIons.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Concentration tracking").font(.subheadline.bold())
+
+                ForEach(conductedIons, id: \.symbol) { sp in
+                    ionRow(sp)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func ionRow(_ sp: IonSpecies) -> some View {
+        let isTracked = compartment.concentrationDynamics.contains { $0.ionSymbol == sp.symbol }
+        let dyn = compartment.concentrationDynamics.first { $0.ionSymbol == sp.symbol }
+
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("[\(sp.symbol)]_in", isOn: Binding(
+                get: { isTracked },
+                set: { on in
+                    if on {
+                        let defaultConc = IonSpecies.canonical(symbol: sp.symbol)?.defaultConcentrationIn ?? 1.0
+                        vm.setConcentrationDynamic(
+                            ConcentrationDynamic(ionSymbol: sp.symbol,
+                                                 restingConc: defaultConc,
+                                                 tauDecay: 100),
+                            inCompartment: compartment.id)
+                    } else {
+                        vm.removeConcentrationDynamic(ionSymbol: sp.symbol,
+                                                      fromCompartment: compartment.id)
+                    }
+                }
+            ))
+            .font(.callout)
+
+            if isTracked, let d = dyn {
+                NumericSlider(label: "[X]_rest",
+                              value: Binding(
+                                get: { d.restingConc },
+                                set: { val in
+                                    var updated = d; updated.restingConc = val
+                                    vm.setConcentrationDynamic(updated, inCompartment: compartment.id)
+                                }
+                              ),
+                              range: 1e-5...10,
+                              step: d.restingConc < 0.01 ? 1e-5 : 0.01,
+                              format: d.restingConc < 0.001 ? "%.2e" : "%.4f",
+                              unit: "mM",
+                              labelWidth: 70)
+
+                NumericSlider(label: "τ_pump",
+                              value: Binding(
+                                get: { d.tauDecay },
+                                set: { val in
+                                    var updated = d; updated.tauDecay = val
+                                    vm.setConcentrationDynamic(updated, inCompartment: compartment.id)
+                                }
+                              ),
+                              range: 1...2000,
+                              format: "%.0f",
+                              unit: "ms",
+                              labelWidth: 70)
+            }
+        }
+        .padding(6)
+        .background(isTracked ? Color.cyan.opacity(0.1) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5))
     }
 }
 

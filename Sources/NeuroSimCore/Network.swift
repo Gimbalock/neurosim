@@ -192,6 +192,18 @@ public final class Network: DerivativeProvider {
         return nil
     }
 
+    /// Global state-vector index of the intracellular concentration of `ionSymbol`
+    /// in compartment `compartmentID`. Returns nil if not tracked.
+    public func concentrationStateIndex(compartmentID: UUID, ionSymbol: String) -> Int? {
+        guard let compStart = compartmentOffset[compartmentID],
+              let comp = compartment(id: compartmentID)
+        else { return nil }
+        let totalGates = comp.channels.reduce(0) { $0 + $1.stateCount }
+        guard let i = comp.concentrationDynamics.firstIndex(where: { $0.ionSymbol == ionSymbol })
+        else { return nil }
+        return compStart + 1 + totalGates + i
+    }
+
     /// Global state-vector index of gate `gateIndex` of channel `channelIndex`
     /// within compartment `compartmentID`. Returns nil if out of range.
     public func gateStateIndex(channelIndex: Int,

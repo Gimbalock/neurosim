@@ -357,6 +357,30 @@ final class SimulationViewModel: ObservableObject {
         rebuildSimulator()
     }
 
+    /// Enable/update concentration tracking for an ion in a compartment.
+    /// Rebuilds the simulator (changes state-vector layout).
+    func setConcentrationDynamic(_ dyn: ConcentrationDynamic,
+                                  inCompartment compID: UUID) {
+        guard let comp = network.neurons.flatMap(\.compartments)
+                             .first(where: { $0.id == compID }) else { return }
+        if let i = comp.concentrationDynamics.firstIndex(where: { $0.ionSymbol == dyn.ionSymbol }) {
+            comp.concentrationDynamics[i] = dyn
+        } else {
+            comp.concentrationDynamics.append(dyn)
+        }
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
+    /// Disable concentration tracking for an ion in a compartment.
+    func removeConcentrationDynamic(ionSymbol: String, fromCompartment compID: UUID) {
+        guard let comp = network.neurons.flatMap(\.compartments)
+                             .first(where: { $0.id == compID }) else { return }
+        comp.concentrationDynamics.removeAll { $0.ionSymbol == ionSymbol }
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
     /// Rebuild the simulator after any structural mutation that changes the
     /// state-vector layout.
     private func rebuildSimulator() {

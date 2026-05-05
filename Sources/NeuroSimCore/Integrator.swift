@@ -152,6 +152,20 @@ public enum RushLarsen {
             }
         }
 
+        // Phase 2.5 — concentration dynamics: Euler using deriv2 (slow variables).
+        for neuron in network.neurons {
+            for comp in neuron.compartments {
+                guard !comp.concentrationDynamics.isEmpty,
+                      let vIdx = network.voltageIndex(ofCompartment: comp.id)
+                else { continue }
+                let totalGates = comp.channels.reduce(0) { $0 + $1.stateCount }
+                for i in comp.concentrationDynamics.indices {
+                    let idx = vIdx + 1 + totalGates + i
+                    state[idx] += dt * deriv2[idx]
+                }
+            }
+        }
+
         // Phase 3 — synaptic state: Euler (RL trick doesn't apply here).
         for syn in network.synapses {
             guard let off = network.stateOffset(ofSynapse: syn.id) else { continue }
