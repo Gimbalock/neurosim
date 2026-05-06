@@ -85,7 +85,7 @@ public struct AxialCouplingDoc: Codable {
 // MARK: - Channels (discriminated by `kind`)
 
 public struct ChannelDoc: Codable {
-    public var kind:     String   // "sodium" | "potassium" | "leak" | "tTypeCalcium" | "custom"
+    public var kind:     String   // "sodium" | "potassium" | "leak" | "tTypeCalcium" | "custom" | "modImported" | "sk" | "bk"
     public var gMax:     Double
     public var reversal: Double
     // Gate overrides — only gated channels fill these.
@@ -94,17 +94,21 @@ public struct ChannelDoc: Codable {
     public var gateTauOverrides: [GateCurveDoc?]
     // Full definition — only present for kind == "custom".
     public var customDefinition: CustomChannelDefinition?
+    // Full definition — only present for kind == "modImported".
+    public var modDefinition: MODImportedChannelDefinition?
 
     public init(kind: String, gMax: Double, reversal: Double,
                 gateInfOverrides: [GateCurveDoc?] = [],
                 gateTauOverrides: [GateCurveDoc?] = [],
-                customDefinition: CustomChannelDefinition? = nil) {
+                customDefinition: CustomChannelDefinition? = nil,
+                modDefinition: MODImportedChannelDefinition? = nil) {
         self.kind = kind
         self.gMax = gMax
         self.reversal = reversal
         self.gateInfOverrides = gateInfOverrides
         self.gateTauOverrides = gateTauOverrides
         self.customDefinition = customDefinition
+        self.modDefinition = modDefinition
     }
 }
 
@@ -404,6 +408,19 @@ private extension ChannelDoc {
                               gateInfOverrides: cc.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
                               gateTauOverrides: cc.gateTauOverrides.map { $0.map(GateCurveDoc.from) },
                               customDefinition: cc.definition)
+        case let mc as MODImportedChannel:
+            return ChannelDoc(kind: "modImported", gMax: mc.gMax, reversal: mc.reversal,
+                              gateInfOverrides: mc.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: mc.gateTauOverrides.map { $0.map(GateCurveDoc.from) },
+                              modDefinition: mc.definition)
+        case let sk as SKChannel:
+            return ChannelDoc(kind: "sk", gMax: sk.gMax, reversal: sk.reversal,
+                              gateInfOverrides: sk.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: sk.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let bk as BKChannel:
+            return ChannelDoc(kind: "bk", gMax: bk.gMax, reversal: bk.reversal,
+                              gateInfOverrides: bk.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: bk.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
         default:
             return ChannelDoc(kind: "leak", gMax: ch.gMax, reversal: ch.reversal)
         }
@@ -435,6 +452,24 @@ private extension ChannelDoc {
             let ch = CustomChannel(definition: def)
             if infs.count == def.gates.count { ch.gateInfOverrides = infs }
             if taus.count == def.gates.count { ch.gateTauOverrides = taus }
+            return ch
+        case "modImported":
+            guard let def = modDefinition,
+                  let ch = try? MODImportedChannel(definition: def) else {
+                return LeakChannel(gMax: gMax, reversal: reversal)
+            }
+            if infs.count == def.gates.count { ch.gateInfOverrides = infs }
+            if taus.count == def.gates.count { ch.gateTauOverrides = taus }
+            return ch
+        case "sk":
+            let ch = SKChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 1 { ch.gateInfOverrides = infs }
+            if taus.count == 1 { ch.gateTauOverrides = taus }
+            return ch
+        case "bk":
+            let ch = BKChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 1 { ch.gateInfOverrides = infs }
+            if taus.count == 1 { ch.gateTauOverrides = taus }
             return ch
         default: // "leak" or unknown
             return LeakChannel(gMax: gMax, reversal: reversal)

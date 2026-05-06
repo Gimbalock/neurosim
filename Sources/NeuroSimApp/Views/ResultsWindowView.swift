@@ -39,6 +39,10 @@ struct ResultsWindowView: View {
     /// The user can reorder by dragging cards.
     @State private var orderedGroupIDs: [UUID] = []
 
+    /// Non-nil when the user has rubber-band-zoomed into a time region.
+    /// All charts share this zoom; nil = full view.
+    @State private var xZoom: ClosedRange<Double>? = nil
+
 /// Chart groups in user-defined display order.
     private var orderedGroups: [(id: UUID, traces: [SimulationViewModel.SignalTrace])] {
         let map = Dictionary(grouping: vm.signalTraces, by: \.chartGroupID)
@@ -68,6 +72,7 @@ struct ResultsWindowView: View {
                             SignalChartCard(
                                 groupID: group.id,
                                 traces: group.traces,
+                                xZoom: $xZoom,
                                 onAddToGroup: {
                                     pickerGroupID = group.id
                                     showingPicker = true
@@ -104,6 +109,8 @@ struct ResultsWindowView: View {
             }
         }
         .frame(minWidth: 640, minHeight: 480)
+        // Clear zoom when the simulation is reset (autoscaleGeneration bumps on reset/run)
+        .onChange(of: vm.autoscaleGeneration) { _, _ in xZoom = nil }
         .sheet(isPresented: $showingPicker) {
             SignalPickerView(isPresented: $showingPicker, targetGroupID: pickerGroupID)
                 .environmentObject(vm)
@@ -199,6 +206,22 @@ struct ResultsWindowView: View {
 
             Divider().frame(height: 18)
 
+            // Zoom-reset button — visible only while a rubber-band zoom is active.
+            if xZoom != nil {
+                Button {
+                    xZoom = nil
+                } label: {
+                    Label("Zoom out", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(.orange)
+                .keyboardShortcut(.escape, modifiers: [])
+                .help("Return to full view  (Esc)")
+
+                Divider().frame(height: 18)
+            }
+
             Text(String(format: "t = %.1f ms", vm.simulationTime))
                 .font(.system(.callout, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -291,12 +314,17 @@ private struct SignalChartCard: View {
     @EnvironmentObject var vm: SimulationViewModel
     let groupID: UUID
     let traces: [SimulationViewModel.SignalTrace]
+    @Binding var xZoom: ClosedRange<Double>?
     var isDimmed: Bool = false
     var onAddToGroup: () -> Void
 
     @State private var yMin: Double = -90
     @State private var yMax: Double =  60
     @State private var yDragStart: YDragSnapshot? = nil
+
+    // Rubber-band selection state
+    @State private var selStartX: CGFloat? = nil
+    @State private var selCurrentX: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -417,6 +445,64 @@ private struct SignalChartCard: View {
                 ZStack(alignment: .topLeading) {
                     yHandle(.yMin, plotFrame: plotFrame, proxy: proxy)
                     yHandle(.yMax, plotFrame: plotFrame, proxy: proxy)
+
+                    // Rubber-band selection rectangle
+                    if let startX = selStartX {
+                        let left  = min(startX, selCurrentX)
+                        let right = max(startX, selCurrentX)
+                        let clampedLeft  = max(left,  plotFrame.minX)
+                        let clampedRight = min(right, plotFrame.maxX)
+                        if clampedRight > clampedLeft {
+                            Rectangle()
+                                .fill(Color.accentColor.opacity(0.12))
+                                .overlay(
+                                    ZStack {
+                                        Rectangle().fill(Color.accentColor.opacity(0.55))
+                                            .frame(width: 1)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Rectangle().fill(Color.accentColor.opacity(0.55))
+                                            .frame(width: 1)
+                                            .frame(maxWidth: .infinity, alignment: .trailing)
+                                    }
+                                )
+                                .frame(width: clampedRight - clampedLeft,
+                                       height: plotFrame.height)
+                                .offset(x: clampedLeft, y: plotFrame.minY)
+                                .allowsHitTesting(false)
+                        }
+                    }
+
+                    // Invisible hit-target for the selection drag gesture
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .frame(width: plotFrame.width, height: plotFrame.height)
+                        .offset(x: plotFrame.minX, y: plotFrame.minY)
+                        .gesture(
+                            DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                                .onChanged { val in
+                                    let x = max(plotFrame.minX,
+                                                min(val.location.x, plotFrame.maxX))
+                                    if selStartX == nil {
+                                        selStartX = max(plotFrame.minX,
+                                                        min(val.startLocation.x,
+                                                            plotFrame.maxX))
+                                    }
+                                    selCurrentX = x
+                                }
+                                .onEnded { val in
+                                    defer { selStartX = nil }
+                                    guard let startX = selStartX,
+                                          abs(selCurrentX - startX) > 4
+                                    else { return }
+                                    let lo = min(startX, selCurrentX) - plotFrame.minX
+                                    let hi = max(startX, selCurrentX) - plotFrame.minX
+                                    if let t1 = proxy.value(atX: lo) as Double?,
+                                       let t2 = proxy.value(atX: hi) as Double?,
+                                       t2 > t1 {
+                                        xZoom = t1...t2
+                                    }
+                                }
+                        )
                 }
             }
         }
@@ -490,6 +576,7 @@ private struct SignalChartCard: View {
     // MARK: - Helpers
 
     private var xDomain: ClosedRange<Double> {
+        if let z = xZoom { return z }
         let end = max(vm.simulationTime, vm.plotWindow)
         return (end - vm.plotWindow)...end
     }
@@ -509,9 +596,23 @@ private struct SignalChartCard: View {
             let lo = vals.min()!
             let hi = vals.max()!
             let span = hi - lo
-            let pad = max(span * 0.1, 0.5)
-            yMin = lo - pad
-            yMax = hi + pad
+            let relPad = span * 0.12
+            if relPad < 1e-9 {
+                // All values identical — widen around the midpoint.
+                // Use 10 % of the absolute value, or fall back to the
+                // signal's suggested range width, or ±0.5 (mV-scale default).
+                let mid = lo
+                if let d = traces.first?.signal.suggestedYDomain {
+                    let half = (d.upperBound - d.lowerBound) / 2
+                    yMin = mid - half; yMax = mid + half
+                } else {
+                    let r = max(abs(mid) * 0.10, 0.5)
+                    yMin = mid - r; yMax = mid + r
+                }
+            } else {
+                yMin = lo - relPad
+                yMax = hi + relPad
+            }
         }
     }
 

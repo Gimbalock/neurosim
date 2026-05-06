@@ -151,12 +151,25 @@ public final class Compartment: Identifiable {
                                  offset: Int) {
         let v = localState[localState.startIndex]
         var iIonic = 0.0
+
+        // Build concentration snapshot for channels that need it.
+        // Concentrations live at the end of the compartment's state slice,
+        // after V and all gate variables.
+        let totalGateSlots = channels.reduce(0) { $0 + $1.stateCount }
+        var concentrations: [String: Double] = [:]
+        for (i, dyn) in concentrationDynamics.enumerated() {
+            concentrations[dyn.ionSymbol] =
+                localState[localState.startIndex + 1 + totalGateSlots + i]
+        }
+
         var src = localState.startIndex + 1
         var dst = offset + 1
         for ch in channels {
             let gates = localState[src..<(src + ch.stateCount)]
             iIonic += ch.current(voltage: v, gates: gates)
-            ch.gateDerivatives(voltage: v, gates: gates, into: &output, offset: dst)
+            ch.gateDerivatives(voltage: v, gates: gates,
+                               concentrations: concentrations,
+                               into: &output, offset: dst)
             src += ch.stateCount
             dst += ch.stateCount
         }
@@ -164,7 +177,6 @@ public final class Compartment: Identifiable {
         output[offset] = (-iIonic + iInjected) / capacitance
 
         // Concentration dynamics — Euler (concentrations slow, τ >> dt)
-        let totalGateSlots = channels.reduce(0) { $0 + $1.stateCount }
         for (i, dyn) in concentrationDynamics.enumerated() {
             let concLocalIdx = localState.startIndex + 1 + totalGateSlots + i
             let conc = localState[concLocalIdx]
