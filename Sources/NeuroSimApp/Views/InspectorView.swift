@@ -231,7 +231,6 @@ private struct CompartmentEditor: View {
     @Binding var selection: UUID?
 
     @State private var showLibrary = false
-    @State private var showCustomEditor = false
 
     private var isSoma: Bool { compartment.id == neuron.somaCompartmentID }
 
@@ -337,38 +336,19 @@ private struct CompartmentEditor: View {
             HStack {
                 Text("Ion channels").font(.subheadline.bold())
                 Spacer()
-                // "New custom…" opens the editor directly (no library step)
-                Button {
-                    showCustomEditor = true
-                } label: {
-                    Image(systemName: "wand.and.sparkles")
-                }
-                .buttonStyle(.borderless)
-                .help("Create a new custom channel")
-                // Library sheet (built-in + saved custom)
                 Button {
                     showLibrary = true
                 } label: {
-                    Label("Add", systemImage: "plus.circle")
+                    Label("Bibliothèque", systemImage: "plus.circle")
                         .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.borderless)
-                .help("Add channel from library")
+                .help("Ajouter un canal depuis la bibliothèque")
             }
             .sheet(isPresented: $showLibrary) {
                 ChannelLibrarySheet(compartmentID: compartment.id,
                                     neuronID: neuron.id)
                     .environmentObject(vm)
-            }
-            .sheet(isPresented: $showCustomEditor) {
-                CustomChannelEditorView(
-                    draft: CustomChannelDefinition(),
-                    onConfirm: { def in
-                        ChannelLibrary.shared.upsert(def)
-                        vm.addCustomChannel(def, toCompartment: compartment.id,
-                                            in: neuron.id)
-                    }
-                )
             }
 
             if compartment.channels.isEmpty {
@@ -394,6 +374,7 @@ private struct CompartmentEditor: View {
             StimulusEditor(compartmentID: compartment.id)
         }
     }
+
 }
 
 // MARK: - Channel row
@@ -637,23 +618,23 @@ private struct StimulusEditor: View {
             case let s as ConstantStimulus:
                 doubleSlider("Amplitude", "µA/cm²", bind(s, \.amplitude), -20...30)
             case let s as PulseStimulus:
-                doubleSlider("Start",     "ms", bind(s, \.start),     0...500)
-                doubleSlider("Duration",  "ms", bind(s, \.duration),  1...500)
-                doubleSlider("Amplitude", "µA", bind(s, \.amplitude), -20...30)
+                doubleSlider("Start",     "ms",     bind(s, \.start),     0...500)
+                doubleSlider("Duration",  "ms",     bind(s, \.duration),  1...500)
+                doubleSlider("Amplitude", "µA/cm²", bind(s, \.amplitude), -20...30)
             case let s as RampStimulus:
-                doubleSlider("Start",     "ms", bind(s, \.start),     0...500)
-                doubleSlider("Duration",  "ms", bind(s, \.duration),  1...500)
-                doubleSlider("From",      "µA", bind(s, \.from),     -20...30)
-                doubleSlider("To",        "µA", bind(s, \.to),       -20...30)
+                doubleSlider("Start",     "ms",     bind(s, \.start),     0...500)
+                doubleSlider("Duration",  "ms",     bind(s, \.duration),  1...500)
+                doubleSlider("From",      "µA/cm²", bind(s, \.from),     -20...30)
+                doubleSlider("To",        "µA/cm²", bind(s, \.to),       -20...30)
             case let s as TrainStimulus:
-                doubleSlider("Start",     "ms", bind(s, \.start),      0...500)
-                doubleSlider("Period",    "ms", bind(s, \.period),     1...200)
-                doubleSlider("Width",     "ms", bind(s, \.pulseWidth), 0.1...50)
-                doubleSlider("Amplitude", "µA", bind(s, \.amplitude), -20...30)
+                doubleSlider("Start",     "ms",     bind(s, \.start),      0...500)
+                doubleSlider("Period",    "ms",     bind(s, \.period),     1...200)
+                doubleSlider("Width",     "ms",     bind(s, \.pulseWidth), 0.1...50)
+                doubleSlider("Amplitude", "µA/cm²", bind(s, \.amplitude), -20...30)
             case let s as OUNoiseStimulus:
-                doubleSlider("Mean",      "µA", bind(s, \.mean),  -20...30)
-                doubleSlider("Sigma",     "µA", bind(s, \.sigma),   0...20)
-                doubleSlider("Tau",       "ms", bind(s, \.tau),    0.5...100)
+                doubleSlider("Mean",      "µA/cm²", bind(s, \.mean),  -20...30)
+                doubleSlider("Sigma",     "µA/cm²", bind(s, \.sigma),   0...20)
+                doubleSlider("Tau",       "ms",     bind(s, \.tau),    0.5...100)
             default:
                 EmptyView()
             }
@@ -813,7 +794,7 @@ private struct SynapseInspector: View {
             if let chem = synapse as? ChemicalSynapse {
                 Text("Chemical").font(.callout).foregroundStyle(.secondary)
                 connectivityLabel
-                paramSlider("g_max", unit: "µS", value: Binding(
+                paramSlider("g_max", unit: "mS/cm²", value: Binding(
                     get: { chem.gMax },
                     set: { chem.gMax = $0; vm.objectWillChange.send() }
                 ), range: 0...3)

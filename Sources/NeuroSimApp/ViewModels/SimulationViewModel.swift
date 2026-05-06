@@ -345,6 +345,23 @@ final class SimulationViewModel: ObservableObject {
         rebuildSimulator()
     }
 
+    func addIonChannel(_ channel: IonChannel,
+                       toCompartment compID: UUID,
+                       in neuronID: UUID) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              let comp = n.compartments.first(where: { $0.id == compID })
+        else { return }
+        comp.channels.append(channel)
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
+    func addMODChannel(_ channel: MODImportedChannel,
+                       toCompartment compID: UUID,
+                       in neuronID: UUID) {
+        addIonChannel(channel, toCompartment: compID, in: neuronID)
+    }
+
     func removeChannel(at index: Int,
                        fromCompartment compID: UUID,
                        in neuronID: UUID) {
