@@ -43,32 +43,7 @@ private let kNeuronRadius: CGFloat = 32
 /// Radius of the small post-synaptic indicator dot.
 private let kSynapseDotRadius: CGFloat = 7
 
-// MARK: - Scroll-wheel zoom helper
-
-/// NSViewRepresentable that forwards NSEvent scroll-wheel events as a
-/// zoom delta to a callback. MagnificationGesture handles trackpad pinch;
-/// this handles the traditional scroll wheel on non-trackpad mice.
-private struct ScrollWheelReceiver: NSViewRepresentable {
-    let onScroll: (CGFloat) -> Void   // delta Y (positive = scroll down)
-
-    func makeNSView(context: Context) -> _ScrollView { _ScrollView(onScroll: onScroll) }
-    func updateNSView(_ v: _ScrollView, context: Context) { v.onScroll = onScroll }
-
-    class _ScrollView: NSView {
-        var onScroll: (CGFloat) -> Void
-        init(onScroll: @escaping (CGFloat) -> Void) {
-            self.onScroll = onScroll
-            super.init(frame: .zero)
-        }
-        required init?(coder: NSCoder) { fatalError() }
-        override var acceptsFirstResponder: Bool { false }
-        override func scrollWheel(with event: NSEvent) {
-            // Only intercept vertical scroll; horizontal is ignored (let
-            // SwiftUI handle it for any containing scroll view).
-            onScroll(event.scrollingDeltaY)
-        }
-    }
-}
+// Scroll-wheel zoom is handled via NSEvent.addLocalMonitorForEvents in NetworkEditorView.onAppear.
 
 // MARK: - NetworkEditorView
 
@@ -86,6 +61,7 @@ struct NetworkEditorView: View {
 
     // Pan gesture bookkeeping
     @State private var panLastTranslation: CGSize = .zero
+    @State private var scrollMonitor: Any? = nil
 
     struct DraftSynapse {
         let fromID: UUID
@@ -152,14 +128,10 @@ struct NetworkEditorView: View {
                     }
                 }
             }
-            // Scroll-wheel zoom (intercepts NSEvent before SwiftUI sees it)
-            .background(
-                ScrollWheelReceiver { deltaY in
-                    // Zoom centred on the canvas centre (approximation; cursor
-                    // position is not available via NSEvent in this path on macOS).
-                    let factor: CGFloat = deltaY > 0 ? 0.9 : 1.1
+            .onAppear {
+                scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                    let factor: CGFloat = event.scrollingDeltaY > 0 ? 0.9 : 1.1
                     let newScale = min(max(viewportScale * factor, 0.1), 8.0)
-                    // Adjust offset to keep the visual centre fixed
                     let centre = CGPoint(x: proxy.size.width / 2,
                                         y: proxy.size.height / 2)
                     let scaleRatio = newScale / viewportScale
@@ -168,8 +140,12 @@ struct NetworkEditorView: View {
                         height: centre.y + (viewportOffset.height - centre.y) * scaleRatio
                     )
                     viewportScale = newScale
+                    return nil  // consume the event
                 }
-            )
+            }
+            .onDisappear {
+                if let m = scrollMonitor { NSEvent.removeMonitor(m); scrollMonitor = nil }
+            }
             // Pinch-to-zoom (trackpad)
             .gesture(
                 MagnificationGesture()
@@ -278,7 +254,7 @@ private struct NeuronNodeView: View {
 
     @State private var dragOrigin: CGPoint? = nil
 
-    private var radius: CGFloat { kNeuronRadius }
+    private var radius: CGFloat { kNeuronRadius * viewportScale }
 
     /// Canvas-space position (live during drag, committed otherwise).
     private var canvasPosition: CGPoint {
