@@ -113,13 +113,24 @@ private struct NeuronInspector: View {
     @EnvironmentObject var vm: SimulationViewModel
     let neuron: HHNeuron
 
-    @State private var selectedCompartmentID: UUID? = nil
+    /// Single source of truth: derives from vm.selection, falls back to soma.
+    private var selectedCompartmentID: UUID {
+        if case .compartment(let id) = vm.selection,
+           neuron.compartments.contains(where: { $0.id == id }) {
+            return id
+        }
+        return neuron.somaCompartmentID
+    }
+
+    private var selectionBinding: Binding<UUID> {
+        Binding(
+            get: { selectedCompartmentID },
+            set: { vm.selection = .compartment($0) }
+        )
+    }
 
     private var selectedCompartment: Compartment? {
-        guard let id = selectedCompartmentID
-                ?? neuron.compartments.first?.id
-        else { return nil }
-        return neuron.compartments.first(where: { $0.id == id })
+        neuron.compartments.first(where: { $0.id == selectedCompartmentID })
     }
 
     var body: some View {
@@ -152,8 +163,9 @@ private struct NeuronInspector: View {
                 Text("Compartments").font(.headline)
                 Spacer()
                 Button {
-                    if let new = vm.addCompartment(to: neuron.id) {
-                        selectedCompartmentID = new.id
+                    let parent = selectedCompartmentID == neuron.somaCompartmentID ? nil : selectedCompartmentID
+                    if let new = vm.addCompartment(to: neuron.id, parent: parent) {
+                        vm.selection = .compartment(new.id)
                     }
                 } label: {
                     Label("Add", systemImage: "plus.circle")
@@ -161,24 +173,19 @@ private struct NeuronInspector: View {
                 }
                 .buttonStyle(.borderless)
             }
-            CompartmentList(neuron: neuron, selection: $selectedCompartmentID)
+            CompartmentList(neuron: neuron, selection: selectionBinding)
 
             // ─── Selected compartment editor ───────────────────
             if let comp = selectedCompartment {
                 Divider().padding(.vertical, 4)
                 CompartmentEditor(neuron: neuron, compartment: comp,
-                                  selection: $selectedCompartmentID)
+                                  selection: selectionBinding)
             }
 
             // ─── Couplings ─────────────────────────────────────
             if neuron.compartments.count > 1 {
                 Divider().padding(.vertical, 4)
                 CouplingsSection(neuron: neuron)
-            }
-        }
-        .onAppear {
-            if selectedCompartmentID == nil {
-                selectedCompartmentID = neuron.somaCompartmentID
             }
         }
     }
@@ -189,7 +196,7 @@ private struct NeuronInspector: View {
 private struct CompartmentList: View {
     @EnvironmentObject var vm: SimulationViewModel
     let neuron: HHNeuron
-    @Binding var selection: UUID?
+    @Binding var selection: UUID
 
     var body: some View {
         VStack(spacing: 4) {
@@ -232,7 +239,7 @@ private struct CompartmentEditor: View {
     @EnvironmentObject var vm: SimulationViewModel
     let neuron: HHNeuron
     let compartment: Compartment
-    @Binding var selection: UUID?
+    @Binding var selection: UUID
 
     @State private var showLibrary = false
 
@@ -297,6 +304,24 @@ private struct CompartmentEditor: View {
                           format: "%.1f",
                           unit: "µm",
                           labelWidth: 90)
+
+            // Branch point — only meaningful when parent is a dendrite (not soma)
+            let parentID = neuron.axialCouplings
+                .first(where: { $0.involves(compartment.id) })?
+                .other(compartment.id)
+            let parentIsDendrite = parentID != nil && parentID != neuron.somaCompartmentID
+            if !isSoma && parentIsDendrite {
+                NumericSlider(label: "Point attache",
+                              value: Binding(
+                                get: { compartment.branchFraction },
+                                set: { compartment.branchFraction = max(0, min(1, $0))
+                                       vm.objectWillChange.send() }
+                              ),
+                              range: 0...1,
+                              format: "%.2f",
+                              unit: "",
+                              labelWidth: 90)
+            }
 
             // Read-only area display
             HStack {
@@ -798,6 +823,7 @@ private struct SynapseInspector: View {
             if let chem = synapse as? ChemicalSynapse {
                 Text("Chemical").font(.callout).foregroundStyle(.secondary)
                 connectivityLabel
+                targetCompartmentPicker
                 paramSlider("g_max", unit: "mS/cm²", value: Binding(
                     get: { chem.gMax },
                     set: { chem.gMax = $0; vm.objectWillChange.send() }
@@ -820,6 +846,7 @@ private struct SynapseInspector: View {
                 Text("Electrical (gap junction)")
                     .font(.callout).foregroundStyle(.secondary)
                 connectivityLabel
+                targetCompartmentPicker
                 paramSlider("g", unit: "µS", value: Binding(
                     get: { gap.conductance },
                     set: { gap.conductance = $0; vm.objectWillChange.send() }
@@ -842,13 +869,34 @@ private struct SynapseInspector: View {
     private var connectivityLabel: some View {
         let pre  = vm.network.neurons.first { $0.id == synapse.preNeuronID }?.name  ?? "?"
         let post = vm.network.neurons.first { $0.id == synapse.postNeuronID }?.name ?? "?"
-        let target = synapse.postCompartmentID.flatMap { compID in
-            vm.network.neurons
-                .flatMap(\.compartments)
-                .first(where: { $0.id == compID })?.name
-        } ?? "soma"
-        return Label("\(pre) → \(post) [\(target)]", systemImage: "arrow.right")
+        return Label("\(pre) → \(post)", systemImage: "arrow.right")
             .font(.callout)
+    }
+
+    @ViewBuilder
+    private var targetCompartmentPicker: some View {
+        if let postNeuron = vm.network.neurons.first(where: { $0.id == synapse.postNeuronID }),
+           postNeuron.compartments.count > 1 {
+            let comps = postNeuron.compartments
+            let currentID = synapse.postCompartmentID ?? postNeuron.somaCompartmentID
+            HStack {
+                Text("Cible")
+                    .font(.caption)
+                    .frame(width: 80, alignment: .leading)
+                Picker("", selection: Binding(
+                    get: { currentID },
+                    set: { newID in
+                        synapse.postCompartmentID = newID == postNeuron.somaCompartmentID ? nil : newID
+                        vm.objectWillChange.send()
+                    }
+                )) {
+                    ForEach(comps, id: \.id) { comp in
+                        Text(comp.name).tag(comp.id)
+                    }
+                }
+                .labelsHidden()
+            }
+        }
     }
 
     private func paramSlider(_ label: String,
