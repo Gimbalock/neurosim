@@ -12,13 +12,29 @@ import Foundation
 // MARK: - Root
 
 public struct NetworkDocument: Codable {
-    public var neurons:  [NeuronDoc]
-    public var synapses: [SynapseDoc]
-    public var stimuli:  [StimulusEntry]   // keyed by compartment UUID
+    public var neurons:     [NeuronDoc]
+    public var synapses:    [SynapseDoc]
+    public var stimuli:     [StimulusEntry]   // keyed by compartment UUID
+    public var graphConfig: GraphConfigDoc?   // nil in old files → ignored on load
 
     public struct StimulusEntry: Codable {
         public var compartmentID: UUID
         public var stimulus: StimulusDoc
+    }
+
+    public struct GraphConfigDoc: Codable {
+        public struct Entry: Codable {
+            public var signal:  TracedSignal
+            public var groupID: UUID
+            public init(signal: TracedSignal, groupID: UUID) {
+                self.signal = signal; self.groupID = groupID
+            }
+        }
+        public var entries:    [Entry]
+        public var plotWindow: Double
+        public init(entries: [Entry], plotWindow: Double) {
+            self.entries = entries; self.plotWindow = plotWindow
+        }
     }
 }
 
@@ -336,7 +352,8 @@ public extension NetworkDocument {
 
         return NetworkDocument(neurons:  neuronDocs,
                                synapses: synapseDocs,
-                               stimuli:  stimulusEntries)
+                               stimuli:  stimulusEntries,
+                               graphConfig: nil)   // caller fills in graph config
     }
 
     // MARK: - Document → Network

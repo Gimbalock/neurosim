@@ -642,7 +642,13 @@ final class SimulationViewModel: ObservableObject {
     }
 
     private func writeDocument(to url: URL) {
-        let doc = NetworkDocument.from(network)
+        var doc = NetworkDocument.from(network)
+        doc.graphConfig = NetworkDocument.GraphConfigDoc(
+            entries: signalTraces.map { t in
+                NetworkDocument.GraphConfigDoc.Entry(signal: t.signal, groupID: t.chartGroupID)
+            },
+            plotWindow: plotWindow
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(doc) else { return }
@@ -656,6 +662,16 @@ final class SimulationViewModel: ObservableObject {
         pause()
         network = doc.toNetwork()
         documentURL = url
+        if let gc = doc.graphConfig {
+            plotWindow = gc.plotWindow
+            signalTraces = gc.entries.map { entry in
+                SignalTrace(id: UUID(),
+                            chartGroupID: entry.groupID,
+                            signal: entry.signal,
+                            label: entry.signal.displayLabel(in: network),
+                            points: [])
+            }
+        }
         rebuildSimulator()
     }
 
