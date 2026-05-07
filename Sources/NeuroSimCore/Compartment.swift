@@ -55,6 +55,10 @@ public final class Compartment: Identifiable {
     /// For dendrites this is the cylinder length.
     public var length: Double
 
+    /// Angle relative to parent compartment in the AxialCoupling tree (radians).
+    /// Positive = counter-clockwise. Ignored for soma. Canvas-only, no physics.
+    public var displayAngle: Double = 0.0
+
     /// Membrane area (cm²) — sphere model: A = π·d² for a sphere of diameter d.
     /// 1 µm = 1e-4 cm, so 1 µm² = 1e-8 cm².
     public var area: Double { Double.pi * diameter * diameter * 1e-8 }

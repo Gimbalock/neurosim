@@ -37,6 +37,7 @@ final class SimulationViewModel: ObservableObject {
         case none
         case neuron(UUID)
         case synapse(UUID)
+        case compartment(UUID)
     }
 
     // MARK: - Plot buffer (rolling window of recent samples)
@@ -187,9 +188,9 @@ final class SimulationViewModel: ObservableObject {
 
     func removeSelected() {
         switch selection {
-        case .neuron(let id):  network.removeNeuron(id: id)
-        case .synapse(let id): network.removeSynapse(id: id)
-        case .none: return
+        case .neuron(let id):      network.removeNeuron(id: id)
+        case .synapse(let id):     network.removeSynapse(id: id)
+        case .compartment, .none:  return
         }
         selection = .none
         rebuildSimulator()
@@ -233,6 +234,14 @@ final class SimulationViewModel: ObservableObject {
         objectWillChange.send()
     }
 
+    func setCompartmentAngle(_ neuronID: UUID, compartmentID: UUID, angle: Double) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              let comp = n.compartments.first(where: { $0.id == compartmentID })
+        else { return }
+        comp.displayAngle = angle
+        objectWillChange.send()
+    }
+
     // MARK: - Compartment mutations
 
     /// Append a new compartment to a neuron and auto-couple it to the
@@ -240,14 +249,16 @@ final class SimulationViewModel: ObservableObject {
     /// compartment so callers can immediately select it in the UI.
     @discardableResult
     func addCompartment(to neuronID: UUID,
+                        parent parentID: UUID? = nil,
                         name: String? = nil,
                         channels: [IonChannel] = [LeakChannel()]) -> Compartment? {
         guard let n = network.neurons.first(where: { $0.id == neuronID }) else { return nil }
         let label = name ?? "dend\(n.compartments.count)"
         let comp = Compartment(name: label, channels: channels)
+        let attachTo = parentID ?? n.somaCompartmentID
         n.compartments.append(comp)
         n.axialCouplings.append(
-            AxialCoupling(between: n.somaCompartmentID, and: comp.id, conductance: 0.5)
+            AxialCoupling(between: attachTo, and: comp.id, conductance: 0.5)
         )
         network.notifyStructuralChange()
         rebuildSimulator()

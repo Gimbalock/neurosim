@@ -42,6 +42,10 @@ struct InspectorView: View {
             if let s = vm.network.synapses.first(where: { $0.id == id }) {
                 SynapseInspector(synapse: s)
             }
+        case .compartment(let compID):
+            if let n = vm.network.neurons.first(where: { $0.compartments.contains(where: { $0.id == compID }) }) {
+                NeuronInspector(neuron: n)
+            }
         }
     }
 }

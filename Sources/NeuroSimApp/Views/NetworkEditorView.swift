@@ -109,6 +109,14 @@ struct NetworkEditorView: View {
                         .stroke(.blue, style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
                 }
 
+                // Dendritic trees (drawn below soma circles)
+                ForEach(vm.network.neurons, id: \.id) { neuron in
+                    DendriteTreeView(neuron: neuron,
+                                     neuronDrag: neuronDrag,
+                                     viewportScale: viewportScale,
+                                     viewportOffset: viewportOffset)
+                }
+
                 // Nodes
                 ForEach(vm.network.neurons, id: \.id) { neuron in
                     NeuronNodeView(neuron: neuron,
@@ -238,6 +246,232 @@ struct NetworkEditorView: View {
         case .addCompartment, .synapseExcitatory, .synapseInhibitory,
              .gapJunction, .axialCoupling, .stimulus, .probe:
             vm.selection = .none
+        }
+    }
+}
+
+// MARK: - Dendritic tree
+
+/// Draws all non-soma compartments of a neuron as cylinders (rounded rectangles)
+/// anchored to their parent in the AxialCoupling tree. Angles are relative to
+/// the parent's orientation (option B). Each compartment has a drag handle at
+/// its tip to rotate it around its attachment point.
+private struct DendriteTreeView: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let neuron: HHNeuron
+    let neuronDrag: NetworkEditorView.NeuronDrag?
+    let viewportScale: CGFloat
+    let viewportOffset: CGSize
+
+    // px per µm for visual length/width
+    private let pxPerMicron: CGFloat = 0.45
+
+    private var somaCenter: CGPoint {
+        let pos: CGPoint
+        if let drag = neuronDrag, drag.neuronID == neuron.id {
+            pos = drag.position
+        } else {
+            pos = CGPoint(x: neuron.positionX, y: neuron.positionY)
+        }
+        return CGPoint(x: pos.x * viewportScale + viewportOffset.width,
+                       y: pos.y * viewportScale + viewportOffset.height)
+    }
+
+    private var somaRadius: CGFloat { kNeuronRadius * viewportScale }
+
+    var body: some View {
+        let nonSoma = neuron.compartments.filter { $0.id != neuron.somaCompartmentID }
+        if nonSoma.isEmpty { return AnyView(EmptyView()) }
+
+        // Build parent map from AxialCoupling tree (BFS from soma)
+        var parentMap: [UUID: UUID] = [:]   // childID -> parentID
+        var parentAngle: [UUID: Double] = [neuron.somaCompartmentID: 0]  // cumulative absolute angle
+        var queue: [UUID] = [neuron.somaCompartmentID]
+        var visited: Set<UUID> = [neuron.somaCompartmentID]
+        while !queue.isEmpty {
+            let current = queue.removeFirst()
+            for coupling in neuron.axialCouplings {
+                if let other = coupling.other(current), !visited.contains(other) {
+                    visited.insert(other)
+                    parentMap[other] = current
+                    queue.append(other)
+                    // Absolute angle = parent absolute angle + this compartment's relative angle
+                    let comp = neuron.compartments.first(where: { $0.id == other })
+                    let rel = comp?.displayAngle ?? 0
+                    parentAngle[other] = (parentAngle[current] ?? 0) + rel
+                }
+            }
+        }
+
+        return AnyView(
+            ForEach(nonSoma) { comp in
+                DendriteView(
+                    compartment:   comp,
+                    neuron:        neuron,
+                    parentID:      parentMap[comp.id],
+                    absoluteAngle: parentAngle[comp.id] ?? 0,
+                    parentAngleMap: parentAngle,
+                    somaCenter:    somaCenter,
+                    somaRadius:    somaRadius,
+                    pxPerMicron:   pxPerMicron * viewportScale,
+                    viewportScale: viewportScale,
+                    viewportOffset: viewportOffset,
+                    allCompartments: neuron.compartments,
+                    allCouplings:    neuron.axialCouplings
+                )
+            }
+        )
+    }
+}
+
+/// Renders a single compartment as a rounded rectangle (cylinder side view)
+/// plus a small circular drag handle at its tip.
+private struct DendriteView: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let compartment: Compartment
+    let neuron: HHNeuron
+    let parentID: UUID?
+    let absoluteAngle: Double
+    let parentAngleMap: [UUID: Double]
+    let somaCenter: CGPoint
+    let somaRadius: CGFloat
+    let pxPerMicron: CGFloat
+    let viewportScale: CGFloat
+    let viewportOffset: CGSize
+    let allCompartments: [Compartment]
+    let allCouplings: [AxialCoupling]
+
+    @State private var isDraggingHandle = false
+
+    private var visualLength: CGFloat {
+        max(CGFloat(compartment.length) * pxPerMicron, 20 * viewportScale)
+    }
+    private var visualWidth: CGFloat {
+        max(min(CGFloat(compartment.diameter) * pxPerMicron, 18 * viewportScale), 4 * viewportScale)
+    }
+
+    /// Screen-space position of the parent's tip (= this compartment's base).
+    private var basePoint: CGPoint {
+        guard let pid = parentID else {
+            // No parent found — attach to soma edge at absoluteAngle
+            return CGPoint(
+                x: somaCenter.x + somaRadius * CGFloat(cos(absoluteAngle)),
+                y: somaCenter.y + somaRadius * CGFloat(sin(absoluteAngle))
+            )
+        }
+        if pid == neuron.somaCompartmentID {
+            return CGPoint(
+                x: somaCenter.x + somaRadius * CGFloat(cos(absoluteAngle)),
+                y: somaCenter.y + somaRadius * CGFloat(sin(absoluteAngle))
+            )
+        }
+        // Parent is a dendrite: find its tip
+        guard let parentComp = allCompartments.first(where: { $0.id == pid }) else {
+            return somaCenter
+        }
+        let parentBase = parentBasePoint(for: pid)
+        let parentLen = max(CGFloat(parentComp.length) * pxPerMicron, 20 * viewportScale)
+        let pAngle = parentAngleMap[pid] ?? 0
+        return CGPoint(
+            x: parentBase.x + parentLen * CGFloat(cos(pAngle)),
+            y: parentBase.y + parentLen * CGFloat(sin(pAngle))
+        )
+    }
+
+    private func parentBasePoint(for compID: UUID) -> CGPoint {
+        guard let coupling = allCouplings.first(where: { $0.involves(compID) }),
+              let grandParentID = coupling.other(compID) else {
+            return somaCenter
+        }
+        if grandParentID == neuron.somaCompartmentID {
+            let angle = parentAngleMap[compID] ?? 0
+            return CGPoint(
+                x: somaCenter.x + somaRadius * CGFloat(cos(angle)),
+                y: somaCenter.y + somaRadius * CGFloat(sin(angle))
+            )
+        }
+        guard let gpComp = allCompartments.first(where: { $0.id == grandParentID }) else {
+            return somaCenter
+        }
+        let gpBase = parentBasePoint(for: grandParentID)
+        let gpLen = max(CGFloat(gpComp.length) * pxPerMicron, 20 * viewportScale)
+        let gpAngle = parentAngleMap[grandParentID] ?? 0
+        return CGPoint(
+            x: gpBase.x + gpLen * CGFloat(cos(gpAngle)),
+            y: gpBase.y + gpLen * CGFloat(sin(gpAngle))
+        )
+    }
+
+    private var tipPoint: CGPoint {
+        CGPoint(
+            x: basePoint.x + visualLength * CGFloat(cos(absoluteAngle)),
+            y: basePoint.y + visualLength * CGFloat(sin(absoluteAngle))
+        )
+    }
+
+    private var handleRadius: CGFloat { max(6 * viewportScale, 5) }
+
+    var body: some View {
+        let base = basePoint
+        let tip  = tipPoint
+        let angle = absoluteAngle
+        let midX = (base.x + tip.x) / 2
+        let midY = (base.y + tip.y) / 2
+        let isSelected = vm.selection == .compartment(compartment.id)
+
+        ZStack {
+            // Cylinder body
+            RoundedRectangle(cornerRadius: visualWidth / 2)
+                .fill(Color.gray.opacity(0.35))
+                .overlay(
+                    RoundedRectangle(cornerRadius: visualWidth / 2)
+                        .stroke(isSelected ? Color.accentColor : Color.primary.opacity(0.6),
+                                lineWidth: isSelected ? 2 : 1)
+                )
+                .frame(width: visualLength, height: visualWidth)
+                .rotationEffect(.radians(angle))
+                .position(x: midX, y: midY)
+                .onTapGesture {
+                    if vm.activeTool == .addCompartment {
+                        vm.addCompartment(to: neuron.id, parent: compartment.id)
+                    } else {
+                        vm.selection = .compartment(compartment.id)
+                    }
+                }
+
+            // Name label
+            Text(compartment.name)
+                .font(.system(size: max(8 * viewportScale, 7), design: .rounded))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.radians(angle))
+                .position(x: midX, y: midY)
+                .allowsHitTesting(false)
+
+            // Drag handle at tip
+            Circle()
+                .fill(isDraggingHandle ? Color.accentColor : Color.primary.opacity(0.5))
+                .frame(width: handleRadius * 2, height: handleRadius * 2)
+                .position(x: tip.x, y: tip.y)
+                .gesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { val in
+                            isDraggingHandle = true
+                            // Cursor position in screen space
+                            let cursor = CGPoint(x: tip.x + val.translation.width,
+                                                y: tip.y + val.translation.height)
+                            // New angle = atan2 from base to cursor
+                            let dx = cursor.x - base.x
+                            let dy = cursor.y - base.y
+                            let newAbsAngle = Double(atan2(dy, dx))
+                            // Relative angle = new absolute - parent's absolute
+                            let parentAbs = parentAngleMap[parentID ?? neuron.somaCompartmentID] ?? 0
+                            let newRel = newAbsAngle - parentAbs
+                            vm.setCompartmentAngle(neuron.id,
+                                                   compartmentID: compartment.id,
+                                                   angle: newRel)
+                        }
+                        .onEnded { _ in isDraggingHandle = false }
+                )
         }
     }
 }

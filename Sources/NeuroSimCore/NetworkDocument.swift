@@ -46,11 +46,13 @@ public struct CompartmentDoc: Codable {
     public var capacitance:           Double
     public var diameter:              Double
     public var length:                Double
+    public var displayAngle:          Double
     public var channels:              [ChannelDoc]
     public var concentrationDynamics: [ConcentrationDynamicDoc]
 
     public init(id: UUID, name: String, capacitance: Double,
                 diameter: Double = 20.0, length: Double = 20.0,
+                displayAngle: Double = 0.0,
                 channels: [ChannelDoc],
                 concentrationDynamics: [ConcentrationDynamicDoc] = []) {
         self.id                    = id
@@ -58,6 +60,7 @@ public struct CompartmentDoc: Codable {
         self.capacitance           = capacitance
         self.diameter              = diameter
         self.length                = length
+        self.displayAngle          = displayAngle
         self.channels              = channels
         self.concentrationDynamics = concentrationDynamics
     }
@@ -67,8 +70,9 @@ public struct CompartmentDoc: Codable {
         id                     = try c.decode(UUID.self,   forKey: .id)
         name                   = try c.decode(String.self, forKey: .name)
         capacitance            = try c.decode(Double.self, forKey: .capacitance)
-        diameter               = try c.decodeIfPresent(Double.self, forKey: .diameter) ?? 20.0
-        length                 = try c.decodeIfPresent(Double.self, forKey: .length)   ?? 20.0
+        diameter               = try c.decodeIfPresent(Double.self, forKey: .diameter)      ?? 20.0
+        length                 = try c.decodeIfPresent(Double.self, forKey: .length)        ?? 20.0
+        displayAngle           = try c.decodeIfPresent(Double.self, forKey: .displayAngle)  ?? 0.0
         channels               = try c.decode([ChannelDoc].self, forKey: .channels)
         concentrationDynamics  = try c.decodeIfPresent([ConcentrationDynamicDoc].self,
                                                        forKey: .concentrationDynamics) ?? []
@@ -300,6 +304,7 @@ public extension NetworkDocument {
                     capacitance:           comp.capacitance,
                     diameter:              comp.diameter,
                     length:                comp.length,
+                    displayAngle:          comp.displayAngle,
                     channels:              comp.channels.map(ChannelDoc.from),
                     concentrationDynamics: comp.concentrationDynamics.map {
                         ConcentrationDynamicDoc(ionSymbol: $0.ionSymbol,
@@ -347,6 +352,7 @@ public extension NetworkDocument {
                                        diameter:    cd.diameter,
                                        length:      cd.length,
                                        channels:    cd.channels.map { $0.toChannel() })
+                comp.displayAngle = cd.displayAngle
                 comp.concentrationDynamics = cd.concentrationDynamics.map {
                     ConcentrationDynamic(ionSymbol: $0.ionSymbol,
                                          restingConc: $0.restingConc,
