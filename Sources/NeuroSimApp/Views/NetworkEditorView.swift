@@ -62,6 +62,7 @@ struct NetworkEditorView: View {
     // Pan gesture bookkeeping
     @State private var panLastTranslation: CGSize = .zero
     @State private var scrollMonitor: Any? = nil
+    @State private var isMouseOverCanvas = false
 
     struct DraftSynapse {
         let fromID: UUID
@@ -76,6 +77,7 @@ struct NetworkEditorView: View {
     var body: some View {
         canvas
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onHover { isMouseOverCanvas = $0 }
     }
 
     // MARK: - Canvas
@@ -138,6 +140,7 @@ struct NetworkEditorView: View {
             }
             .onAppear {
                 scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                    guard isMouseOverCanvas else { return event }
                     let factor: CGFloat = event.scrollingDeltaY > 0 ? 0.9 : 1.1
                     let newScale = min(max(viewportScale * factor, 0.1), 8.0)
                     let centre = CGPoint(x: proxy.size.width / 2,
@@ -243,7 +246,9 @@ struct NetworkEditorView: View {
             vm.selection = .none
         case .addNeuron:
             vm.addNeuron(at: Double(canvasPoint.x), y: Double(canvasPoint.y))
-        case .addCompartment, .synapseExcitatory, .synapseInhibitory,
+        case .addCompartment:
+            break  // preserve selection so handleNeuronTap can use it as parent
+        case .synapseExcitatory, .synapseInhibitory,
              .gapJunction, .axialCoupling, .stimulus, .probe:
             vm.selection = .none
         }
@@ -365,16 +370,17 @@ private struct DendriteView: View {
                 y: somaCenter.y + somaRadius * CGFloat(sin(absoluteAngle))
             )
         }
-        // Parent is a dendrite: find its tip
+        // Parent is a dendrite: attach at branchFraction along its length
         guard let parentComp = allCompartments.first(where: { $0.id == pid }) else {
             return somaCenter
         }
         let parentBase = parentBasePoint(for: pid)
         let parentLen = max(CGFloat(parentComp.length) * pxPerMicron, 20 * viewportScale)
         let pAngle = parentAngleMap[pid] ?? 0
+        let fraction = CGFloat(compartment.branchFraction)
         return CGPoint(
-            x: parentBase.x + parentLen * CGFloat(cos(pAngle)),
-            y: parentBase.y + parentLen * CGFloat(sin(pAngle))
+            x: parentBase.x + parentLen * fraction * CGFloat(cos(pAngle)),
+            y: parentBase.y + parentLen * fraction * CGFloat(sin(pAngle))
         )
     }
 
@@ -432,11 +438,11 @@ private struct DendriteView: View {
                 .rotationEffect(.radians(angle))
                 .position(x: midX, y: midY)
                 .onTapGesture {
-                    if vm.activeTool == .addCompartment {
-                        vm.addCompartment(to: neuron.id, parent: compartment.id)
-                    } else {
-                        vm.selection = .compartment(compartment.id)
+                    if vm.activeTool == .probe {
+                        vm.addSignalTrace(.voltage(neuronID: neuron.id,
+                                                   compartmentID: compartment.id))
                     }
+                    vm.selection = .compartment(compartment.id)
                 }
 
             // Name label
@@ -515,6 +521,84 @@ private struct NeuronNodeView: View {
         )
     }
 
+    /// Find the neuron and compartment hit by `screenPoint`.
+    /// Checks soma circles first, then dendrite bodies (in screen space).
+    private func findSynapseTarget(at screenPoint: CGPoint) -> (HHNeuron, UUID?)? {
+        let hitR = kNeuronRadius * viewportScale
+        let ppm  = 0.45 * viewportScale  // px per micron in screen space
+
+        func screenPos(_ n: HHNeuron) -> CGPoint {
+            CGPoint(x: CGFloat(n.positionX) * viewportScale + viewportOffset.width,
+                    y: CGFloat(n.positionY) * viewportScale + viewportOffset.height)
+        }
+
+        for n in vm.network.neurons {
+            let sc = screenPos(n)
+
+            // 1. Soma circle hit
+            if hypot(screenPoint.x - sc.x, screenPoint.y - sc.y) < hitR {
+                return (n, nil)
+            }
+
+            // 2. Dendrite bodies — BFS to get absolute angles, then compute screen segments
+            guard n.compartments.count > 1 else { continue }
+            var parentMap:   [UUID: UUID]   = [:]
+            var absAngleMap: [UUID: Double] = [n.somaCompartmentID: 0]
+            var queue   = [n.somaCompartmentID]
+            var visited: Set<UUID> = [n.somaCompartmentID]
+            while !queue.isEmpty {
+                let cur = queue.removeFirst()
+                for c in n.axialCouplings {
+                    if let other = c.other(cur), !visited.contains(other) {
+                        visited.insert(other)
+                        parentMap[other] = cur
+                        queue.append(other)
+                        let rel = n.compartments.first { $0.id == other }?.displayAngle ?? 0
+                        absAngleMap[other] = (absAngleMap[cur] ?? 0) + rel
+                    }
+                }
+            }
+
+            // Screen-space base of a compartment (mirrors DendriteView.basePoint)
+            func dendBase(_ compID: UUID) -> CGPoint {
+                let angle = absAngleMap[compID] ?? 0
+                guard let pid = parentMap[compID] else {
+                    return CGPoint(x: sc.x + hitR * CGFloat(cos(angle)),
+                                   y: sc.y + hitR * CGFloat(sin(angle)))
+                }
+                if pid == n.somaCompartmentID {
+                    return CGPoint(x: sc.x + hitR * CGFloat(cos(angle)),
+                                   y: sc.y + hitR * CGFloat(sin(angle)))
+                }
+                guard let pc = n.compartments.first(where: { $0.id == pid }) else { return sc }
+                let pb   = dendBase(pid)
+                let pLen = max(CGFloat(pc.length) * ppm, 20 * viewportScale)
+                let pAng = absAngleMap[pid] ?? 0
+                let frac = CGFloat(n.compartments.first { $0.id == compID }?.branchFraction ?? 1)
+                return CGPoint(x: pb.x + pLen * frac * CGFloat(cos(pAng)),
+                               y: pb.y + pLen * frac * CGFloat(sin(pAng)))
+            }
+
+            for comp in n.compartments where comp.id != n.somaCompartmentID {
+                let base = dendBase(comp.id)
+                let len  = max(CGFloat(comp.length) * ppm, 20 * viewportScale)
+                let ang  = absAngleMap[comp.id] ?? 0
+                let tip  = CGPoint(x: base.x + len * CGFloat(cos(ang)),
+                                   y: base.y + len * CGFloat(sin(ang)))
+                // Point-to-segment distance
+                let sdx = tip.x - base.x, sdy = tip.y - base.y
+                let sl2 = sdx * sdx + sdy * sdy
+                let t   = sl2 > 0 ? max(0, min(1, ((screenPoint.x - base.x) * sdx
+                                                   + (screenPoint.y - base.y) * sdy) / sl2)) : 0
+                let nearX = base.x + t * sdx, nearY = base.y + t * sdy
+                if hypot(screenPoint.x - nearX, screenPoint.y - nearY) < hitR {
+                    return (n, comp.id)
+                }
+            }
+        }
+        return nil
+    }
+
     var body: some View {
         let isSelected = vm.selection == .neuron(neuron.id)
         let v = vm.traces[neuron.id]?.last?.v ?? -65.0
@@ -551,13 +635,24 @@ private struct NeuronNodeView: View {
              .axialCoupling:
             vm.selection = .neuron(neuron.id)
         case .addCompartment:
-            _ = vm.addCompartment(to: neuron.id)
-            vm.selection = .neuron(neuron.id)
+            // Use the selected compartment as parent if it belongs to this neuron,
+            // otherwise fall back to soma.
+            var parentID: UUID? = nil
+            if case .compartment(let selID) = vm.selection,
+               vm.network.neurons.first(where: { $0.id == neuron.id })?
+                   .compartments.contains(where: { $0.id == selID }) == true {
+                parentID = selID
+            }
+            if let newComp = vm.addCompartment(to: neuron.id, parent: parentID) {
+                vm.selection = .compartment(newComp.id)
+            }
         case .stimulus:
             let pulse = PulseStimulus(start: 10, duration: 50, amplitude: 10)
             vm.setStimulus(pulse, onCompartment: neuron.somaCompartmentID)
             vm.selection = .neuron(neuron.id)
         case .probe:
+            let compID = neuron.somaCompartmentID
+            vm.addSignalTrace(.voltage(neuronID: neuron.id, compartmentID: compID))
             vm.selection = .neuron(neuron.id)
         }
     }
@@ -610,7 +705,6 @@ private struct NeuronNodeView: View {
                     neuronDrag = nil
                     dragOrigin = nil
                 } else if tool.isSynapseTool {
-                    // Convert end point to canvas space for hit-test
                     let originScreen = canvasToScreen(
                         CGPoint(x: neuron.positionX, y: neuron.positionY)
                     )
@@ -618,18 +712,16 @@ private struct NeuronNodeView: View {
                         x: originScreen.x + value.translation.width,
                         y: originScreen.y + value.translation.height
                     )
-                    let endCanvas = screenToCanvas(endScreen)
-                    let hitRadius = Double(kNeuronRadius)
-                    if let target = vm.network.neurons.first(where: {
-                        hypot($0.positionX - Double(endCanvas.x),
-                              $0.positionY - Double(endCanvas.y)) < hitRadius
-                    }), target.id != neuron.id {
+                    let result = findSynapseTarget(at: endScreen)
+                    if let (target, compID) = result,
+                       target.id != neuron.id {
                         switch tool {
                         case .gapJunction:
                             vm.addGapJunction(from: neuron.id, to: target.id)
                         default:
                             vm.addSynapse(from: neuron.id,
                                           to: target.id,
+                                          compartmentID: compID,
                                           reversal: tool.defaultReversal)
                         }
                     }
@@ -679,18 +771,76 @@ private struct SynapseEdgeView: View {
         )
     }
 
+    /// Screen-space tip of `compartmentID` on `neuron`, or nil if not found.
+    private func compartmentTipPos(for compartmentID: UUID, on neuron: HHNeuron) -> CGPoint? {
+        let ppm: CGFloat = 0.45 * viewportScale
+        let somaR = kNeuronRadius * viewportScale
+        let sc = screenPos(of: neuron)
+        var parentMap: [UUID: UUID] = [:]
+        var absAngleMap: [UUID: Double] = [neuron.somaCompartmentID: 0]
+        var queue = [neuron.somaCompartmentID]
+        var visited: Set<UUID> = [neuron.somaCompartmentID]
+        while !queue.isEmpty {
+            let cur = queue.removeFirst()
+            for c in neuron.axialCouplings {
+                if let other = c.other(cur), !visited.contains(other) {
+                    visited.insert(other)
+                    parentMap[other] = cur
+                    queue.append(other)
+                    let rel = neuron.compartments.first { $0.id == other }?.displayAngle ?? 0
+                    absAngleMap[other] = (absAngleMap[cur] ?? 0) + rel
+                }
+            }
+        }
+        func dendBase(_ cid: UUID) -> CGPoint {
+            let ang = absAngleMap[cid] ?? 0
+            guard let pid = parentMap[cid] else {
+                return CGPoint(x: sc.x + somaR * CGFloat(cos(ang)),
+                               y: sc.y + somaR * CGFloat(sin(ang)))
+            }
+            if pid == neuron.somaCompartmentID {
+                return CGPoint(x: sc.x + somaR * CGFloat(cos(ang)),
+                               y: sc.y + somaR * CGFloat(sin(ang)))
+            }
+            guard let pc = neuron.compartments.first(where: { $0.id == pid }) else { return sc }
+            let pb = dendBase(pid)
+            let pLen = max(CGFloat(pc.length) * ppm, 20 * viewportScale)
+            let pAng = absAngleMap[pid] ?? 0
+            let frac = CGFloat(neuron.compartments.first { $0.id == cid }?.branchFraction ?? 1)
+            return CGPoint(x: pb.x + pLen * frac * CGFloat(cos(pAng)),
+                           y: pb.y + pLen * frac * CGFloat(sin(pAng)))
+        }
+        guard let comp = neuron.compartments.first(where: { $0.id == compartmentID }) else { return nil }
+        let base = dendBase(compartmentID)
+        let len = max(CGFloat(comp.length) * ppm, 20 * viewportScale)
+        let ang = absAngleMap[compartmentID] ?? 0
+        return CGPoint(x: base.x + len * CGFloat(cos(ang)),
+                       y: base.y + len * CGFloat(sin(ang)))
+    }
+
     var body: some View {
         if let pre = vm.network.neurons.first(where: { $0.id == synapse.preNeuronID }),
            let post = vm.network.neurons.first(where: { $0.id == synapse.postNeuronID }) {
             let isSelected = vm.selection == .synapse(synapse.id)
             let color = edgeColor(isSelected: isSelected)
+            let somaR = kNeuronRadius * viewportScale
 
-            // Scale neuron radius to screen space so endpoints sit on the
-            // visible circle edges regardless of zoom level.
+            // When the synapse targets a specific dendrite compartment, draw the
+            // arrow to that compartment's tip instead of the soma center.
+            let postPoint: CGPoint = {
+                guard let compID = synapse.postCompartmentID,
+                      let tip = compartmentTipPos(for: compID, on: post) else {
+                    return screenPos(of: post)
+                }
+                return tip
+            }()
+            let postR: CGFloat = synapse.postCompartmentID != nil ? kSynapseDotRadius : somaR
+
             let geom = SynapseGeometry(
                 pre: screenPos(of: pre),
-                post: screenPos(of: post),
-                neuronRadius: kNeuronRadius * viewportScale,
+                post: postPoint,
+                preRadius: somaR,
+                postRadius: postR,
                 straight: synapse is GapJunction
             )
 
@@ -756,8 +906,17 @@ private struct SynapseEdgeView: View {
 private struct SynapseGeometry {
     let pre: CGPoint
     let post: CGPoint
-    let neuronRadius: CGFloat
+    let preRadius: CGFloat
+    let postRadius: CGFloat
     var straight: Bool = false
+
+    init(pre: CGPoint, post: CGPoint,
+         preRadius: CGFloat, postRadius: CGFloat,
+         straight: Bool = false) {
+        self.pre = pre; self.post = post
+        self.preRadius = preRadius; self.postRadius = postRadius
+        self.straight = straight
+    }
 
     var controlPoint: CGPoint? {
         let dx = post.x - pre.x
@@ -774,12 +933,12 @@ private struct SynapseGeometry {
 
     var startPoint: CGPoint? {
         guard let cp = controlPoint else { return nil }
-        return edgePoint(of: pre, towards: cp)
+        return edgePoint(of: pre, towards: cp, radius: preRadius)
     }
 
     var endPoint: CGPoint? {
         guard let cp = controlPoint else { return nil }
-        return edgePoint(of: post, towards: cp)
+        return edgePoint(of: post, towards: cp, radius: postRadius)
     }
 
     var midPoint: CGPoint? {
@@ -798,13 +957,13 @@ private struct SynapseGeometry {
         return CGVector(dx: dx / d, dy: dy / d)
     }
 
-    private func edgePoint(of centre: CGPoint, towards target: CGPoint) -> CGPoint {
+    private func edgePoint(of centre: CGPoint, towards target: CGPoint, radius: CGFloat) -> CGPoint {
         let dx = target.x - centre.x
         let dy = target.y - centre.y
         let d = sqrt(dx * dx + dy * dy)
         guard d > 1e-3 else { return centre }
-        return CGPoint(x: centre.x + (dx / d) * neuronRadius,
-                       y: centre.y + (dy / d) * neuronRadius)
+        return CGPoint(x: centre.x + (dx / d) * radius,
+                       y: centre.y + (dy / d) * radius)
     }
 }
 

@@ -59,6 +59,10 @@ public final class Compartment: Identifiable {
     /// Positive = counter-clockwise. Ignored for soma. Canvas-only, no physics.
     public var displayAngle: Double = 0.0
 
+    /// Where along the parent compartment this branch attaches (0 = base, 1 = tip).
+    /// Canvas-only, no physics effect.
+    public var branchFraction: Double = 1.0
+
     /// Membrane area (cm²) — sphere model: A = π·d² for a sphere of diameter d.
     /// 1 µm = 1e-4 cm, so 1 µm² = 1e-8 cm².
     public var area: Double { Double.pi * diameter * diameter * 1e-8 }

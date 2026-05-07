@@ -200,13 +200,18 @@ final class SimulationViewModel: ObservableObject {
     /// whether it is excitatory (≈ 0 mV) or inhibitory (≈ -75 mV); the
     /// tool palette passes the appropriate value depending on which
     /// synapse tool was active when the user dragged.
-    func addSynapse(from preID: UUID, to postID: UUID, reversal: Double = 0.0) {
+    func addSynapse(from preID: UUID, to postID: UUID,
+                    compartmentID: UUID? = nil, reversal: Double = 0.0) {
         guard preID != postID else { return }
-        // Avoid duplicates of the same direction.
+        // nil compartmentID = soma. Allow multiple N1→N2 synapses on different compartments.
+        let postNeuron = network.neurons.first { $0.id == postID }
+        let targetCompID: UUID? = compartmentID == postNeuron?.somaCompartmentID ? nil : compartmentID
         if network.synapses.contains(where: {
             $0.preNeuronID == preID && $0.postNeuronID == postID
+            && $0.postCompartmentID == targetCompID
         }) { return }
         network.addSynapse(ChemicalSynapse(from: preID, to: postID,
+                                           onCompartment: targetCompID,
                                            gMax: 0.3, reversal: reversal,
                                            tauDecay: 6.0))
         rebuildSimulator()
@@ -243,6 +248,28 @@ final class SimulationViewModel: ObservableObject {
     }
 
     // MARK: - Compartment mutations
+
+    /// Create a child compartment off the currently selected compartment or neuron.
+    /// Returns the new compartment, or nil if nothing relevant is selected.
+    @discardableResult
+    func addCompartmentToSelection() -> Compartment? {
+        print("[DEBUG] addCompartmentToSelection called, selection=\(selection)")
+        switch selection {
+        case .compartment(let compID):
+            guard let neuron = network.neurons.first(where: { n in
+                n.compartments.contains(where: { $0.id == compID })
+            }) else { return nil }
+            let comp = addCompartment(to: neuron.id, parent: compID)
+            if let comp { selection = .compartment(comp.id) }
+            return comp
+        case .neuron(let neuronID):
+            let comp = addCompartment(to: neuronID)
+            if let comp { selection = .compartment(comp.id) }
+            return comp
+        default:
+            return nil
+        }
+    }
 
     /// Append a new compartment to a neuron and auto-couple it to the
     /// current soma so it isn't electrically floating. Returns the new
@@ -615,7 +642,13 @@ final class SimulationViewModel: ObservableObject {
     }
 
     private func writeDocument(to url: URL) {
-        let doc = NetworkDocument.from(network)
+        var doc = NetworkDocument.from(network)
+        doc.graphConfig = NetworkDocument.GraphConfigDoc(
+            entries: signalTraces.map { t in
+                NetworkDocument.GraphConfigDoc.Entry(signal: t.signal, groupID: t.chartGroupID)
+            },
+            plotWindow: plotWindow
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(doc) else { return }
@@ -629,6 +662,16 @@ final class SimulationViewModel: ObservableObject {
         pause()
         network = doc.toNetwork()
         documentURL = url
+        if let gc = doc.graphConfig {
+            plotWindow = gc.plotWindow
+            signalTraces = gc.entries.map { entry in
+                SignalTrace(id: UUID(),
+                            chartGroupID: entry.groupID,
+                            signal: entry.signal,
+                            label: entry.signal.displayLabel(in: network),
+                            points: [])
+            }
+        }
         rebuildSimulator()
     }
 

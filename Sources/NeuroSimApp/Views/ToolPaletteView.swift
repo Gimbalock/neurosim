@@ -54,7 +54,14 @@ struct ToolPaletteView: View {
     private func paletteButton(_ tool: EditorTool) -> some View {
         let isActive = vm.activeTool == tool
         Button {
-            vm.activeTool = tool
+            if tool == .addCompartment {
+                // Act immediately if something is selected; otherwise enter tool mode.
+                if vm.addCompartmentToSelection() == nil {
+                    vm.activeTool = tool
+                }
+            } else {
+                vm.activeTool = tool
+            }
         } label: {
             Image(systemName: tool.systemImage)
                 .font(.system(size: 16, weight: .regular))
