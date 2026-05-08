@@ -419,6 +419,7 @@ private struct ChannelRow: View {
     /// `nil` = no sheet. Optional-of-Mode lets us drive `.sheet(item:)`
     /// instead of two booleans, which is cleaner.
     @State private var plotMode: PlotPresentation? = nil
+    @State private var showChannelEditor = false
 
     /// Sheet payload — wraps the plot mode in an Identifiable so SwiftUI
     /// can use it as the sheet's `item:`.
@@ -463,6 +464,15 @@ private struct ChannelRow: View {
                     .buttonStyle(.borderless)
                     .help("Plot gating time constants τ(V)")
                 }
+                if channel is CustomChannel {
+                    Button {
+                        showChannelEditor = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Modifier les gates")
+                }
                 Spacer()
                 Button(role: .destructive) {
                     vm.removeChannel(at: indexInCompartment,
@@ -495,10 +505,21 @@ private struct ChannelRow: View {
         .padding(8)
         .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 6))
         .sheet(item: $plotMode) { presentation in
-            // Force-cast is safe here: the sheet can only be triggered
-            // from the buttons above, which are gated on `channel is HHGated`.
             if let hh = channel as? HHGated {
                 ChannelKineticsView(channel: hh, mode: presentation.mode)
+            }
+        }
+        .sheet(isPresented: $showChannelEditor) {
+            if let custom = channel as? CustomChannel {
+                ChannelEditorSheet(
+                    draft: custom.definition,
+                    context: .compartment { def in
+                        vm.replaceChannel(at: indexInCompartment,
+                                          inCompartment: compartmentID,
+                                          in: neuronID,
+                                          with: CustomChannel(definition: def))
+                    }
+                )
             }
         }
     }

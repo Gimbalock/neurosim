@@ -400,6 +400,19 @@ final class SimulationViewModel: ObservableObject {
         addIonChannel(channel, toCompartment: compID, in: neuronID)
     }
 
+    func replaceChannel(at index: Int,
+                        inCompartment compID: UUID,
+                        in neuronID: UUID,
+                        with channel: IonChannel) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              let comp = n.compartments.first(where: { $0.id == compID }),
+              comp.channels.indices.contains(index)
+        else { return }
+        comp.channels[index] = channel
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
     func removeChannel(at index: Int,
                        fromCompartment compID: UUID,
                        in neuronID: UUID) {
