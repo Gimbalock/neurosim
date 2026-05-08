@@ -204,6 +204,67 @@ public enum CurveFitter {
                            domain: domain)
     }
 
+    // MARK: - PCHIP spline fit (Fritsch-Carlson)
+
+    /// Fit a PCHIP spline through `points`. The spline passes exactly through
+    /// every data point (interpolation, not regression). Tangent slopes are
+    /// computed by the Fritsch-Carlson algorithm: monotone in any interval
+    /// where the data are monotone, C¹ continuous, no Runge oscillations.
+    ///
+    /// Returns `nil` if fewer than 2 points are provided.
+    public static func fitSpline(points: [Point]) -> GateCurve? {
+        guard points.count >= 2 else { return nil }
+        let sorted = points.sorted { $0.v < $1.v }
+        let n = sorted.count
+        let xs = sorted.map(\.v)
+        let ys = sorted.map(\.y)
+
+        // Step 1: secant slopes δ_k = (y_{k+1} − y_k) / (x_{k+1} − x_k)
+        var delta = [Double](repeating: 0, count: n - 1)
+        var h     = [Double](repeating: 0, count: n - 1)
+        for k in 0..<(n - 1) {
+            h[k]     = xs[k + 1] - xs[k]
+            delta[k] = abs(h[k]) > 1e-15 ? (ys[k + 1] - ys[k]) / h[k] : 0
+        }
+
+        // Step 2: tangent slopes (PCHIP Fritsch-Carlson)
+        var d = [Double](repeating: 0, count: n)
+
+        // Interior slopes: weighted harmonic mean, zero at sign changes
+        for k in 1..<(n - 1) {
+            if delta[k - 1] * delta[k] > 0 {
+                // Both secants have the same sign → weighted harmonic mean
+                let w = h[k - 1] + h[k]
+                // Fritsch-Carlson: d_k = w / (h_k/δ_{k-1} + h_{k-1}/δ_k)
+                d[k] = w / (h[k] / delta[k - 1] + h[k - 1] / delta[k])
+            }
+            // else: d[k] = 0 — local extremum or flat section, already 0
+        }
+
+        // Endpoint slopes: one-sided parabolic fit (three-point), clamped
+        if n == 2 {
+            d[0] = delta[0]
+            d[1] = delta[0]
+        } else {
+            // Left endpoint
+            let d0 = ((2 * h[0] + h[1]) * delta[0] - h[0] * delta[1]) / (h[0] + h[1])
+            if d0 * delta[0] <= 0    { d[0] = 0 }
+            else if abs(d0) > 3 * abs(delta[0]) { d[0] = 3 * delta[0] }
+            else                     { d[0] = d0 }
+
+            // Right endpoint
+            let last = n - 1
+            let dN = ((2 * h[last - 1] + h[last - 2]) * delta[last - 1]
+                      - h[last - 1] * delta[last - 2]) / (h[last - 2] + h[last - 1])
+            if dN * delta[last - 1] <= 0    { d[last] = 0 }
+            else if abs(dN) > 3 * abs(delta[last - 1]) { d[last] = 3 * delta[last - 1] }
+            else                            { d[last] = dN }
+        }
+
+        let domain = xs.first!...xs.last!
+        return .spline(xKnots: xs, yKnots: ys, slopes: d, domain: domain)
+    }
+
     // MARK: - Linear algebra helpers
 
     /// Specialised solver for the 4×4 systems coming out of the sigmoid

@@ -973,6 +973,8 @@ let plotFrame: CGRect = proxy.plotFrame.map { geo[$0] } ?? .zero
         case let .gaussian(tauMin, tauMax, vPeak, width, _):
             return String(format: "gaussian tauMin=%.4f tauMax=%.4f vPeak=%.4f width=%.4f",
                           tauMin, tauMax, vPeak, width) + domainSuffix
+        case let .spline(xs, ys, _, _):
+            return "spline \(xs.count) knots v=[\(String(format: "%.1f", xs.first ?? 0))…\(String(format: "%.1f", xs.last ?? 0))]  y=[\(String(format: "%.3f", ys.first ?? 0))…\(String(format: "%.3f", ys.last ?? 0))]" + domainSuffix
         }
     }
 

@@ -135,7 +135,7 @@ public struct ChannelDoc: Codable {
 // MARK: - GateCurve
 
 public struct GateCurveDoc: Codable {
-    public var kind:         String    // "sigmoid" | "polynomial" | "gaussian"
+    public var kind:         String    // "sigmoid" | "polynomial" | "gaussian" | "spline"
     // sigmoid fields
     public var lo:           Double?
     public var hi:           Double?
@@ -149,6 +149,10 @@ public struct GateCurveDoc: Codable {
     public var tauMax:       Double?
     public var vPeak:        Double?
     public var width:        Double?
+    // spline fields
+    public var xKnots:       [Double]?
+    public var yKnots:       [Double]?
+    public var slopes:       [Double]?
     // shared optional domain
     public var domainLo:     Double?
     public var domainHi:     Double?
@@ -527,6 +531,11 @@ private extension GateCurveDoc {
                                 vPeak: vPeak, width: width,
                                 domainLo: domain?.lowerBound,
                                 domainHi: domain?.upperBound)
+        case let .spline(xs, ys, ds, domain):
+            return GateCurveDoc(kind: "spline",
+                                xKnots: xs, yKnots: ys, slopes: ds,
+                                domainLo: domain?.lowerBound,
+                                domainHi: domain?.upperBound)
         }
     }
 }
@@ -549,6 +558,11 @@ private extension GateCurve {
                              vPeak:  doc.vPeak  ?? -40,
                              width:  doc.width  ?? 20,
                              domain: domain)
+        case "spline":
+            return .spline(xKnots: doc.xKnots ?? [],
+                           yKnots: doc.yKnots ?? [],
+                           slopes: doc.slopes ?? [],
+                           domain: domain)
         default: // "sigmoid"
             return .sigmoid(lo: doc.lo ?? 0, hi: doc.hi ?? 1,
                             vHalf: doc.vHalf ?? -40, k: doc.k ?? 5,
