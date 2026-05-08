@@ -56,7 +56,8 @@ struct ChannelLibrarySheet: View {
             ChannelKineticsSheet(channel: item.channel, channelName: item.name)
         }
         .sheet(item: $editorDraft) { draft in
-            ChannelEditorSheet(draft: draft, context: .library { library.upsert($0) })
+            ChannelEditorSheet(draft: draft,
+                               context: .library(draft: draft) { library.upsert($0) })
         }
         .sheet(item: $editingMOD) { def in
             MODChannelEditSheet(definition: def) { library.upsert(.modImported($0)) }

@@ -135,7 +135,7 @@ public struct ChannelDoc: Codable {
 // MARK: - GateCurve
 
 public struct GateCurveDoc: Codable {
-    public var kind:         String    // "sigmoid" | "polynomial"
+    public var kind:         String    // "sigmoid" | "polynomial" | "gaussian"
     // sigmoid fields
     public var lo:           Double?
     public var hi:           Double?
@@ -144,6 +144,11 @@ public struct GateCurveDoc: Codable {
     // polynomial fields
     public var coefficients: [Double]?
     public var vCenter:      Double?
+    // gaussian fields
+    public var tauMin:       Double?
+    public var tauMax:       Double?
+    public var vPeak:        Double?
+    public var width:        Double?
     // shared optional domain
     public var domainLo:     Double?
     public var domainHi:     Double?
@@ -516,6 +521,12 @@ private extension GateCurveDoc {
                                 coefficients: coeffs, vCenter: vCenter,
                                 domainLo: domain?.lowerBound,
                                 domainHi: domain?.upperBound)
+        case let .gaussian(tauMin, tauMax, vPeak, width, domain):
+            return GateCurveDoc(kind: "gaussian",
+                                tauMin: tauMin, tauMax: tauMax,
+                                vPeak: vPeak, width: width,
+                                domainLo: domain?.lowerBound,
+                                domainHi: domain?.upperBound)
         }
     }
 }
@@ -532,6 +543,12 @@ private extension GateCurve {
             return .polynomial(coefficients: doc.coefficients ?? [],
                                vCenter: doc.vCenter ?? 0,
                                domain: domain)
+        case "gaussian":
+            return .gaussian(tauMin: doc.tauMin ?? 0.5,
+                             tauMax: doc.tauMax ?? 5.0,
+                             vPeak:  doc.vPeak  ?? -40,
+                             width:  doc.width  ?? 20,
+                             domain: domain)
         default: // "sigmoid"
             return .sigmoid(lo: doc.lo ?? 0, hi: doc.hi ?? 1,
                             vHalf: doc.vHalf ?? -40, k: doc.k ?? 5,

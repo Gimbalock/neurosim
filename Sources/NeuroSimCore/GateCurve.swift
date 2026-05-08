@@ -31,9 +31,6 @@ import Foundation
 public enum GateCurve: Equatable {
     /// 4-parameter logistic on `validDomain` (or all V if nil):
     ///   y(V) = lo + (hi − lo) / (1 + exp(−(V − vHalf)/k))
-    ///
-    /// `k > 0` gives an upward sigmoid (asymptote `hi` at +∞);
-    /// `k < 0` gives a downward sigmoid (asymptote `hi` at −∞).
     case sigmoid(lo: Double,
                  hi: Double,
                  vHalf: Double,
@@ -46,13 +43,20 @@ public enum GateCurve: Equatable {
                     vCenter: Double,
                     domain: ClosedRange<Double>? = nil)
 
+    /// Gaussian bell — ideal shape for voltage-dependent τ(V):
+    ///   y(V) = tauMin + (tauMax − tauMin) · exp(−½·((V − vPeak)/width)²)
+    case gaussian(tauMin: Double,
+                  tauMax: Double,
+                  vPeak: Double,
+                  width: Double,
+                  domain: ClosedRange<Double>? = nil)
+
     /// Optional voltage domain over which the curve is considered valid.
-    /// Outside the domain, `evaluate(at:)` returns nil and the channel
-    /// falls back to its built-in formula.
     public var validDomain: ClosedRange<Double>? {
         switch self {
         case let .sigmoid(_, _, _, _, d):    return d
         case let .polynomial(_, _, d):       return d
+        case let .gaussian(_, _, _, _, d):   return d
         }
     }
 
@@ -63,20 +67,16 @@ public enum GateCurve: Equatable {
 
         switch self {
         case let .sigmoid(lo, hi, vHalf, k, _):
-            // Guard k = 0 against divide-by-zero — collapses to a step;
-            // we return the midpoint at exactly V = vHalf.
             guard abs(k) > 1e-12 else {
                 if v < vHalf      { return lo }
                 else if v > vHalf { return hi }
                 else              { return 0.5 * (lo + hi) }
             }
             let z = -(v - vHalf) / k
-            // Numerically stable logistic: avoid overflow in exp() for
-            // large |z| by switching forms.
             let s: Double
             if z >= 0 {
-                let e = exp(-z)              // small
-                s = e / (1.0 + e)            // = 1 / (1 + exp(z))
+                let e = exp(-z)
+                s = e / (1.0 + e)
             } else {
                 s = 1.0 / (1.0 + exp(z))
             }
@@ -85,12 +85,16 @@ public enum GateCurve: Equatable {
         case let .polynomial(coefficients, vCenter, _):
             guard !coefficients.isEmpty else { return 0 }
             let u = v - vCenter
-            // Horner: ((cn · u + cn-1) · u + cn-2) · u + … + c0
             var result = coefficients.last!
             for c in coefficients.dropLast().reversed() {
                 result = result * u + c
             }
             return result
+
+        case let .gaussian(tauMin, tauMax, vPeak, width, _):
+            let sigma = max(width, 1e-6)
+            let u = (v - vPeak) / sigma
+            return tauMin + (tauMax - tauMin) * exp(-0.5 * u * u)
         }
     }
 
@@ -101,35 +105,26 @@ public enum GateCurve: Equatable {
     public func translatedX(by dV: Double) -> GateCurve {
         switch self {
         case let .sigmoid(lo, hi, vHalf, k, domain):
-            return .sigmoid(lo: lo,
-                            hi: hi,
-                            vHalf: vHalf + dV,
-                            k: k,
+            return .sigmoid(lo: lo, hi: hi, vHalf: vHalf + dV, k: k,
                             domain: domain.map(shifted(by: dV)))
         case let .polynomial(c, vCenter, domain):
-            return .polynomial(coefficients: c,
-                               vCenter: vCenter + dV,
+            return .polynomial(coefficients: c, vCenter: vCenter + dV,
                                domain: domain.map(shifted(by: dV)))
+        case let .gaussian(tMin, tMax, vPeak, w, domain):
+            return .gaussian(tauMin: tMin, tauMax: tMax, vPeak: vPeak + dV, width: w,
+                             domain: domain.map(shifted(by: dV)))
         }
     }
 
-    /// Translate the curve along the y axis by `dy`. The validity
-    /// domain is unchanged (it lives in V, not y). Used by "translate Y".
     public func translatedY(by dy: Double) -> GateCurve {
         switch self {
         case let .sigmoid(lo, hi, vHalf, k, domain):
-            return .sigmoid(lo: lo + dy,
-                            hi: hi + dy,
-                            vHalf: vHalf,
-                            k: k,
-                            domain: domain)
+            return .sigmoid(lo: lo + dy, hi: hi + dy, vHalf: vHalf, k: k, domain: domain)
         case .polynomial(var c, let vCenter, let domain):
-            // For a polynomial, shifting y by dy is just adding dy to the
-            // constant term c0.
             if c.isEmpty { c = [dy] } else { c[0] += dy }
-            return .polynomial(coefficients: c,
-                               vCenter: vCenter,
-                               domain: domain)
+            return .polynomial(coefficients: c, vCenter: vCenter, domain: domain)
+        case let .gaussian(tMin, tMax, vPeak, w, domain):
+            return .gaussian(tauMin: tMin + dy, tauMax: tMax + dy, vPeak: vPeak, width: w, domain: domain)
         }
     }
 

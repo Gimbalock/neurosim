@@ -451,6 +451,8 @@ final class SimulationViewModel: ObservableObject {
 
     /// Rebuild the simulator after any structural mutation that changes the
     /// state-vector layout.
+    func rebuildSimulatorPublic() { rebuildSimulator() }
+
     private func rebuildSimulator() {
         let wasRunning = isRunning
         if wasRunning { pause() }
