@@ -400,6 +400,19 @@ final class SimulationViewModel: ObservableObject {
         addIonChannel(channel, toCompartment: compID, in: neuronID)
     }
 
+    func replaceChannel(at index: Int,
+                        inCompartment compID: UUID,
+                        in neuronID: UUID,
+                        with channel: IonChannel) {
+        guard let n = network.neurons.first(where: { $0.id == neuronID }),
+              let comp = n.compartments.first(where: { $0.id == compID }),
+              comp.channels.indices.contains(index)
+        else { return }
+        comp.channels[index] = channel
+        network.notifyStructuralChange()
+        rebuildSimulator()
+    }
+
     func removeChannel(at index: Int,
                        fromCompartment compID: UUID,
                        in neuronID: UUID) {
@@ -438,6 +451,8 @@ final class SimulationViewModel: ObservableObject {
 
     /// Rebuild the simulator after any structural mutation that changes the
     /// state-vector layout.
+    func rebuildSimulatorPublic() { rebuildSimulator() }
+
     private func rebuildSimulator() {
         let wasRunning = isRunning
         if wasRunning { pause() }
@@ -701,6 +716,3 @@ final class SimulationViewModel: ObservableObject {
     }
 }
 
-private extension Array {
-    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
-}

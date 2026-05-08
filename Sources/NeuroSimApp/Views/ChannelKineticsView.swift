@@ -970,6 +970,11 @@ let plotFrame: CGRect = proxy.plotFrame.map { geo[$0] } ?? .zero
             let coefs = c.enumerated().map { String(format: "c%d=%.6g", $0.offset, $0.element) }
                 .joined(separator: " ")
             return "polynomial vCenter=\(String(format: "%.4f", vCenter)) \(coefs)" + domainSuffix
+        case let .gaussian(tauMin, tauMax, vPeak, width, _):
+            return String(format: "gaussian tauMin=%.4f tauMax=%.4f vPeak=%.4f width=%.4f",
+                          tauMin, tauMax, vPeak, width) + domainSuffix
+        case let .spline(xs, ys, _, _):
+            return "spline \(xs.count) knots v=[\(String(format: "%.1f", xs.first ?? 0))…\(String(format: "%.1f", xs.last ?? 0))]  y=[\(String(format: "%.3f", ys.first ?? 0))…\(String(format: "%.3f", ys.last ?? 0))]" + domainSuffix
         }
     }
 

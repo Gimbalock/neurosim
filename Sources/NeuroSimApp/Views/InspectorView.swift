@@ -415,22 +415,7 @@ private struct ChannelRow: View {
     let compartmentID: UUID
     let neuronID: UUID
 
-    /// Which kinetics-plot sheet (if any) is currently presented.
-    /// `nil` = no sheet. Optional-of-Mode lets us drive `.sheet(item:)`
-    /// instead of two booleans, which is cleaner.
-    @State private var plotMode: PlotPresentation? = nil
-
-    /// Sheet payload — wraps the plot mode in an Identifiable so SwiftUI
-    /// can use it as the sheet's `item:`.
-    private struct PlotPresentation: Identifiable {
-        let mode: ChannelKineticsView.Mode
-        var id: String {
-            switch mode {
-            case .steadyState: return "steadyState"
-            case .kinetics:    return "kinetics"
-            }
-        }
-    }
+    @State private var showChannelEditor = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -443,25 +428,14 @@ private struct ChannelRow: View {
                         .padding(.vertical, 1)
                         .background(.secondary.opacity(0.2), in: Capsule())
                 }
-                // Plot icons — only shown for HH-formalism channels (those
-                // that conform to HHGated). For a passive Leak channel
-                // there is nothing to plot, so we hide them entirely.
                 if channel is HHGated {
                     Button {
-                        plotMode = .init(mode: .steadyState)
+                        showChannelEditor = true
                     } label: {
-                        Image(systemName: "waveform.path")
+                        Image(systemName: "slider.horizontal.3")
                     }
                     .buttonStyle(.borderless)
-                    .help("Plot steady-state activation x∞(V)")
-
-                    Button {
-                        plotMode = .init(mode: .kinetics)
-                    } label: {
-                        Image(systemName: "timer")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Plot gating time constants τ(V)")
+                    .help("Éditer les gates / cinétique")
                 }
                 Spacer()
                 Button(role: .destructive) {
@@ -478,7 +452,7 @@ private struct ChannelRow: View {
                             get: { channel.gMax },
                             set: { channel.gMax = $0; vm.objectWillChange.send() }
                           ),
-                          range: 0...200,
+                          range: 0...500,
                           format: "%.2f",
                           unit: "mS/cm²",
                           labelWidth: 90)
@@ -487,18 +461,22 @@ private struct ChannelRow: View {
                             get: { channel.reversal },
                             set: { channel.reversal = $0; vm.objectWillChange.send() }
                           ),
-                          range: -100...140,
+                          range: -100...200,
                           format: "%.1f",
                           unit: "mV",
                           labelWidth: 90)
         }
         .padding(8)
         .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 6))
-        .sheet(item: $plotMode) { presentation in
-            // Force-cast is safe here: the sheet can only be triggered
-            // from the buttons above, which are gated on `channel is HHGated`.
-            if let hh = channel as? HHGated {
-                ChannelKineticsView(channel: hh, mode: presentation.mode)
+        .sheet(isPresented: $showChannelEditor) {
+            if let hh = channel as? (any HHGated) {
+                ChannelEditorSheet(
+                    channel: hh,
+                    context: .compartment(channel: hh) { _ in
+                        vm.objectWillChange.send()
+                        vm.rebuildSimulatorPublic()
+                    }
+                )
             }
         }
     }
