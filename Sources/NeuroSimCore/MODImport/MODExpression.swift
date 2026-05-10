@@ -99,12 +99,17 @@ indirect enum MODExprNode {
             }
         case .call(let fn, let args):
             let a = args.map { $0.eval(v: v, params: params) }
-            switch fn {
-            case "exp":         return a.count >= 1 ? Foundation.exp(a[0]) : 0
+            switch fn.lowercased() {
+            // "Exp" (Destexhe convention) and "exp" both supported;
+            // mirror NMODL's clamped version: returns 0 for x < -100.
+            case "exp":
+                if a.count < 1 { return 0 }
+                return a[0] < -100 ? 0 : Foundation.exp(a[0])
             case "fabs", "abs": return a.count >= 1 ? Foundation.fabs(a[0]) : 0
             case "log":         return a.count >= 1 ? Foundation.log(a[0]) : 0
             case "sqrt":        return a.count >= 1 ? Foundation.sqrt(a[0]) : 0
             case "vtrap":       return a.count >= 2 ? modVtrap(a[0], a[1]) : 0
+            case "normrand":    return a.count >= 1 ? a[0] : 0   // treat as mean (ignore noise)
             default:            return 0
             }
         }

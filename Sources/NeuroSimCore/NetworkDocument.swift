@@ -16,6 +16,7 @@ public struct NetworkDocument: Codable {
     public var synapses:    [SynapseDoc]
     public var stimuli:     [StimulusEntry]   // keyed by compartment UUID
     public var graphConfig: GraphConfigDoc?   // nil in old files → ignored on load
+    public var noiseParams: [String: SynapticNoiseParams]?  // UUID string → params
 
     public struct StimulusEntry: Codable {
         public var compartmentID: UUID
@@ -364,10 +365,17 @@ public extension NetworkDocument {
             return StimulusEntry(compartmentID: compID, stimulus: doc)
         }
 
+        let noiseDocs: [String: SynapticNoiseParams] = Dictionary(
+            uniqueKeysWithValues: network.synapticNoises.map { (id, src) in
+                (id.uuidString, src.params)
+            }
+        )
+
         return NetworkDocument(neurons:  neuronDocs,
                                synapses: synapseDocs,
                                stimuli:  stimulusEntries,
-                               graphConfig: nil)   // caller fills in graph config
+                               graphConfig: nil,   // caller fills in graph config
+                               noiseParams: noiseDocs.isEmpty ? nil : noiseDocs)
     }
 
     // MARK: - Document → Network
@@ -414,6 +422,11 @@ public extension NetworkDocument {
         for entry in stimuli {
             net.setStimulus(entry.stimulus.toStimulus(),
                             onCompartment: entry.compartmentID)
+        }
+
+        for (uuidStr, params) in noiseParams ?? [:] {
+            guard let id = UUID(uuidString: uuidStr) else { continue }
+            net.setSynapticNoise(params, onCompartment: id)
         }
 
         return net

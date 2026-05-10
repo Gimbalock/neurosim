@@ -111,7 +111,14 @@ struct UnifiedGateDraft: Identifiable {
 
     init(from channel: any HHGated, index: Int) {
         name = channel.gateNames[safe: index] ?? "g\(index)"
-        power = 1
+        // Recover the true gate exponent from MOD definitions; fall back to 1
+        // for channels whose protocol doesn't expose per-gate power.
+        if let modCh = channel as? MODImportedChannel,
+           index < modCh.definition.gates.count {
+            power = modCh.definition.gates[index].power
+        } else {
+            power = 1
+        }
 
         if let ov = channel.gateInfOverrides[safe: index] ?? nil {
             switch ov {

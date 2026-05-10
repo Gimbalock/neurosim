@@ -349,42 +349,13 @@ private struct SignalChartCard: View {
                 .foregroundStyle(.tertiary)
                 .help("Drag to reorder")
 
-            // Legend: one label per trace with its colour dot
-            VStack(alignment: .leading, spacing: 2) {
+            // Legend: one label per trace with colour swatch
+            VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(traces.enumerated()), id: \.element.id) { idx, trace in
-                    HStack(spacing: 5) {
-                        // ColorPicker bound to trace.color in the ViewModel
-                        let colorBinding = Binding<Color>(
-                            get: { vm.signalTraces.first(where: { $0.id == trace.id })?.color ?? trace.color },
-                            set: { newColor in
-                                if let i = vm.signalTraces.firstIndex(where: { $0.id == trace.id }) {
-                                    vm.signalTraces[i].color = newColor
-                                }
-                            }
-                        )
-                        ColorPicker("", selection: colorBinding)
-                            .labelsHidden()
-                            .frame(width: 22, height: 22)
-                        Text(trace.label)
-                            .font(.subheadline.weight(idx == 0 ? .medium : .regular))
-                        if !trace.signal.unit.isEmpty {
-                            Text("[\(trace.signal.unit)]")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        // Remove this single trace
-                        Button {
-                            vm.removeSignalTrace(id: trace.id)
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.quaternary)
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Remove this trace")
-                    }
+                    TraceHeaderRow(trace: trace, isFirst: idx == 0)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer()
 
@@ -631,5 +602,72 @@ private struct SignalChartCard: View {
         let yMin: Double
         let yMax: Double
         let pxPerY: Double
+    }
+}
+
+// MARK: - Per-trace header row (small colour swatch + label + remove)
+
+/// Owns the popover state so each row independently shows/hides its colour picker.
+private struct TraceHeaderRow: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let trace: SimulationViewModel.SignalTrace
+    let isFirst: Bool
+
+    @State private var showColorPicker = false
+
+    private var colorBinding: Binding<Color> {
+        Binding<Color>(
+            get: { vm.signalTraces.first(where: { $0.id == trace.id })?.color ?? trace.color },
+            set: { newColor in
+                if let i = vm.signalTraces.firstIndex(where: { $0.id == trace.id }) {
+                    vm.signalTraces[i].color = newColor
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Small filled circle — tap to open colour picker in a popover
+            Button {
+                showColorPicker.toggle()
+            } label: {
+                Circle()
+                    .fill(colorBinding.wrappedValue)
+                    .frame(width: 10, height: 10)
+                    .overlay(Circle().stroke(Color(nsColor: .separatorColor), lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {
+                ColorPicker("Couleur de la trace", selection: colorBinding)
+                    .padding()
+                    .frame(minWidth: 220)
+            }
+
+            // Label + unit
+            HStack(spacing: 4) {
+                Text(trace.label)
+                    .font(.subheadline.weight(isFirst ? .medium : .regular))
+                    .lineLimit(1)
+                if !trace.signal.unit.isEmpty {
+                    Text("[\(trace.signal.unit)]")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Remove button
+            Button {
+                vm.removeSignalTrace(id: trace.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.quaternary)
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .help("Supprimer cette trace")
+        }
     }
 }

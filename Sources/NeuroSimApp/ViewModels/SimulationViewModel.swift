@@ -644,6 +644,25 @@ final class SimulationViewModel: ObservableObject {
         objectWillChange.send()
     }
 
+    // MARK: - Synaptic noise
+
+    func synapticNoise(forCompartment id: UUID) -> SynapticNoiseParams? {
+        network.synapticNoises[id]?.params
+    }
+
+    func setSynapticNoise(_ params: SynapticNoiseParams?, onCompartment id: UUID) {
+        objectWillChange.send()
+        network.setSynapticNoise(params, onCompartment: id)
+        rebuildSimulator()
+    }
+
+    /// Update noise parameters in-place without resetting the simulator.
+    /// Called during live slider edits in the inspector.
+    func updateSynapticNoiseParams(_ params: SynapticNoiseParams, forCompartment id: UUID) {
+        network.synapticNoises[id]?.params = params
+        objectWillChange.send()
+    }
+
     // MARK: - Document (save / load / new)
 
     /// URL of the file currently open on disk, nil when unsaved.

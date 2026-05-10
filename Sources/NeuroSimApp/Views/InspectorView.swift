@@ -401,6 +401,11 @@ private struct CompartmentEditor: View {
             // ─── Stimulus on this compartment ──────────────────
             Text("Stimulus").font(.subheadline.bold())
             StimulusEditor(compartmentID: compartment.id)
+
+            Divider().padding(.vertical, 2)
+
+            // ─── Synaptic noise on this compartment ────────────
+            SynapticNoiseInspector(compartmentID: compartment.id)
         }
     }
 
@@ -774,6 +779,72 @@ private struct ConcentrationTrackingSection: View {
         .padding(6)
         .background(isTracked ? Color.cyan.opacity(0.1) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+// MARK: - Synaptic noise inspector
+
+private struct SynapticNoiseInspector: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let compartmentID: UUID
+
+    private var hasNoise: Bool { vm.network.synapticNoises[compartmentID] != nil }
+
+    private var paramsBinding: Binding<SynapticNoiseParams> {
+        Binding(
+            get: { vm.network.synapticNoises[compartmentID]?.params ?? SynapticNoiseParams() },
+            set: { vm.updateSynapticNoiseParams($0, forCompartment: compartmentID) }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "waveform.badge.plus").foregroundStyle(.orange)
+                Text("Bruit synaptique").font(.subheadline.bold())
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { hasNoise },
+                    set: { on in
+                        if on { vm.setSynapticNoise(SynapticNoiseParams(), onCompartment: compartmentID) }
+                        else  { vm.setSynapticNoise(nil, onCompartment: compartmentID) }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+            }
+
+            if hasNoise {
+                let p = paramsBinding
+                VStack(spacing: 6) {
+                    // ── Excitatory ────────────────────────────────────
+                    Text("Excitateur (Ee = \(String(format:"%.0f", p.ee.wrappedValue)) mV)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    noiseSlider("ḡₑ",  "mS/cm²", p.geMean,  0...0.2)
+                    noiseSlider("σₑ",  "mS/cm²", p.geSigma, 0...0.05)
+                    noiseSlider("τₑ",  "ms",      p.geTau,   0.5...30)
+
+                    Divider()
+
+                    // ── Inhibitory ────────────────────────────────────
+                    Text("Inhibiteur (Ei = \(String(format:"%.0f", p.ei.wrappedValue)) mV)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    noiseSlider("ḡᵢ",  "mS/cm²", p.giMean,  0...0.2)
+                    noiseSlider("σᵢ",  "mS/cm²", p.giSigma, 0...0.05)
+                    noiseSlider("τᵢ",  "ms",      p.giTau,   0.5...30)
+                }
+                .padding(8)
+                .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func noiseSlider(_ label: String, _ unit: String,
+                              _ binding: Binding<Double>,
+                              _ range: ClosedRange<Double>) -> some View {
+        NumericSlider(label: label, value: binding, range: range,
+                      format: "%.4f", unit: unit, labelWidth: 36)
     }
 }
 

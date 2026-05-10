@@ -212,6 +212,7 @@ struct ChannelLibrarySheet: View {
                             MODImportedChannelDefinition.GateDef(
                                 name: g.name, power: g.power,
                                 alphaExpr: g.alphaExpr, betaExpr: g.betaExpr,
+                                infExpr: g.infExpr, tauExpr: g.tauExpr,
                                 params: g.params)
                         }
                     )

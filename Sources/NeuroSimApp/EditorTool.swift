@@ -25,38 +25,45 @@ enum EditorTool: String, CaseIterable, Identifiable {
     case axialCoupling      // A — drag between two compartments of one neuron
     case stimulus           // B — click a neuron to drop a default stimulus
     case probe              // M — click to add a trace to the plot window
+    case synapticNoise       // W — click a neuron to attach OU synaptic noise
 
     var id: String { rawValue }
 
     /// Short label for tooltips and accessibility.
     var displayName: String {
         switch self {
-        case .select:             return "Select"
-        case .pan:                return "Pan"
-        case .addNeuron:          return "Add neuron"
-        case .addCompartment:     return "Add compartment"
-        case .synapseExcitatory:  return "Excitatory synapse"
-        case .synapseInhibitory:  return "Inhibitory synapse"
-        case .gapJunction:        return "Gap junction (electrical)"
-        case .axialCoupling:      return "Axial coupling"
+        case .select:             return "Sélectionner"
+        case .pan:                return "Panoramique"
+        case .addNeuron:          return "Ajouter un neurone"
+        case .addCompartment:     return "Ajouter un compartiment"
+        case .synapseExcitatory:  return "Synapse excitatrice"
+        case .synapseInhibitory:  return "Synapse inhibitrice"
+        case .gapJunction:        return "Jonction gap (électrique)"
+        case .axialCoupling:      return "Couplage axial"
         case .stimulus:           return "Stimulus"
-        case .probe:              return "Probe"
+        case .probe:              return "Électrode"
+        case .synapticNoise:      return "Bruit synaptique"
         }
     }
 
     /// SF Symbol used in the palette.
     var systemImage: String {
         switch self {
+        // Navigation
         case .select:             return "cursorarrow"
-        case .pan:                return "hand.draw"
-        case .addNeuron:          return "circle.dashed"
-        case .addCompartment:     return "circle.dotted.and.circle"
-        case .synapseExcitatory:  return "arrowtriangle.right.fill"
+        case .pan:                return "hand.raised"
+        // Neurons
+        case .addNeuron:          return "plus.circle"
+        case .addCompartment:     return "smallcircle.filled.circle"
+        // Connections
+        case .synapseExcitatory:  return "arrow.forward.circle.fill"
         case .synapseInhibitory:  return "minus.circle.fill"
-        case .gapJunction:        return "alternatingcurrent"
-        case .axialCoupling:      return "link"
-        case .stimulus:           return "bolt"
-        case .probe:              return "magnifyingglass"
+        case .gapJunction:        return "waveform"
+        case .axialCoupling:      return "arrow.left.and.right.circle"
+        // Tools
+        case .stimulus:           return "bolt.fill"
+        case .probe:              return "scope"
+        case .synapticNoise:      return "waveform.badge.plus"
         }
     }
 
@@ -74,6 +81,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .axialCoupling:      return "a"
         case .stimulus:           return "b"
         case .probe:              return "m"
+        case .synapticNoise:      return "w"
         }
     }
 
@@ -96,7 +104,8 @@ enum EditorTool: String, CaseIterable, Identifiable {
     var isCanvasWired: Bool {
         switch self {
         case .select, .pan, .addNeuron, .addCompartment,
-             .synapseExcitatory, .synapseInhibitory, .gapJunction, .stimulus:
+             .synapseExcitatory, .synapseInhibitory, .gapJunction, .stimulus,
+             .synapticNoise:
             return true
         case .axialCoupling, .probe:
             return false

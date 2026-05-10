@@ -140,7 +140,8 @@ struct NetworkEditorView: View {
             }
             .onAppear {
                 scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                    guard isMouseOverCanvas else { return event }
+                    // Zoom via scroll wheel only when the pan tool is active.
+                    guard isMouseOverCanvas, vm.activeTool == .pan else { return event }
                     let factor: CGFloat = event.scrollingDeltaY > 0 ? 0.9 : 1.1
                     let newScale = min(max(viewportScale * factor, 0.1), 8.0)
                     let centre = CGPoint(x: proxy.size.width / 2,
@@ -157,14 +158,12 @@ struct NetworkEditorView: View {
             .onDisappear {
                 if let m = scrollMonitor { NSEvent.removeMonitor(m); scrollMonitor = nil }
             }
-            // Pinch-to-zoom (trackpad)
+            // Pinch-to-zoom (trackpad) — only when the pan tool is active.
             .gesture(
                 MagnificationGesture()
-                    .onChanged { mag in
-                        let newScale = min(max(mag * viewportScale, 0.1), 8.0)
-                        _ = newScale   // will be committed on end
-                    }
+                    .onChanged { _ in }   // no preview drag, committed on end
                     .onEnded { mag in
+                        guard vm.activeTool == .pan else { return }
                         let centre = CGPoint(x: proxy.size.width / 2,
                                             y: proxy.size.height / 2)
                         let newScale = min(max(viewportScale * mag, 0.1), 8.0)
@@ -249,7 +248,7 @@ struct NetworkEditorView: View {
         case .addCompartment:
             break  // preserve selection so handleNeuronTap can use it as parent
         case .synapseExcitatory, .synapseInhibitory,
-             .gapJunction, .axialCoupling, .stimulus, .probe:
+             .gapJunction, .axialCoupling, .stimulus, .probe, .synapticNoise:
             vm.selection = .none
         }
     }
@@ -620,6 +619,15 @@ private struct NeuronNodeView: View {
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
+
+            // Noise badge — small inward arrow shown when OU noise is attached to the soma
+            if vm.network.synapticNoises[neuron.somaCompartmentID] != nil {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.orange)
+                    .background(Circle().fill(Color(.windowBackgroundColor)).frame(width: 13, height: 13))
+                    .offset(x: radius - 5, y: -(radius - 5))
+            }
         }
         .position(screenPosition)
         .gesture(nodeGesture)
@@ -653,6 +661,12 @@ private struct NeuronNodeView: View {
         case .probe:
             let compID = neuron.somaCompartmentID
             vm.addSignalTrace(.voltage(neuronID: neuron.id, compartmentID: compID))
+            vm.selection = .neuron(neuron.id)
+        case .synapticNoise:
+            let somaID = neuron.somaCompartmentID
+            if vm.network.synapticNoises[somaID] == nil {
+                vm.setSynapticNoise(SynapticNoiseParams(), onCompartment: somaID)
+            }
             vm.selection = .neuron(neuron.id)
         }
     }

@@ -59,11 +59,13 @@ public final class Simulator {
             }
         }
         for stim in network.stimuli.values { stim.reset() }
+        for noise in network.synapticNoises.values { noise.reset() }
     }
 
     /// Advance by one `dt` using the chosen integration method, then
     /// dispatch any spikes detected at the new time.
     public func step() {
+        network.simulationDt = dt
         switch method {
         case .euler:
             ForwardEuler.step(provider: network, state: &state, time: time, dt: dt)

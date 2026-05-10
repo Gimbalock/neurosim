@@ -36,6 +36,13 @@ public final class Network: DerivativeProvider {
     /// dendritic targeting.
     public var stimuli: [UUID: Stimulus] = [:]
 
+    /// Ornstein-Uhlenbeck synaptic noise sources, keyed by compartment UUID.
+    public var synapticNoises: [UUID: SynapticNoiseSource] = [:]
+
+    /// Current simulator timestep — set by Simulator.step() before each integration.
+    /// Used by noise sources to advance their OU state correctly.
+    internal var simulationDt: Double = 0.05
+
     // MARK: - State layout (rebuilt after every structural mutation)
 
     public private(set) var stateCount: Int = 0
@@ -67,6 +74,7 @@ public final class Network: DerivativeProvider {
         neurons.removeAll { $0.id == id }
         synapses.removeAll { $0.preNeuronID == id || $0.postNeuronID == id }
         for cid in compartmentIDs { stimuli.removeValue(forKey: cid) }
+        for cid in compartmentIDs { synapticNoises.removeValue(forKey: cid) }
         rebuildLayout()
     }
 
@@ -97,6 +105,16 @@ public final class Network: DerivativeProvider {
             stimuli[compartmentID] = s
         } else {
             stimuli.removeValue(forKey: compartmentID)
+        }
+    }
+
+    /// Attach (or remove when `nil`) an OU synaptic-noise source to a compartment.
+    public func setSynapticNoise(_ params: SynapticNoiseParams?,
+                                  onCompartment id: UUID) {
+        if let p = params {
+            synapticNoises[id] = SynapticNoiseSource(params: p)
+        } else {
+            synapticNoises.removeValue(forKey: id)
         }
     }
 
@@ -264,6 +282,15 @@ public final class Network: DerivativeProvider {
             for comp in n.compartments {
                 if let stim = stimuli[comp.id] {
                     iInj[comp.id, default: 0] += stim.current(at: time)
+                }
+                // Synaptic noise: voltage-dependent OU conductance injection.
+                if let noise = synapticNoises[comp.id],
+                   let vIdx  = compartmentOffset[comp.id] {
+                    let v = state[vIdx]
+                    // Isyn is outward-positive; subtract to get inward injection.
+                    iInj[comp.id, default: 0] -= noise.current(at: time,
+                                                                voltage: v,
+                                                                dt: simulationDt)
                 }
             }
 

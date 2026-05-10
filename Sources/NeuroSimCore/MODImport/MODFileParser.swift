@@ -23,8 +23,12 @@ public struct MODChannelDescription {
 public struct MODGateDescription {
     public var name:      String           // "m", "h", "n"
     public var power:     Int              // gate exponent in conductance formula
-    public var alphaExpr: String           // α(V) expression string
-    public var betaExpr:  String           // β(V) expression string
+    // Alpha/beta formulation (classical HH)
+    public var alphaExpr: String           // α(V) — empty when inf/tau used
+    public var betaExpr:  String           // β(V) — empty when inf/tau used
+    // Inf/tau formulation (Destexhe/Traub style)
+    public var infExpr:   String?          // x_inf(V) direct expression
+    public var tauExpr:   String?          // τ_x(V)  direct expression
     public var params:    [String: Double] // named constants for evaluation
 }
 
@@ -45,23 +49,35 @@ public enum MODParseError: Error, LocalizedError {
 public enum MODFileParser {
 
     public static func parse(_ source: String) throws -> [MODChannelDescription] {
-        let stripped = stripComments(source)
+        // Normalise Windows (CRLF) and old-Mac (CR) line endings to Unix (LF)
+        // so all subsequent parsing is line-ending-agnostic.
+        let unixSource = source
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r",   with: "\n")
+        let stripped = stripComments(unixSource)
 
         let paramBlock  = extractBlock("PARAMETER",  from: stripped) ?? ""
         let stateBlock  = extractBlock("STATE",      from: stripped) ?? ""
         let neuronBlock = extractBlock("NEURON",     from: stripped) ?? ""
         let bpBlock     = extractBlock("BREAKPOINT", from: stripped) ?? ""
-        let ratesBody   = extractProcedureBody("rates", from: stripped) ?? ""
 
         let params    = parseParameters(paramBlock)
         let stateVars = parseStateVars(stateBlock)         // ["m","h","n"]
         let suffix    = parseSuffix(neuronBlock)
-        let ions      = parseIonInfo(neuronBlock)          // [(ion, readVar, writeVar)]
-        let nonspec   = parseNonspecific(neuronBlock)      // [currentVarName]
-        let formulas  = parseCurrentFormulas(bpBlock)      // [currentVar: rhs]
-        let rates     = parseRates(ratesBody, stateVars: stateVars)
+        let ions      = parseIonInfo(neuronBlock)
+        let nonspec   = parseNonspecific(neuronBlock)
+        let formulas  = parseCurrentFormulas(bpBlock)
 
-        let flatParams = params.mapValues(\.value)
+        // Derive params that may be computed outside PARAMETER (e.g. tadj from celsius)
+        var flatParams = params.mapValues(\.value)
+        enrichDerivedParams(&flatParams)
+
+        // Extract kinetics: try alpha/beta first, then inf/tau with local-var inlining.
+        let kineticsBody = extractKineticsBody(stateVars, from: stripped) ?? ""
+        let (abRates, itRates) = parseKinetics(kineticsBody,
+                                                stateVars: stateVars,
+                                                params: &flatParams)
+
         var channels: [MODChannelDescription] = []
 
         // USEION channels
@@ -70,12 +86,13 @@ public enum MODFileParser {
             guard let info = extractChannelComponents(formula, stateVars: Set(stateVars),
                                                        params: flatParams) else { continue }
 
-            let gMax     = convertConductance(value: params[info.gMaxVar]?.value ?? 0,
-                                              unit:  params[info.gMaxVar]?.unit  ?? "")
-            let eRev     = params[info.reversalVar]?.value ?? params[ion.readVar]?.value ?? 0
+            let gMax = convertConductance(value: params[info.gMaxVar]?.value ?? 0,
+                                          unit:  params[info.gMaxVar]?.unit  ?? "")
+            let eRev = params[info.reversalVar]?.value ?? params[ion.readVar]?.value ?? 0
 
-            let gates    = buildGates(info: info, stateVars: stateVars, rates: rates,
-                                       params: flatParams)
+            let gates = buildGates(info: info, stateVars: stateVars,
+                                   abRates: abRates, itRates: itRates,
+                                   params: flatParams)
             channels.append(MODChannelDescription(
                 name:      ionDisplayName(ion.ion),
                 gMax:      gMax,
@@ -92,9 +109,9 @@ public enum MODFileParser {
             guard let info = extractChannelComponents(formula, stateVars: Set(stateVars),
                                                        params: flatParams) else { continue }
 
-            let gMax  = convertConductance(value: params[info.gMaxVar]?.value ?? 0,
-                                           unit:  params[info.gMaxVar]?.unit  ?? "")
-            let eRev  = params[info.reversalVar]?.value ?? 0
+            let gMax = convertConductance(value: params[info.gMaxVar]?.value ?? 0,
+                                          unit:  params[info.gMaxVar]?.unit  ?? "")
+            let eRev = params[info.reversalVar]?.value ?? 0
 
             channels.append(MODChannelDescription(
                 name:      "Leak",
@@ -131,7 +148,9 @@ private func extractBlock(_ name: String, from source: String) -> String? {
 }
 
 private func extractProcedureBody(_ name: String, from source: String) -> String? {
-    let pattern = "PROCEDURE\\s+\(name)\\s*\\([^)]*\\)\\s*\\{"
+    // Match "PROCEDURE <name> ... {" where the argument list may contain
+    // nested parentheses like "v(mV)" — so we use [^{]* instead of \([^)]*\).
+    let pattern = "PROCEDURE\\s+\(NSRegularExpression.escapedPattern(for: name))\\s*[^{]*\\{"
     guard let range = source.range(of: pattern, options: .regularExpression) else { return nil }
     return extractToMatchingBrace(source[range.upperBound...])
 }
@@ -297,10 +316,47 @@ private func extractChannelComponents(_ formula: String,
                              gates: Set(gateCounts.keys), gateCounts: gateCounts)
 }
 
-// MARK: - Rates (alpha/beta per gate)
+// MARK: - Kinetics procedure extraction (flexible name detection)
 
-private func parseRates(_ body: String, stateVars: [String]) -> [String: (alpha: String, beta: String)] {
-    var result: [String: (alpha: String, beta: String)] = [:]
+/// Tries several well-known NMODL procedure names used for gate kinetics.
+/// Returns the body of the first matching procedure whose content looks like
+/// it contains gate-kinetics assignments.
+private func extractKineticsBody(_ stateVars: [String], from source: String) -> String? {
+    let candidates = ["rates", "evaluate_fct", "rate", "calcrate",
+                       "rates2", "calc_rates", "evaluate", "kinetics"]
+    for name in candidates {
+        if let body = extractProcedureBody(name, from: source) {
+            let lower = body.lowercased()
+            let hasKinetics = stateVars.contains { g in
+                lower.contains("\(g)_inf") || lower.contains("tau_\(g)") ||
+                lower.contains("alpha_\(g)") || lower.contains("alpha")
+            }
+            if hasKinetics { return body }
+        }
+    }
+    return nil
+}
+
+// MARK: - Unified kinetics dispatcher
+
+private typealias ABRates = [String: (alpha: String, beta: String)]
+private typealias ITRates = [String: (inf: String, tau: String)]
+
+private func parseKinetics(_ body: String,
+                             stateVars: [String],
+                             params: inout [String: Double]) -> (ABRates, ITRates) {
+    // Try classic alpha/beta first
+    let ab = parseAlphaBeta(body, stateVars: stateVars)
+    if !ab.isEmpty { return (ab, [:]) }
+    // Fall back to inf/tau with local-variable inlining (Destexhe/Traub style)
+    let it = parseInfTau(body, stateVars: stateVars, params: &params)
+    return ([:], it)
+}
+
+// MARK: - Alpha/beta parser (classic HH)
+
+private func parseAlphaBeta(_ body: String, stateVars: [String]) -> ABRates {
+    var result: ABRates = [:]
     var currentAlpha = ""
     var currentBeta  = ""
 
@@ -319,7 +375,6 @@ private func parseRates(_ body: String, stateVars: [String]) -> [String: (alpha:
         } else if lower.hasPrefix("beta") && stmt.contains("=") {
             currentBeta = rhs()
         } else {
-            // Look for "<gate>inf = ..." to tag which gate just got defined
             for gate in stateVars {
                 if lower.hasPrefix(gate + "inf") && stmt.contains("=") {
                     if !currentAlpha.isEmpty && !currentBeta.isEmpty {
@@ -333,22 +388,132 @@ private func parseRates(_ body: String, stateVars: [String]) -> [String: (alpha:
     return result
 }
 
+// MARK: - Inf/tau parser with local-variable inlining (Destexhe/Traub style)
+
+/// Handles procedures like `evaluate_fct` that compute:
+///   v2     = v - vtraub          ← local alias for shifted voltage
+///   a      = alpha_expr(v2)      ← intermediate (re-used per gate)
+///   b      = beta_expr(v2)       ← intermediate (re-used per gate)
+///   tau_m  = 1 / (a + b) / tadj  ← gate kinetic
+///   m_inf  = a / (a + b)         ← gate kinetic
+///   a      = ...                 ← a is REUSED for next gate
+///
+/// Key: each local variable is inlined INTO the rhs **immediately** as each
+/// line is read, and the fully-expanded value is stored back.  That way when
+/// `a` is reassigned for the h-gate, the m-gate expressions already contain
+/// the m-gate value of `a` — not the h-gate value.
+private func parseInfTau(_ body: String,
+                           stateVars: [String],
+                           params: inout [String: Double]) -> ITRates {
+
+    // name → fully-expanded expression (no local-var references left)
+    var localMap: [String: String] = [:]
+    var infExprs: [String: String] = [:]
+    var tauExprs: [String: String] = [:]
+
+    for rawLine in body.components(separatedBy: "\n") {
+        let stmt = rawLine.trimmingCharacters(in: .whitespaces)
+        guard !stmt.isEmpty, stmt.contains("=") else { continue }
+        let lower = stmt.lowercased()
+        // Skip non-assignment control keywords
+        guard !lower.hasPrefix("verbatim"), !lower.hasPrefix("endverbatim"),
+              !lower.hasPrefix("local"),    !lower.hasPrefix("solve"),
+              !lower.hasPrefix("if"),       !lower.hasPrefix("else")
+        else { continue }
+
+        guard let eqIdx = stmt.firstIndex(of: "=") else { continue }
+        let lhs = stmt[..<eqIdx].trimmingCharacters(in: .whitespaces)
+        var rhs = String(stmt[stmt.index(after: eqIdx)...]).trimmingCharacters(in: .whitespaces)
+        guard !lhs.isEmpty,
+              lhs.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }),
+              !rhs.isEmpty
+        else { continue }
+
+        // ── Inline every currently-known local variable into rhs. ──────────
+        // Because stored values are already fully expanded, a single pass
+        // through localMap suffices — no chained look-up needed.
+        for (varName, varExpr) in localMap {
+            rhs = inlineLocalVar(varName, replacement: varExpr, in: rhs)
+        }
+
+        // ── Classify the lhs ───────────────────────────────────────────────
+        var isGateKinetic = false
+        for gate in stateVars {
+            if lhs == "\(gate)_inf" || lhs == "\(gate)inf" {
+                infExprs[gate] = rhs; isGateKinetic = true; break
+            }
+            if lhs == "tau_\(gate)" || lhs == "\(gate)_tau" {
+                tauExprs[gate] = rhs; isGateKinetic = true; break
+            }
+        }
+        // Store (or overwrite) the fully-expanded local variable.
+        // Overwriting is intentional: when `a` is reassigned for the next
+        // gate, the old gate's expressions already captured its value.
+        if !isGateKinetic && !stateVars.contains(lhs) {
+            localMap[lhs] = rhs
+        }
+    }
+
+    // Ensure temperature-adjustment factor is available as a numeric param.
+    // tadj = Q10 ^ ((celsius − 36) / 10) — standard Traub/Destexhe convention.
+    if params["tadj"] == nil {
+        let celsius = params["celsius"] ?? 36.0
+        params["tadj"] = pow(3.0, (celsius - 36.0) / 10.0)
+    }
+
+    var result: ITRates = [:]
+    for gate in stateVars {
+        if let inf = infExprs[gate], let tau = tauExprs[gate] {
+            result[gate] = (inf: inf, tau: tau)
+        }
+    }
+    return result
+}
+
+/// Replace whole-word occurrences of `name` with `(replacement)` using
+/// look-around assertions to avoid partial-identifier matches.
+private func inlineLocalVar(_ name: String, replacement: String, in expr: String) -> String {
+    let escaped = NSRegularExpression.escapedPattern(for: name)
+    let pattern = "(?<![a-zA-Z0-9_])\(escaped)(?![a-zA-Z0-9_])"
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return expr }
+    let range = NSRange(expr.startIndex..., in: expr)
+    return regex.stringByReplacingMatches(in: expr, range: range,
+                                          withTemplate: "(\(replacement))")
+}
+
+// MARK: - Derived-param enrichment
+
+/// Adds computed constants that are defined outside the PARAMETER block
+/// (e.g. tadj derived from celsius, which is common in temperature-scaled models).
+private func enrichDerivedParams(_ params: inout [String: Double]) {
+    if params["tadj"] == nil {
+        let celsius = params["celsius"] ?? 36.0
+        params["tadj"] = pow(3.0, (celsius - 36.0) / 10.0)
+    }
+}
+
 // MARK: - Gate assembly
 
 private func buildGates(info: ChannelComponents,
                          stateVars: [String],
-                         rates: [String: (alpha: String, beta: String)],
+                         abRates: ABRates,
+                         itRates: ITRates,
                          params: [String: Double]) -> [MODGateDescription] {
     var gates: [MODGateDescription] = []
     for gate in stateVars where info.gates.contains(gate) {
-        guard let (alpha, beta) = rates[gate] else { continue }
-        gates.append(MODGateDescription(
-            name:      gate,
-            power:     info.gateCounts[gate] ?? 1,
-            alphaExpr: alpha,
-            betaExpr:  beta,
-            params:    params
-        ))
+        let power = info.gateCounts[gate] ?? 1
+        if let (alpha, beta) = abRates[gate] {
+            gates.append(MODGateDescription(
+                name: gate, power: power,
+                alphaExpr: alpha, betaExpr: beta,
+                params: params))
+        } else if let (inf, tau) = itRates[gate] {
+            gates.append(MODGateDescription(
+                name: gate, power: power,
+                alphaExpr: "", betaExpr: "",
+                infExpr: inf, tauExpr: tau,
+                params: params))
+        }
     }
     return gates
 }
