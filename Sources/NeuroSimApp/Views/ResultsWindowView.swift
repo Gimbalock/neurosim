@@ -18,11 +18,9 @@ import NeuroSimCore
 import AppKit
 import UniformTypeIdentifiers
 
-// MARK: - Colour palette for overlaid traces
+// MARK: - Colour palette alias (palette defined in SimulationViewModel.swift)
 
-private let kTraceColors: [Color] = [
-    .blue, .orange, .green, .red, .purple, .yellow, .teal, .pink
-]
+private let kTraceColors: [Color] = kTracePalette
 
 // MARK: - Root view
 
@@ -355,9 +353,18 @@ private struct SignalChartCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Array(traces.enumerated()), id: \.element.id) { idx, trace in
                     HStack(spacing: 5) {
-                        Circle()
-                            .fill(kTraceColors[idx % kTraceColors.count])
-                            .frame(width: 8, height: 8)
+                        // ColorPicker bound to trace.color in the ViewModel
+                        let colorBinding = Binding<Color>(
+                            get: { vm.signalTraces.first(where: { $0.id == trace.id })?.color ?? trace.color },
+                            set: { newColor in
+                                if let i = vm.signalTraces.firstIndex(where: { $0.id == trace.id }) {
+                                    vm.signalTraces[i].color = newColor
+                                }
+                            }
+                        )
+                        ColorPicker("", selection: colorBinding)
+                            .labelsHidden()
+                            .frame(width: 22, height: 22)
                         Text(trace.label)
                             .font(.subheadline.weight(idx == 0 ? .medium : .regular))
                         if !trace.signal.unit.isEmpty {
@@ -406,7 +413,7 @@ private struct SignalChartCard: View {
     private var chart: some View {
         Chart {
             ForEach(Array(traces.enumerated()), id: \.element.id) { idx, trace in
-                let color = kTraceColors[idx % kTraceColors.count]
+                let color = trace.color
                 ForEach(trace.points) { p in
                     LineMark(
                         x: .value("t (ms)", p.t),
