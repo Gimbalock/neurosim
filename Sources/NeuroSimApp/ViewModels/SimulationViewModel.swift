@@ -20,6 +20,12 @@ import NeuroSimCore
 import AppKit
 import UniformTypeIdentifiers
 
+// MARK: - Shared trace colour palette (used by SimulationViewModel + ResultsWindowView)
+
+let kTracePalette: [Color] = [
+    .blue, .orange, .green, .red, .purple, .yellow, .teal, .pink
+]
+
 @MainActor
 final class SimulationViewModel: ObservableObject {
 
@@ -61,6 +67,7 @@ final class SimulationViewModel: ObservableObject {
         var signal: TracedSignal
         var label: String
         var points: [PlotPoint]
+        var color: Color
     }
 
     @Published var signalTraces: [SignalTrace] = []
@@ -73,10 +80,20 @@ final class SimulationViewModel: ObservableObject {
     func addSignalTrace(_ signal: TracedSignal, toGroup groupID: UUID? = nil) {
         guard !signalTraces.contains(where: { $0.signal == signal }) else { return }
         let label = signal.displayLabel(in: network)
+        // Pick palette color based on the number of existing traces in the target group.
+        let countInGroup: Int
+        if let gid = groupID {
+            countInGroup = signalTraces.filter { $0.chartGroupID == gid }.count
+        } else {
+            countInGroup = 0
+        }
+        let color = kTracePalette[countInGroup % kTracePalette.count]
         signalTraces.append(SignalTrace(id: UUID(),
                                         chartGroupID: groupID ?? UUID(),
                                         signal: signal,
-                                        label: label, points: []))
+                                        label: label,
+                                        points: [],
+                                        color: color))
     }
 
     func removeSignalTrace(id: UUID) {
@@ -91,16 +108,22 @@ final class SimulationViewModel: ObservableObject {
 
     private struct GraphConfig: Codable {
         struct Entry: Codable {
-            var signal: TracedSignal
+            var signal:  TracedSignal
             var groupID: UUID
+            var colorR:  Double? = nil
+            var colorG:  Double? = nil
+            var colorB:  Double? = nil
         }
         var entries: [Entry]
         var plotWindow: Double
     }
 
     func saveGraphConfig() {
-        let entries = signalTraces.map {
-            GraphConfig.Entry(signal: $0.signal, groupID: $0.chartGroupID)
+        let entries = signalTraces.map { t -> GraphConfig.Entry in
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            NSColor(t.color).usingColorSpace(.sRGB)?.getRed(&r, green: &g, blue: &b, alpha: &a)
+            return GraphConfig.Entry(signal: t.signal, groupID: t.chartGroupID,
+                                     colorR: Double(r), colorG: Double(g), colorB: Double(b))
         }
         let config = GraphConfig(entries: entries, plotWindow: plotWindow)
         let encoder = JSONEncoder()
@@ -122,12 +145,19 @@ final class SimulationViewModel: ObservableObject {
               let config = try? JSONDecoder().decode(GraphConfig.self, from: data)
         else { return }
         plotWindow = config.plotWindow
-        signalTraces = config.entries.map { entry in
-            SignalTrace(id: UUID(),
+        signalTraces = config.entries.enumerated().map { idx, entry in
+            let color: Color
+            if let r = entry.colorR, let g = entry.colorG, let b = entry.colorB {
+                color = Color(NSColor(srgbRed: r, green: g, blue: b, alpha: 1))
+            } else {
+                color = kTracePalette[idx % kTracePalette.count]
+            }
+            return SignalTrace(id: UUID(),
                         chartGroupID: entry.groupID,
                         signal: entry.signal,
                         label: entry.signal.displayLabel(in: network),
-                        points: [])
+                        points: [],
+                        color: color)
         }
     }
 
@@ -660,7 +690,11 @@ final class SimulationViewModel: ObservableObject {
         var doc = NetworkDocument.from(network)
         doc.graphConfig = NetworkDocument.GraphConfigDoc(
             entries: signalTraces.map { t in
-                NetworkDocument.GraphConfigDoc.Entry(signal: t.signal, groupID: t.chartGroupID)
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+                NSColor(t.color).usingColorSpace(.sRGB)?.getRed(&r, green: &g, blue: &b, alpha: &a)
+                return NetworkDocument.GraphConfigDoc.Entry(
+                    signal: t.signal, groupID: t.chartGroupID,
+                    colorR: Double(r), colorG: Double(g), colorB: Double(b))
             },
             plotWindow: plotWindow
         )
@@ -679,12 +713,19 @@ final class SimulationViewModel: ObservableObject {
         documentURL = url
         if let gc = doc.graphConfig {
             plotWindow = gc.plotWindow
-            signalTraces = gc.entries.map { entry in
-                SignalTrace(id: UUID(),
+            signalTraces = gc.entries.enumerated().map { idx, entry in
+                let color: Color
+                if let r = entry.colorR, let g = entry.colorG, let b = entry.colorB {
+                    color = Color(NSColor(srgbRed: r, green: g, blue: b, alpha: 1))
+                } else {
+                    color = kTracePalette[idx % kTracePalette.count]
+                }
+                return SignalTrace(id: UUID(),
                             chartGroupID: entry.groupID,
                             signal: entry.signal,
                             label: entry.signal.displayLabel(in: network),
-                            points: [])
+                            points: [],
+                            color: color)
             }
         }
         rebuildSimulator()

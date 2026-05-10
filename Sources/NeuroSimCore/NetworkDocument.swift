@@ -26,8 +26,13 @@ public struct NetworkDocument: Codable {
         public struct Entry: Codable {
             public var signal:  TracedSignal
             public var groupID: UUID
-            public init(signal: TracedSignal, groupID: UUID) {
+            public var colorR:  Double? = nil
+            public var colorG:  Double? = nil
+            public var colorB:  Double? = nil
+            public init(signal: TracedSignal, groupID: UUID,
+                        colorR: Double? = nil, colorG: Double? = nil, colorB: Double? = nil) {
                 self.signal = signal; self.groupID = groupID
+                self.colorR = colorR; self.colorG = colorG; self.colorB = colorB
             }
         }
         public var entries:    [Entry]
