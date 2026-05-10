@@ -135,16 +135,7 @@ struct SignalPickerView: View {
             }
             // Synaptic currents
             ForEach(vm.network.synapses, id: \.id) { syn in
-                let preName  = vm.network.neurons.first { $0.id == syn.preNeuronID }?.name  ?? "?"
-                let postName = vm.network.neurons.first { $0.id == syn.postNeuronID }?.name ?? "?"
-                let isGap    = syn is GapJunction
-                let arrow    = isGap ? "↔" : "→"
-                let iSynSignal = TracedSignal.synapticCurrent(synapseID: syn.id)
-                let iSynLabel  = "\(preName)\(arrow)\(postName)  I_syn(t)  [µA/cm²]"
-                if matches(iSynLabel) {
-                    SignalRow(label: iSynLabel, icon: "arrow.left.and.right", color: .pink,
-                              signal: iSynSignal, groupID: targetGroupID, isPresented: $isPresented)
-                }
+                synapticCurrentRow(syn: syn)
             }
         }
     }
@@ -158,38 +149,65 @@ struct SignalPickerView: View {
                     let hasMultiComp = neuron.compartments.count > 1
                     let compLabel = hasMultiComp ? comp.name : ""
                     ForEach(Array(comp.channels.enumerated()), id: \.offset) { chIdx, ch in
-                        if let gated = ch as? HHGated {
-                            let prefix = compLabel.isEmpty
-                                ? "\(neuron.name) · \(ch.name)"
-                                : "\(neuron.name) · \(compLabel) · \(ch.name)"
-                            ForEach(Array(gated.gateNames.enumerated()), id: \.offset) { gIdx, gName in
-                                let gSignal = TracedSignal.gate(neuronID: neuron.id,
-                                                                compartmentID: comp.id,
-                                                                channelIndex: chIdx,
-                                                                gateIndex: gIdx)
-                                let gLabel = "\(prefix)  \(gName)(t)"
-                                if matches(gLabel) {
-                                    SignalRow(label: gLabel, icon: "slider.horizontal.3", color: .purple,
-                                              signal: gSignal, groupID: targetGroupID, isPresented: $isPresented)
-                                }
-                            }
-                        }
+                        gatingChannelRows(neuron: neuron, comp: comp,
+                                          compLabel: compLabel, chIdx: chIdx, ch: ch)
                     }
                 }
             }
             // Synaptic gating s(t)
             ForEach(vm.network.synapses, id: \.id) { syn in
-                guard !(syn is GapJunction) else { return }
-                let preName  = vm.network.neurons.first { $0.id == syn.preNeuronID }?.name  ?? "?"
-                let postName = vm.network.neurons.first { $0.id == syn.postNeuronID }?.name ?? "?"
-                let sSignal = TracedSignal.synapticGating(synapseID: syn.id)
-                let sLabel  = "\(preName)→\(postName)  s(t)"
-                if matches(sLabel) {
-                    SignalRow(label: sLabel,
-                              icon: "point.topleft.down.to.point.bottomright.curvepath",
-                              color: .teal,
-                              signal: sSignal, groupID: targetGroupID, isPresented: $isPresented)
+                synapticGatingRow(syn: syn)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func gatingChannelRows(neuron: HHNeuron, comp: Compartment,
+                                   compLabel: String, chIdx: Int, ch: IonChannel) -> some View {
+        if let gated = ch as? HHGated {
+            let prefix = compLabel.isEmpty
+                ? "\(neuron.name) · \(ch.name)"
+                : "\(neuron.name) · \(compLabel) · \(ch.name)"
+            ForEach(Array(gated.gateNames.enumerated()), id: \.offset) { gIdx, gName in
+                let gSignal = TracedSignal.gate(neuronID: neuron.id,
+                                               compartmentID: comp.id,
+                                               channelIndex: chIdx,
+                                               gateIndex: gIdx)
+                let gLabel = "\(prefix)  \(gName)(t)"
+                if matches(gLabel) {
+                    SignalRow(label: gLabel, icon: "slider.horizontal.3", color: .purple,
+                              signal: gSignal, groupID: targetGroupID, isPresented: $isPresented)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func synapticCurrentRow(syn: Synapse) -> some View {
+        let preName  = vm.network.neurons.first { $0.id == syn.preNeuronID }?.name  ?? "?"
+        let postName = vm.network.neurons.first { $0.id == syn.postNeuronID }?.name ?? "?"
+        let isGap    = syn is GapJunction
+        let arrow    = isGap ? "↔" : "→"
+        let iSynSignal = TracedSignal.synapticCurrent(synapseID: syn.id)
+        let iSynLabel  = "\(preName)\(arrow)\(postName)  I_syn(t)  [µA/cm²]"
+        if matches(iSynLabel) {
+            SignalRow(label: iSynLabel, icon: "arrow.left.and.right", color: .pink,
+                      signal: iSynSignal, groupID: targetGroupID, isPresented: $isPresented)
+        }
+    }
+
+    @ViewBuilder
+    private func synapticGatingRow(syn: Synapse) -> some View {
+        if !(syn is GapJunction) {
+            let preName  = vm.network.neurons.first { $0.id == syn.preNeuronID }?.name  ?? "?"
+            let postName = vm.network.neurons.first { $0.id == syn.postNeuronID }?.name ?? "?"
+            let sSignal  = TracedSignal.synapticGating(synapseID: syn.id)
+            let sLabel   = "\(preName)→\(postName)  s(t)"
+            if matches(sLabel) {
+                SignalRow(label: sLabel,
+                          icon: "point.topleft.down.to.point.bottomright.curvepath",
+                          color: .teal,
+                          signal: sSignal, groupID: targetGroupID, isPresented: $isPresented)
             }
         }
     }
