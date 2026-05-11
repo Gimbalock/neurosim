@@ -237,14 +237,14 @@ struct ToolPaletteView: View {
         Image(systemName: systemImage)
             .font(.system(size: 15, weight: .regular))
             .frame(width: 32, height: 32)
-            .foregroundStyle(isActive ? Color.white : color)
+            .foregroundStyle(isActive ? Color.white : color.opacity(0.6))
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isActive ? color : color.opacity(0.08))
+                    .fill(isActive ? color : Color.clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .stroke(isWired ? .clear : color.opacity(0.35),
+                    .stroke(isWired ? .clear : Color.secondary.opacity(0.3),
                             style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
             )
             .contentShape(Rectangle())
