@@ -37,7 +37,6 @@ struct NeuroSimApp: App {
                 Button("Open…") { viewModel.openNetwork() }
                     .keyboardShortcut("o", modifiers: [.command])
                 Button("Import…") { viewModel.importNetwork() }
-                    .keyboardShortcut("i", modifiers: [.command, .shift])
                 Divider()
                 Button("Save") { viewModel.saveNetwork() }
                     .keyboardShortcut("s", modifiers: [.command])
