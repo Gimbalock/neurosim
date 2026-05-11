@@ -435,7 +435,7 @@ public extension NetworkDocument {
 
 // MARK: - ChannelDoc helpers
 
-private extension ChannelDoc {
+extension ChannelDoc {
 
     static func from(_ ch: IonChannel) -> ChannelDoc {
         switch ch {

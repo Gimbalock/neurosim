@@ -226,6 +226,38 @@ final class SimulationViewModel: ObservableObject {
         rebuildSimulator()
     }
 
+    /// Deep-copy the selected neuron (delegates to Network.duplicateNeuron which has
+    /// access to internal NeuroSimCore helpers for channel deep-copying).
+    func duplicateSelectedNeuron(withConnections: Bool) {
+        guard case .neuron(let id) = selection else { return }
+        guard let (newNeuron, compIDMap) = network.duplicateNeuron(id: id) else { return }
+
+        if withConnections {
+            let newNeuronID = newNeuron.id
+            for syn in network.synapses where syn.preNeuronID == id || syn.postNeuronID == id {
+                let newPre  = syn.preNeuronID  == id ? newNeuronID : syn.preNeuronID
+                let newPost = syn.postNeuronID == id ? newNeuronID : syn.postNeuronID
+                if let chem = syn as? ChemicalSynapse {
+                    let newPostComp: UUID? = (chem.postNeuronID == id)
+                        ? chem.postCompartmentID.flatMap { compIDMap[$0] }
+                        : chem.postCompartmentID
+                    network.addSynapse(ChemicalSynapse(
+                        from: newPre, to: newPost,
+                        onCompartment: newPostComp,
+                        gMax: chem.gMax, reversal: chem.reversal,
+                        tauDecay: chem.tauDecay, sMax: chem.sMax, weight: chem.weight))
+                } else if let gj = syn as? GapJunction {
+                    network.addSynapse(GapJunction(
+                        from: newPre, to: newPost,
+                        conductance: gj.conductance, weight: gj.weight))
+                }
+            }
+        }
+
+        selection = .neuron(newNeuron.id)
+        rebuildSimulator()
+    }
+
     /// Add a chemical synapse between two neurons. `reversal` controls
     /// whether it is excitatory (≈ 0 mV) or inhibitory (≈ -75 mV); the
     /// tool palette passes the appropriate value depending on which
@@ -703,6 +735,36 @@ final class SimulationViewModel: ObservableObject {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         loadDocument(from: url)
+    }
+
+    /// Merge a saved network file into the current network (neurons + synapses + stimuli + noise).
+    /// Imported neurons are offset to the right of existing ones so they don't overlap.
+    func importNetwork() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Importer"
+        panel.message = "Ajouter un neurone ou un réseau au réseau actuel"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let data = try? Data(contentsOf: url),
+              let doc = try? JSONDecoder().decode(NetworkDocument.self, from: data) else { return }
+
+        let imported = doc.toNetwork()
+        let offsetX = (network.neurons.map(\.positionX).max() ?? -200) + 200
+        for neuron in imported.neurons {
+            neuron.positionX += offsetX
+            network.addNeuron(neuron)
+        }
+        for syn in imported.synapses {
+            network.addSynapse(syn)
+        }
+        for (compID, stim) in imported.stimuli {
+            network.setStimulus(stim, onCompartment: compID)
+        }
+        for (compID, src) in imported.synapticNoises {
+            network.synapticNoises[compID] = src
+        }
+        rebuildSimulator()
     }
 
     private func writeDocument(to url: URL) {

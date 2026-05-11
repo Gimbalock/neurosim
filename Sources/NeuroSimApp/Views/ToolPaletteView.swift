@@ -42,6 +42,8 @@ struct ToolPaletteView: View {
             paletteButton(.addNeuron)
             paletteButton(.addCompartment)
             deleteSelectedButton
+            duplicateButton
+            duplicateWithConnectionsButton
 
             paletteSeparator
 
@@ -127,6 +129,52 @@ struct ToolPaletteView: View {
         .disabled(!deletable)
         .help("Supprimer la sélection  (⌫)")
         .accessibilityLabel("Supprimer la sélection")
+    }
+
+    // MARK: - Duplicate action buttons
+
+    private var duplicateButton: some View {
+        let duplicable: Bool
+        if case .neuron = vm.selection { duplicable = true } else { duplicable = false }
+        return Button {
+            vm.duplicateSelectedNeuron(withConnections: false)
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 15, weight: .regular))
+                .frame(width: 32, height: 32)
+                .foregroundStyle(duplicable ? Color.primary : Color.secondary.opacity(0.35))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(duplicable ? Color.primary.opacity(0.06) : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!duplicable)
+        .help("Dupliquer le neurone")
+        .accessibilityLabel("Dupliquer")
+    }
+
+    private var duplicateWithConnectionsButton: some View {
+        let duplicable: Bool
+        if case .neuron = vm.selection { duplicable = true } else { duplicable = false }
+        return Button {
+            vm.duplicateSelectedNeuron(withConnections: true)
+        } label: {
+            Image(systemName: "doc.on.doc.fill")
+                .font(.system(size: 15, weight: .regular))
+                .frame(width: 32, height: 32)
+                .foregroundStyle(duplicable ? Color.accentColor : Color.secondary.opacity(0.35))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(duplicable ? Color.accentColor.opacity(0.08) : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!duplicable)
+        .help("Dupliquer avec connexions")
+        .accessibilityLabel("Dupliquer avec connexions")
     }
 
     // MARK: - Reserved placeholder

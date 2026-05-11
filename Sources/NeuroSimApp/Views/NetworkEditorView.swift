@@ -440,6 +440,10 @@ private struct DendriteView: View {
                     if vm.activeTool == .probe {
                         vm.addSignalTrace(.voltage(neuronID: neuron.id,
                                                    compartmentID: compartment.id))
+                    } else if vm.activeTool == .synapticNoise {
+                        if vm.network.synapticNoises[compartment.id] == nil {
+                            vm.setSynapticNoise(SynapticNoiseParams(), onCompartment: compartment.id)
+                        }
                     }
                     vm.selection = .compartment(compartment.id)
                 }
@@ -451,6 +455,20 @@ private struct DendriteView: View {
                 .rotationEffect(.radians(angle))
                 .position(x: midX, y: midY)
                 .allowsHitTesting(false)
+
+            // Noise badge — orange arrow when OU noise is attached to this compartment
+            if vm.network.synapticNoises[compartment.id] != nil {
+                let perpOffX = CGFloat(-sin(angle)) * (visualWidth / 2 + 5)
+                let perpOffY = CGFloat( cos(angle)) * (visualWidth / 2 + 5)
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 9, weight: .regular))
+                    .foregroundStyle(.orange)
+                    .background(
+                        Circle().fill(Color(.windowBackgroundColor)).frame(width: 11, height: 11)
+                    )
+                    .position(x: midX + perpOffX, y: midY + perpOffY)
+                    .allowsHitTesting(false)
+            }
 
             // Drag handle at tip
             Circle()
