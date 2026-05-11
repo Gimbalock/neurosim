@@ -52,6 +52,8 @@ struct ToolPaletteView: View {
             sectionLabel("CONNEXIONS")
             paletteButton(.synapseExcitatory)
             paletteButton(.synapseInhibitory)
+            paletteButton(.synapseNMDA)
+            paletteButton(.synapseSTDP)
             paletteButton(.gapJunction)
             paletteButton(.axialCoupling)
             paletteButton(.synapticNoise)

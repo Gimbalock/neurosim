@@ -21,6 +21,8 @@ enum EditorTool: String, CaseIterable, Identifiable {
     case addCompartment     // C — click a neuron to add a compartment
     case synapseExcitatory  // E — drag between two neurons (reversal ≈ 0 mV)
     case synapseInhibitory  // I — drag between two neurons (reversal ≈ -75 mV)
+    case synapseNMDA        // D — drag between two neurons (NMDA, Mg²⁺ block)
+    case synapseSTDP        // T — drag between two neurons (AMPA + STDP plasticity)
     case gapJunction        // G — drag between two neurons (electrical, I = g(V₁−V₂))
     case axialCoupling      // A — drag between two compartments of one neuron
     case stimulus           // B — click a neuron to drop a default stimulus
@@ -36,8 +38,10 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .pan:                return "Panoramique"
         case .addNeuron:          return "Ajouter un neurone"
         case .addCompartment:     return "Ajouter un compartiment"
-        case .synapseExcitatory:  return "Synapse excitatrice"
-        case .synapseInhibitory:  return "Synapse inhibitrice"
+        case .synapseExcitatory:  return "Synapse excitatrice (AMPA)"
+        case .synapseInhibitory:  return "Synapse inhibitrice (GABA)"
+        case .synapseNMDA:        return "Synapse NMDA (blocage Mg²⁺)"
+        case .synapseSTDP:        return "Synapse AMPA + STDP (plastique)"
         case .gapJunction:        return "Jonction gap (électrique)"
         case .axialCoupling:      return "Couplage axial"
         case .stimulus:           return "Stimulus"
@@ -58,6 +62,8 @@ enum EditorTool: String, CaseIterable, Identifiable {
         // Connections
         case .synapseExcitatory:  return "arrow.forward.circle.fill"
         case .synapseInhibitory:  return "minus.circle.fill"
+        case .synapseNMDA:        return "circle.dotted.and.circle"
+        case .synapseSTDP:        return "arrow.triangle.2.circlepath.circle.fill"
         case .gapJunction:        return "waveform"
         case .axialCoupling:      return "arrow.left.and.right.circle"
         // Tools
@@ -77,6 +83,8 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .addCompartment:     return "c"
         case .synapseExcitatory:  return "e"
         case .synapseInhibitory:  return "i"
+        case .synapseNMDA:        return "d"
+        case .synapseSTDP:        return "t"
         case .gapJunction:        return "g"
         case .axialCoupling:      return "a"
         case .stimulus:           return "b"
@@ -104,8 +112,8 @@ enum EditorTool: String, CaseIterable, Identifiable {
     var isCanvasWired: Bool {
         switch self {
         case .select, .pan, .addNeuron, .addCompartment,
-             .synapseExcitatory, .synapseInhibitory, .gapJunction, .stimulus,
-             .synapticNoise:
+             .synapseExcitatory, .synapseInhibitory, .synapseNMDA, .synapseSTDP,
+             .gapJunction, .stimulus, .synapticNoise:
             return true
         case .axialCoupling, .probe:
             return false
@@ -119,6 +127,8 @@ enum EditorTool: String, CaseIterable, Identifiable {
     var isSynapseTool: Bool {
         self == .synapseExcitatory
             || self == .synapseInhibitory
+            || self == .synapseNMDA
+            || self == .synapseSTDP
             || self == .gapJunction
     }
 }

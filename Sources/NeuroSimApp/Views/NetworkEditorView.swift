@@ -248,7 +248,7 @@ struct NetworkEditorView: View {
             vm.addNeuron(at: Double(canvasPoint.x), y: Double(canvasPoint.y))
         case .addCompartment:
             break  // preserve selection so handleNeuronTap can use it as parent
-        case .synapseExcitatory, .synapseInhibitory,
+        case .synapseExcitatory, .synapseInhibitory, .synapseNMDA, .synapseSTDP,
              .gapJunction, .axialCoupling, .stimulus, .probe, .synapticNoise:
             vm.selection = .none
         }
@@ -658,8 +658,8 @@ private struct NeuronNodeView: View {
     private func handleNeuronTap() {
         switch vm.activeTool {
         case .select, .pan, .addNeuron,
-             .synapseExcitatory, .synapseInhibitory, .gapJunction,
-             .axialCoupling:
+             .synapseExcitatory, .synapseInhibitory, .synapseNMDA, .synapseSTDP,
+             .gapJunction, .axialCoupling:
             vm.selection = .neuron(neuron.id)
         case .addCompartment:
             // Use the selected compartment as parent if it belongs to this neuron,
@@ -751,6 +751,12 @@ private struct NeuronNodeView: View {
                         switch tool {
                         case .gapJunction:
                             vm.addGapJunction(from: neuron.id, to: target.id)
+                        case .synapseNMDA:
+                            vm.addNMDASynapse(from: neuron.id, to: target.id,
+                                              compartmentID: compID)
+                        case .synapseSTDP:
+                            vm.addSTDPSynapse(from: neuron.id, to: target.id,
+                                              compartmentID: compID)
                         default:
                             vm.addSynapse(from: neuron.id,
                                           to: target.id,
