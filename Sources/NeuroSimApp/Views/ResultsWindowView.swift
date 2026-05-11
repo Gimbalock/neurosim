@@ -24,8 +24,17 @@ private let kTraceColors: [Color] = kTracePalette
 
 // MARK: - Root view
 
+private enum AnalysisTab: String, CaseIterable {
+    case traces = "Traces"
+    case raster = "Raster"
+    case isi    = "ISI"
+    case phase  = "Phase"
+}
+
 struct ResultsWindowView: View {
     @EnvironmentObject var vm: SimulationViewModel
+
+    @State private var selectedTab: AnalysisTab = .traces
 
     /// nil  → full "Add Signal" picker (creates a new chart)
     /// non-nil → "Add to Chart" picker (adds to an existing group)
@@ -61,6 +70,39 @@ struct ResultsWindowView: View {
         VStack(spacing: 0) {
             controlBar
             Divider()
+            // Tab selector
+            Picker("", selection: $selectedTab) {
+                ForEach(AnalysisTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 360)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 5)
+            Divider()
+            // Tab content
+            switch selectedTab {
+            case .traces: tracesContent
+            case .raster: RasterView()
+            case .isi:    ISIView()
+            case .phase:  PhaseView()
+            }
+        }
+        .frame(minWidth: 640, minHeight: 480)
+        .onChange(of: vm.autoscaleGeneration) { _, _ in xZoom = nil }
+        .sheet(isPresented: $showingPicker) {
+            SignalPickerView(isPresented: $showingPicker, targetGroupID: pickerGroupID)
+                .environmentObject(vm)
+                .onDisappear { pickerGroupID = nil }
+        }
+        .onChange(of: liveGroupIDs) { _, newIDs in syncOrder(with: newIDs) }
+        .onAppear { syncOrder(with: liveGroupIDs) }
+    }
+
+    private var tracesContent: some View {
+        Group {
             if vm.signalTraces.isEmpty {
                 emptyState
             } else {
@@ -77,11 +119,9 @@ struct ResultsWindowView: View {
                                 }
                             )
                             .padding(.horizontal, 16)
-                            // Make the whole card draggable
                             .draggable(group.id.uuidString) {
                                 dragPreview(for: group)
                             }
-                            // Accept drops: move the dragged group before this one
                             .dropDestination(for: String.self) { items, _ in
                                 guard let idStr = items.first,
                                       let draggedID = UUID(uuidString: idStr),
@@ -89,37 +129,16 @@ struct ResultsWindowView: View {
                                 else { return false }
                                 moveGroup(draggedID, beforeGroup: group.id)
                                 return true
-                            } isTargeted: { targeted in
-                                // Subtle border handled in SignalChartCard
-                                _ = targeted
-                            }
+                            } isTargeted: { _ in }
                         }
-
-                        // Drop zone AFTER the last card (move to end)
                         if orderedGroups.count > 1 {
-                            trailingDropZone
-                                .padding(.horizontal, 16)
+                            trailingDropZone.padding(.horizontal, 16)
                         }
                     }
                     .padding(.vertical, 16)
                 }
                 .onDrop(of: [.plainText], isTargeted: nil) { _, _ in false }
             }
-        }
-        .frame(minWidth: 640, minHeight: 480)
-        // Clear zoom when the simulation is reset (autoscaleGeneration bumps on reset/run)
-        .onChange(of: vm.autoscaleGeneration) { _, _ in xZoom = nil }
-        .sheet(isPresented: $showingPicker) {
-            SignalPickerView(isPresented: $showingPicker, targetGroupID: pickerGroupID)
-                .environmentObject(vm)
-                .onDisappear { pickerGroupID = nil }
-        }
-        // Sync orderedGroupIDs whenever the set of live groups changes
-        .onChange(of: liveGroupIDs) { _, newIDs in
-            syncOrder(with: newIDs)
-        }
-        .onAppear {
-            syncOrder(with: liveGroupIDs)
         }
     }
 
@@ -257,40 +276,42 @@ struct ResultsWindowView: View {
 
             Spacer()
 
-            Button { vm.loadGraphConfig() } label: {
-                Label("Load Graph", systemImage: "square.and.arrow.down")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help("Load a saved graph configuration")
-
-            Button { vm.saveGraphConfig() } label: {
-                Label("Save Graph", systemImage: "square.and.arrow.up")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help("Save the current graph configuration")
-
-            Divider().frame(height: 18)
-
-            if !vm.signalTraces.isEmpty {
-                Button(role: .destructive) {
-                    vm.clearSignalTraces()
-                } label: {
-                    Image(systemName: "trash")
+            if selectedTab == .traces {
+                Button { vm.loadGraphConfig() } label: {
+                    Label("Load Graph", systemImage: "square.and.arrow.down")
                 }
-                .buttonStyle(.borderless)
-                .help("Remove all traces")
-            }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Load a saved graph configuration")
 
-            Button {
-                pickerGroupID = nil
-                showingPicker = true
-            } label: {
-                Label("Add Signal", systemImage: "plus")
+                Button { vm.saveGraphConfig() } label: {
+                    Label("Save Graph", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Save the current graph configuration")
+
+                Divider().frame(height: 18)
+
+                if !vm.signalTraces.isEmpty {
+                    Button(role: .destructive) {
+                        vm.clearSignalTraces()
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove all traces")
+                }
+
+                Button {
+                    pickerGroupID = nil
+                    showingPicker = true
+                } label: {
+                    Label("Add Signal", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
