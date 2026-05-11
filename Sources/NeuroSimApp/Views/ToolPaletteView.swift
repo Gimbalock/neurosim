@@ -256,8 +256,9 @@ struct ToolPaletteView: View {
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(.tertiary)
-            .tracking(0.6)
+            .foregroundStyle(Color.white.opacity(0.55))
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, 6)
             .padding(.bottom, 2)
