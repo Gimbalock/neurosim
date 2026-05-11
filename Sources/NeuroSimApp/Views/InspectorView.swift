@@ -817,6 +817,11 @@ private struct SynapticNoiseInspector: View {
             if hasNoise {
                 let p = paramsBinding
                 VStack(spacing: 6) {
+                    // ── Weight ───────────────────────────────────────
+                    noiseSlider("poids", "",       p.weight,  0...1)
+
+                    Divider()
+
                     // ── Excitatory ────────────────────────────────────
                     Text("Excitateur (Ee = \(String(format:"%.0f", p.ee.wrappedValue)) mV)")
                         .font(.caption).foregroundStyle(.secondary)

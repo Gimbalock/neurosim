@@ -27,6 +27,9 @@ public struct SynapticNoiseParams: Codable, Equatable {
     public var ee: Double = 0.0          // mV, excitatory (AMPA)
     public var ei: Double = -70.0        // mV, inhibitory (GABA-A)
 
+    // ── Global weight ─────────────────────────────────────────────────────────
+    public var weight: Double = 1.0         // dimensionless scaler [0, 1]
+
     // ── Reproducibility ───────────────────────────────────────────────────────
     public var seed: UInt64 = 42
 
@@ -88,8 +91,8 @@ public final class SynapticNoiseSource {
         }
         let ge = max(0, params.geMean + geDelta)   // clamp ≥ 0
         let gi = max(0, params.giMean + giDelta)
-        // mS/cm² × mV = µA/cm²
-        return ge * (v - params.ee) + gi * (v - params.ei)
+        // mS/cm² × mV = µA/cm²  — scaled by weight [0, 1]
+        return params.weight * (ge * (v - params.ee) + gi * (v - params.ei))
     }
 
     // MARK: Private
