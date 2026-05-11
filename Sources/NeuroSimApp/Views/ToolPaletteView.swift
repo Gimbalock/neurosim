@@ -96,7 +96,8 @@ struct ToolPaletteView: View {
         } label: {
             toolIcon(systemImage: tool.systemImage,
                      isActive: isActive,
-                     isWired: tool.isCanvasWired)
+                     isWired: tool.isCanvasWired,
+                     color: tool.paletteColor)
         }
         .buttonStyle(.plain)
         .help("\(tool.displayName)  (\(String(tool.shortcutKey.character).uppercased()))")
@@ -231,19 +232,19 @@ struct ToolPaletteView: View {
     @ViewBuilder
     private func toolIcon(systemImage: String,
                           isActive: Bool,
-                          isWired: Bool) -> some View {
+                          isWired: Bool,
+                          color: Color = .accentColor) -> some View {
         Image(systemName: systemImage)
             .font(.system(size: 15, weight: .regular))
             .frame(width: 32, height: 32)
-            .foregroundStyle(isActive ? Color.white : .secondary)
+            .foregroundStyle(isActive ? Color.white : color)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isActive ? Color.accentColor : Color.clear)
+                    .fill(isActive ? color : color.opacity(0.08))
             )
             .overlay(
-                // Dashed outline for tools not yet wired to canvas behaviour
                 RoundedRectangle(cornerRadius: 6)
-                    .stroke(isWired ? .clear : .secondary.opacity(0.25),
+                    .stroke(isWired ? .clear : color.opacity(0.35),
                             style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
             )
             .contentShape(Rectangle())

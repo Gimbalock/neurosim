@@ -13,6 +13,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 enum EditorTool: String, CaseIterable, Identifiable {
     case select             // V — pick / move
@@ -62,9 +63,9 @@ enum EditorTool: String, CaseIterable, Identifiable {
         // Connections
         case .synapseExcitatory:  return "arrow.forward.circle.fill"
         case .synapseInhibitory:  return "minus.circle.fill"
-        case .synapseNMDA:        return "circle.dotted.and.circle"
-        case .synapseSTDP:        return "arrow.triangle.2.circlepath.circle.fill"
-        case .gapJunction:        return "waveform"
+        case .synapseNMDA:        return "diamond.fill"
+        case .synapseSTDP:        return "arrow.clockwise.circle.fill"
+        case .gapJunction:        return "link.circle.fill"
         case .axialCoupling:      return "arrow.left.and.right.circle"
         // Tools
         case .stimulus:           return "bolt.fill"
@@ -90,6 +91,25 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .stimulus:           return "b"
         case .probe:              return "m"
         case .synapticNoise:      return "w"
+        }
+    }
+
+    /// Tint colour shown in the palette button (inactive: coloured icon;
+    /// active: white icon on coloured background).
+    var paletteColor: Color {
+        switch self {
+        case .select, .pan:           return .secondary
+        case .addNeuron:              return .accentColor
+        case .addCompartment:         return .accentColor
+        case .synapseExcitatory:      return .red
+        case .synapseInhibitory:      return Color(red: 0.25, green: 0.45, blue: 1.0)
+        case .synapseNMDA:            return .orange
+        case .synapseSTDP:            return .green
+        case .gapJunction:            return .purple
+        case .axialCoupling:          return .secondary
+        case .stimulus:               return .yellow
+        case .probe:                  return .teal
+        case .synapticNoise:          return Color(red: 0.6, green: 0.35, blue: 0.85)
         }
     }
 
