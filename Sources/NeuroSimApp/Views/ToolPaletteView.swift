@@ -23,6 +23,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct ToolPaletteView: View {
     @EnvironmentObject var vm: SimulationViewModel
@@ -137,7 +138,8 @@ struct ToolPaletteView: View {
         let duplicable: Bool
         if case .neuron = vm.selection { duplicable = true } else { duplicable = false }
         return Button {
-            vm.duplicateSelectedNeuron(withConnections: false)
+            guard let count = askCopyCount(title: "Dupliquer") else { return }
+            for _ in 0..<count { vm.duplicateSelectedNeuron(withConnections: false) }
         } label: {
             Image(systemName: "doc.on.doc")
                 .font(.system(size: 15, weight: .regular))
@@ -159,7 +161,8 @@ struct ToolPaletteView: View {
         let duplicable: Bool
         if case .neuron = vm.selection { duplicable = true } else { duplicable = false }
         return Button {
-            vm.duplicateSelectedNeuron(withConnections: true)
+            guard let count = askCopyCount(title: "Dupliquer avec connexions") else { return }
+            for _ in 0..<count { vm.duplicateSelectedNeuron(withConnections: true) }
         } label: {
             Image(systemName: "doc.on.doc.fill")
                 .font(.system(size: 15, weight: .regular))
@@ -175,6 +178,28 @@ struct ToolPaletteView: View {
         .disabled(!duplicable)
         .help("Dupliquer avec connexions")
         .accessibilityLabel("Dupliquer avec connexions")
+    }
+
+    /// Modal NSAlert asking for a copy count. Returns nil if the user cancels
+    /// or enters an invalid number.
+    private func askCopyCount(title: String) -> Int? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "Combien de copies ?"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Dupliquer")
+        alert.addButton(withTitle: "Annuler")
+
+        let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        tf.stringValue = "1"
+        tf.placeholderString = "1"
+        alert.accessoryView = tf
+        alert.window.initialFirstResponder = tf
+
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let n = Int(tf.stringValue.trimmingCharacters(in: .whitespaces)),
+              n > 0 else { return nil }
+        return n
     }
 
     // MARK: - Reserved placeholder
