@@ -34,6 +34,14 @@ public enum ForwardEuler {
                             time: Double,
                             dt: Double) {
         var k = [Double](repeating: 0, count: state.count)
+        step(provider: provider, state: &state, time: time, dt: dt, k: &k)
+    }
+
+    static func step(provider: DerivativeProvider,
+                     state: inout [Double],
+                     time: Double,
+                     dt: Double,
+                     k: inout [Double]) {
         provider.computeDerivatives(state: state, time: time, into: &k)
         for i in 0..<state.count { state[i] += dt * k[i] }
     }
@@ -47,10 +55,20 @@ public enum RK2 {
                             time: Double,
                             dt: Double) {
         let n = state.count
-        var k1  = [Double](repeating: 0, count: n)
-        var k2  = [Double](repeating: 0, count: n)
+        var k1 = [Double](repeating: 0, count: n)
+        var k2 = [Double](repeating: 0, count: n)
         var tmp = [Double](repeating: 0, count: n)
+        step(provider: provider, state: &state, time: time, dt: dt, k1: &k1, k2: &k2, tmp: &tmp)
+    }
 
+    static func step(provider: DerivativeProvider,
+                     state: inout [Double],
+                     time: Double,
+                     dt: Double,
+                     k1: inout [Double],
+                     k2: inout [Double],
+                     tmp: inout [Double]) {
+        let n = state.count
         provider.computeDerivatives(state: state, time: time, into: &k1)
         for i in 0..<n { tmp[i] = state[i] + dt * k1[i] }
         provider.computeDerivatives(state: tmp, time: time + dt, into: &k2)
@@ -66,12 +84,25 @@ public enum RK4 {
                             time: Double,
                             dt: Double) {
         let n = state.count
-        var k1  = [Double](repeating: 0, count: n)
-        var k2  = [Double](repeating: 0, count: n)
-        var k3  = [Double](repeating: 0, count: n)
-        var k4  = [Double](repeating: 0, count: n)
+        var k1 = [Double](repeating: 0, count: n)
+        var k2 = [Double](repeating: 0, count: n)
+        var k3 = [Double](repeating: 0, count: n)
+        var k4 = [Double](repeating: 0, count: n)
         var tmp = [Double](repeating: 0, count: n)
+        step(provider: provider, state: &state, time: time, dt: dt,
+             k1: &k1, k2: &k2, k3: &k3, k4: &k4, tmp: &tmp)
+    }
 
+    static func step(provider: DerivativeProvider,
+                     state: inout [Double],
+                     time: Double,
+                     dt: Double,
+                     k1: inout [Double],
+                     k2: inout [Double],
+                     k3: inout [Double],
+                     k4: inout [Double],
+                     tmp: inout [Double]) {
+        let n = state.count
         provider.computeDerivatives(state: state, time: time, into: &k1)
         for i in 0..<n { tmp[i] = state[i] + 0.5 * dt * k1[i] }
         provider.computeDerivatives(state: tmp, time: time + 0.5 * dt, into: &k2)
@@ -79,7 +110,6 @@ public enum RK4 {
         provider.computeDerivatives(state: tmp, time: time + 0.5 * dt, into: &k3)
         for i in 0..<n { tmp[i] = state[i] + dt * k3[i] }
         provider.computeDerivatives(state: tmp, time: time + dt, into: &k4)
-
         let f = dt / 6.0
         for i in 0..<n { state[i] += f * (k1[i] + 2*k2[i] + 2*k3[i] + k4[i]) }
     }
@@ -111,7 +141,17 @@ public enum RushLarsen {
                             time: Double,
                             dt: Double) {
         let n = state.count
-        var deriv = [Double](repeating: 0, count: n)
+        var deriv  = [Double](repeating: 0, count: n)
+        var deriv2 = [Double](repeating: 0, count: n)
+        step(network: network, state: &state, time: time, dt: dt, deriv: &deriv, deriv2: &deriv2)
+    }
+
+    static func step(network: Network,
+                     state: inout [Double],
+                     time: Double,
+                     dt: Double,
+                     deriv: inout [Double],
+                     deriv2: inout [Double]) {
         network.computeDerivatives(state: state, time: time, into: &deriv)
 
         // Phase 1 — gate variables: exact exponential update.
@@ -130,7 +170,6 @@ public enum RushLarsen {
                             state[slot + gi] = xInf + (x - xInf) * exp(-dt / tau)
                         }
                     } else {
-                        // Non-HHGated: Euler fallback.
                         for gi in 0..<ch.stateCount {
                             state[slot + gi] += dt * deriv[slot + gi]
                         }
@@ -140,9 +179,7 @@ public enum RushLarsen {
             }
         }
 
-        // Phase 2 — voltage: re-evaluate derivatives with updated gates,
-        // then Euler step for V only (semi-implicit coupling).
-        var deriv2 = [Double](repeating: 0, count: n)
+        // Phase 2 — voltage: re-evaluate with updated gates, Euler for V.
         network.computeDerivatives(state: state, time: time + dt, into: &deriv2)
         for neuron in network.neurons {
             for comp in neuron.compartments {

@@ -168,49 +168,59 @@ public final class HHNeuron: Identifiable {
                                  injectedByCompartment: [UUID: Double],
                                  into output: inout [Double],
                                  offset: Int) {
-        // 1. Per-compartment offsets within this neuron's slice.
-        var compOffset: [UUID: Int] = [:]
-        compOffset.reserveCapacity(compartments.count)
-        var cursor = 0
-        for comp in compartments {
-            compOffset[comp.id] = cursor
-            cursor += comp.stateCount
-        }
+        let n = compartments.count
 
-        // 2. Read voltages of all compartments (V is the first slot of
-        //    each compartment's local state).
-        var voltage: [UUID: Double] = [:]
-        voltage.reserveCapacity(compartments.count)
-        for comp in compartments {
-            let vIdx = localState.startIndex + (compOffset[comp.id] ?? 0)
-            voltage[comp.id] = localState[vIdx]
-        }
-
-        // 3. Sum axial currents flowing *into* each compartment from its
-        //    neighbours.  I_into_X = Σ over couplings touching X of g·(V_other − V_X)
-        var iAxial: [UUID: Double] = [:]
-        for coup in axialCouplings {
-            guard let vA = voltage[coup.compartmentA],
-                  let vB = voltage[coup.compartmentB] else { continue }
-            iAxial[coup.compartmentA, default: 0] += coup.conductance * (vB - vA)
-            iAxial[coup.compartmentB, default: 0] += coup.conductance * (vA - vB)
-        }
-
-        // 4. Each compartment writes its own derivatives.
-        for comp in compartments {
-            let localOff = compOffset[comp.id] ?? 0
-            let absOff = offset + localOff
-            let sliceStart = localState.startIndex + localOff
-            let sliceEnd = sliceStart + comp.stateCount
-            let compSlice = localState[sliceStart..<sliceEnd]
-
-            let iInj = (iAxial[comp.id] ?? 0)
-                     + (injectedByCompartment[comp.id] ?? 0)
-
-            comp.writeDerivatives(localState: compSlice,
+        // Fast path: single-compartment neuron (the common case).
+        // No axial couplings possible, no dict lookups needed.
+        if n == 1 {
+            let comp = compartments[0]
+            let iInj = injectedByCompartment[comp.id] ?? 0
+            comp.writeDerivatives(localState: localState,
                                   iInjected: iInj,
                                   into: &output,
-                                  offset: absOff)
+                                  offset: offset)
+            return
+        }
+
+        // Multi-compartment path — use parallel Int/Double arrays instead
+        // of UUID-keyed dictionaries to avoid per-call heap allocations.
+
+        // 1. Compute per-compartment offsets and read voltages in one pass.
+        var offsets  = [Int](repeating: 0, count: n)
+        var voltages = [Double](repeating: 0, count: n)
+        var cursor = 0
+        for i in 0..<n {
+            offsets[i]  = cursor
+            voltages[i] = localState[localState.startIndex + cursor]
+            cursor += compartments[i].stateCount
+        }
+
+        // 2. Axial currents. Linear search for compartment indices is
+        //    negligible for typical compartment counts (2-5).
+        var iAxial = [Double](repeating: 0, count: n)
+        for coup in axialCouplings {
+            var iA = -1, iB = -1
+            for i in 0..<n {
+                if compartments[i].id == coup.compartmentA { iA = i }
+                else if compartments[i].id == coup.compartmentB { iB = i }
+            }
+            guard iA >= 0, iB >= 0 else { continue }
+            let diff = coup.conductance * (voltages[iB] - voltages[iA])
+            iAxial[iA] += diff
+            iAxial[iB] -= diff
+        }
+
+        // 3. Write per-compartment derivatives.
+        for i in 0..<n {
+            let comp = compartments[i]
+            let localOff = offsets[i]
+            let sliceStart = localState.startIndex + localOff
+            let sliceEnd = sliceStart + comp.stateCount
+            let iInj = iAxial[i] + (injectedByCompartment[comp.id] ?? 0)
+            comp.writeDerivatives(localState: localState[sliceStart..<sliceEnd],
+                                  iInjected: iInj,
+                                  into: &output,
+                                  offset: offset + localOff)
         }
     }
 

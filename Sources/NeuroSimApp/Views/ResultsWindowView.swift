@@ -225,6 +225,19 @@ struct ResultsWindowView: View {
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 90, alignment: .leading)
 
+            if vm.isRunning || vm.frameComputeMs > 0 {
+                Divider().frame(height: 18)
+                HStack(spacing: 6) {
+                    Text(String(format: "%.1f ms/frame", vm.frameComputeMs))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text(String(format: "×%.1f", vm.simToWallRatio))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(vm.simToWallRatio >= 1 ? .green : .orange)
+                        .help("Ratio temps simulé / temps réel (>1 = plus rapide que le temps réel)")
+                }
+            }
+
             // Duration
             HStack(spacing: 4) {
                 Text("Duration")

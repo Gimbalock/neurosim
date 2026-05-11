@@ -165,6 +165,10 @@ final class SimulationViewModel: ObservableObject {
 
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var simulationTime: Double = 0
+    /// Wall-clock duration of the last simulation frame (ms).
+    @Published private(set) var frameComputeMs: Double = 0
+    /// Simulated ms advanced per wall-clock ms (>1 = faster than real-time).
+    @Published private(set) var simToWallRatio: Double = 0
     @Published var dt: Double = 0.05 {
         didSet { simulator.dt = dt }
     }
@@ -177,6 +181,8 @@ final class SimulationViewModel: ObservableObject {
 
     private var simulator: Simulator
     private var simTimer: Timer?
+    /// Prevents overlapping simulation frames if computation exceeds 1/60 s.
+    private var frameInFlight = false
     /// Hard memory cap on a single neuron's trace buffer. Time-based trimming
     /// (`cutoff = simulator.time − plotWindow`) is the primary mechanism;
     /// this is just a safety net so a runaway window can't blow up memory.
@@ -543,11 +549,12 @@ final class SimulationViewModel: ObservableObject {
         seedTraces()
 
         isRunning = true
+        frameInFlight = false
         simulator.dt = dt
         simulator.method = integrationMethod
         simTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0,
                                         repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+            Task { @MainActor in self?.kickFrame() }
         }
     }
 
@@ -555,6 +562,7 @@ final class SimulationViewModel: ObservableObject {
         simTimer?.invalidate()
         simTimer = nil
         isRunning = false
+        frameInFlight = false
     }
 
     func reset() {
@@ -565,90 +573,136 @@ final class SimulationViewModel: ObservableObject {
         seedTraces()
     }
 
-    /// One UI frame of simulation work. Compute as many `dt` steps as needed
-    /// to make the simulated time advance at `realtimeFactor` × wall clock,
-    /// capped so the run stops cleanly when `simulationTime` reaches
-    /// `plotWindow` (the visualised duration).
-    private func tick() {
-        // Stop cleanly when the configured run length is reached.
+    /// Timer callback: offload the simulation step-loop to a background thread,
+    /// then marshal results back to the main actor for UI update.
+    /// `frameInFlight` prevents overlapping frames if computation exceeds 1/60 s.
+    private func kickFrame() {
+        guard isRunning, !frameInFlight else { return }
+
         if simulator.time >= plotWindow {
             pause()
             autoscaleGeneration += 1
             return
         }
 
-        // Target: 1/60 s of wall ≈ realtimeFactor × 16.67 ms simulated.
+        // Compute how many steps to simulate this frame (same logic as before).
         let frameDurationMs = 1000.0 / 60.0
         let simulatedMsPerFrame = frameDurationMs * realtimeFactor
         var nSteps = max(1, Int((simulatedMsPerFrame / dt).rounded()))
-
-        // Don't overshoot the plotWindow on the last frame.
         let remaining = plotWindow - simulator.time
-        let maxSteps = max(1, Int((remaining / dt).rounded()))
-        nSteps = min(nSteps, maxSteps)
+        nSteps = min(nSteps, max(1, Int((remaining / dt).rounded())))
 
-        var newSamples: [(UUID, Double, Double)] = []
-        newSamples.reserveCapacity(nSteps / plotDownsampleStride * network.neurons.count)
+        // Capture all inputs by value before leaving the main actor.
+        let capturedSim  = simulator
+        let capturedNet  = network
+        let neuronIdx: [(UUID, Int)] = network.neurons.compactMap { n in
+            guard let i = network.voltageIndex(of: n.id) else { return nil }
+            return (n.id, i)
+        }
+        let capturedSignals = signalTraces.map { $0.signal }
+        let stride     = plotDownsampleStride
+        let plotWin    = plotWindow
+        let maxSamples = plotMaxSamples
 
-        // Accumulate signal trace points locally to avoid repeated Published mutations.
-        var newSignalPoints: [[PlotPoint]] = signalTraces.isEmpty
-            ? [] : Array(repeating: [], count: signalTraces.count)
+        frameInFlight = true
+        let wallStart = ContinuousClock.now
+        let simulatedMsThisFrame = Double(nSteps) * dt
 
-        for i in 0..<nSteps {
-            simulator.step()
+        Task.detached(priority: .userInitiated) { [weak self] in
+            // ── Hot simulation loop — runs on a background thread ─────────────
+            var voltSamples: [(UUID, Double, Double)] = []
+            voltSamples.reserveCapacity(nSteps * neuronIdx.count)
+            var sigSamples: [[SimulationViewModel.PlotPoint]] =
+                capturedSignals.isEmpty ? [] : Array(repeating: [], count: capturedSignals.count)
+            var divergeMsg: String? = nil
 
-            // Detect numerical divergence (NaN or |V| > 1000 mV on any compartment).
-            let diverged = network.neurons.contains { n in
-                guard let idx = network.voltageIndex(of: n.id) else { return false }
-                let v = simulator.state[idx]
-                return v.isNaN || v.isInfinite || abs(v) > 1_000
-            }
-            if diverged {
-                pause()
-                divergenceError = "Divergence numérique détectée à t=\(String(format: "%.2f", simulator.time)) ms. Réduisez dt (recommandé : ≤ 0.05 ms pour HH+RK4)."
-                return
-            }
+            outer: for i in 0..<nSteps {
+                capturedSim.step()
 
-            if i % plotDownsampleStride == 0 {
-                for n in network.neurons {
-                    if let idx = network.voltageIndex(of: n.id) {
-                        newSamples.append((n.id, simulator.time, simulator.state[idx]))
+                for (_, vIdx) in neuronIdx {
+                    let v = capturedSim.state[vIdx]
+                    if v.isNaN || v.isInfinite || abs(v) > 1_000 {
+                        divergeMsg = "Divergence numérique détectée à t=\(String(format: "%.2f", capturedSim.time)) ms. Réduisez dt (recommandé : ≤ 0.05 ms pour HH+RK4)."
+                        break outer
                     }
                 }
-                if !signalTraces.isEmpty {
-                    let t  = simulator.time
-                    let st = simulator.state
-                    for j in signalTraces.indices {
-                        if let v = signalTraces[j].signal.value(
-                            state: st, network: network, time: t) {
-                            newSignalPoints[j].append(PlotPoint(t: t, v: v))
+
+                if i % stride == 0 {
+                    let t = capturedSim.time
+                    for (id, vIdx) in neuronIdx {
+                        voltSamples.append((id, t, capturedSim.state[vIdx]))
+                    }
+                    if !capturedSignals.isEmpty {
+                        let st = capturedSim.state
+                        for (j, sig) in capturedSignals.enumerated() {
+                            if let v = sig.value(state: st, network: capturedNet, time: t) {
+                                sigSamples[j].append(.init(t: t, v: v))
+                            }
                         }
                     }
                 }
             }
-        }
+            // Freeze mutable vars into immutable lets before the actor hop
+            // so the compiler can verify there's no cross-actor mutation.
+            let finalTime    = capturedSim.time
+            let fVoltSamples = voltSamples
+            let fSigSamples  = sigSamples
+            let fDivergeMsg  = divergeMsg
+            let elapsed      = ContinuousClock.now - wallStart
+            let wallMs       = Double(elapsed.components.seconds) * 1_000.0
+                             + Double(elapsed.components.attoseconds) / 1e15
+            let ratio        = wallMs > 0 ? simulatedMsThisFrame / wallMs : 0
 
-        simulationTime = simulator.time
-        let cutoff = simulator.time - plotWindow
+            // ── Back to main actor for UI update ─────────────────────────────
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.frameInFlight = false
+                self.frameComputeMs = wallMs
+                self.simToWallRatio = ratio
 
-        for (id, t, v) in newSamples {
-            var arr = traces[id] ?? []
-            arr.append(PlotPoint(t: t, v: v))
-            while let first = arr.first, first.t < cutoff { arr.removeFirst() }
-            if arr.count > plotMaxSamples {
-                arr.removeFirst(arr.count - plotMaxSamples)
-            }
-            traces[id] = arr
-        }
+                if let msg = fDivergeMsg {
+                    self.divergenceError = msg
+                    self.pause()
+                    return
+                }
 
-        for j in signalTraces.indices {
-            signalTraces[j].points.append(contentsOf: newSignalPoints[j])
-            while let first = signalTraces[j].points.first, first.t < cutoff {
-                signalTraces[j].points.removeFirst()
-            }
-            if signalTraces[j].points.count > plotMaxSamples {
-                signalTraces[j].points.removeFirst(
-                    signalTraces[j].points.count - plotMaxSamples)
+                self.simulationTime = finalTime
+                let cutoff = finalTime - plotWin
+
+                // Batch-append then single binary-search trim per neuron.
+                var updatedTraces = self.traces
+                for (id, t, v) in fVoltSamples {
+                    updatedTraces[id, default: []].append(.init(t: t, v: v))
+                }
+                for id in updatedTraces.keys {
+                    guard var arr = updatedTraces[id], !arr.isEmpty else { continue }
+                    var lo = 0, hi = arr.count
+                    while lo < hi {
+                        let mid = lo + (hi - lo) / 2
+                        if arr[mid].t < cutoff { lo = mid + 1 } else { hi = mid }
+                    }
+                    if lo > 0 { arr.removeSubrange(0..<lo) }
+                    if arr.count > maxSamples { arr.removeFirst(arr.count - maxSamples) }
+                    updatedTraces[id] = arr
+                }
+                self.traces = updatedTraces
+
+                if !fSigSamples.isEmpty {
+                    var updated = self.signalTraces
+                    for j in updated.indices where j < fSigSamples.count {
+                        updated[j].points.append(contentsOf: fSigSamples[j])
+                        var arr = updated[j].points
+                        var lo = 0, hi = arr.count
+                        while lo < hi {
+                            let mid = lo + (hi - lo) / 2
+                            if arr[mid].t < cutoff { lo = mid + 1 } else { hi = mid }
+                        }
+                        if lo > 0 { arr.removeSubrange(0..<lo) }
+                        if arr.count > maxSamples { arr.removeFirst(arr.count - maxSamples) }
+                        updated[j].points = arr
+                    }
+                    self.signalTraces = updated
+                }
             }
         }
     }
@@ -724,7 +778,8 @@ final class SimulationViewModel: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
         panel.nameFieldStringValue = "\(documentName).neurosim.json"
-        panel.begin { [weak self] result in
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        panel.beginSheetModal(for: window) { [weak self] result in
             guard result == .OK, let url = panel.url, let self else { return }
             Task { @MainActor in
                 self.documentURL = url
@@ -737,7 +792,8 @@ final class SimulationViewModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
-        panel.begin { [weak self] result in
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        panel.beginSheetModal(for: window) { [weak self] result in
             guard result == .OK, let url = panel.url, let self else { return }
             Task { @MainActor in self.loadDocument(from: url) }
         }
@@ -751,7 +807,8 @@ final class SimulationViewModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.prompt = "Importer"
         panel.message = "Ajouter un neurone ou un réseau au réseau actuel"
-        panel.begin { [weak self] result in
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        panel.beginSheetModal(for: window) { [weak self] result in
             guard result == .OK, let url = panel.url, let self else { return }
             guard let data = try? Data(contentsOf: url),
                   let doc = try? JSONDecoder().decode(NetworkDocument.self, from: data) else { return }
@@ -841,7 +898,8 @@ final class SimulationViewModel: ObservableObject {
         }
         let csv = lines.joined(separator: "\n")
 
-        panel.begin { result in
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        panel.beginSheetModal(for: window) { result in
             guard result == .OK, let url = panel.url else { return }
             try? csv.write(to: url, atomically: true, encoding: .utf8)
         }

@@ -51,8 +51,18 @@ public final class Network: DerivativeProvider {
     private var synapseOffset: [UUID: Int] = [:]
     private var outgoingByPre: [UUID: [Int]] = [:]      // pre id → indices into `synapses`
     private var incomingByPost: [UUID: [Int]] = [:]     // post id → indices into `synapses`
+    private var neuronByID: [UUID: HHNeuron] = [:]      // O(1) neuron lookup in hot path
+    private var _iInjScratch: [UUID: Double] = [:]     // reused across derivative calls
 
     public init() {}
+}
+
+// The simulation loop runs on a background thread while the main actor handles UI.
+// Thread safety is guaranteed by the isRunning flag: structural mutations only happen
+// when isRunning = false (paused), so Network is effectively read-only during simulation.
+extension Network: @unchecked Sendable {}
+
+extension Network {
 
     // MARK: - Mutators
 
@@ -134,6 +144,8 @@ public final class Network: DerivativeProvider {
         synapseOffset.removeAll(keepingCapacity: true)
         outgoingByPre.removeAll(keepingCapacity: true)
         incomingByPost.removeAll(keepingCapacity: true)
+        neuronByID.removeAll(keepingCapacity: true)
+        for n in neurons { neuronByID[n.id] = n }
 
         var off = 0
         for n in neurons {
@@ -182,7 +194,7 @@ public final class Network: DerivativeProvider {
     /// Backward-compatible with the pre-Step-1b API: existing callers asking
     /// "where is this neuron's V?" still get a meaningful answer.
     public func voltageIndex(of neuronID: UUID) -> Int? {
-        guard let n = neurons.first(where: { $0.id == neuronID }) else { return nil }
+        guard let n = neuronByID[neuronID] else { return nil }
         return compartmentOffset[n.somaCompartmentID]
     }
 
@@ -198,6 +210,11 @@ public final class Network: DerivativeProvider {
 
     public func outgoingSynapses(of neuronID: UUID) -> [Synapse] {
         (outgoingByPre[neuronID] ?? []).map { synapses[$0] }
+    }
+
+    /// Iterate outgoing synapses without allocating a new array.
+    func visitOutgoingSynapses(of neuronID: UUID, _ body: (Synapse) -> Void) {
+        for idx in outgoingByPre[neuronID] ?? [] { body(synapses[idx]) }
     }
 
     // MARK: - State-vector introspection (for the results window)
@@ -278,19 +295,20 @@ public final class Network: DerivativeProvider {
             let neuronSlice = state[off..<(off + n.stateCount)]
 
             // 1a. Stimuli on any of this neuron's compartments.
-            var iInj: [UUID: Double] = [:]
+            // Reuse the scratch dict (keepingCapacity avoids dealloc/realloc).
+            _iInjScratch.removeAll(keepingCapacity: true)
             for comp in n.compartments {
                 if let stim = stimuli[comp.id] {
-                    iInj[comp.id, default: 0] += stim.current(at: time)
+                    _iInjScratch[comp.id, default: 0] += stim.current(at: time)
                 }
                 // Synaptic noise: voltage-dependent OU conductance injection.
                 if let noise = synapticNoises[comp.id],
                    let vIdx  = compartmentOffset[comp.id] {
                     let v = state[vIdx]
                     // Isyn is outward-positive; subtract to get inward injection.
-                    iInj[comp.id, default: 0] -= noise.current(at: time,
-                                                                voltage: v,
-                                                                dt: simulationDt)
+                    _iInjScratch[comp.id, default: 0] -= noise.current(at: time,
+                                                                        voltage: v,
+                                                                        dt: simulationDt)
                 }
             }
 
@@ -299,7 +317,7 @@ public final class Network: DerivativeProvider {
             for synIdx in incomingByPost[n.id] ?? [] {
                 let syn = synapses[synIdx]
                 guard let synOff = synapseOffset[syn.id],
-                      let preNeuron = neurons.first(where: { $0.id == syn.preNeuronID }),
+                      let preNeuron = neuronByID[syn.preNeuronID],
                       let preSomaIdx = compartmentOffset[preNeuron.somaCompartmentID]
                 else { continue }
                 let targetCompID = syn.postCompartmentID ?? n.somaCompartmentID
@@ -311,13 +329,13 @@ public final class Network: DerivativeProvider {
                 // `currentToPost` returns I in the convention "positive =
                 // outward from the post compartment". We're adding to an
                 // injection, so flip the sign.
-                iInj[targetCompID, default: 0] -= syn.currentToPost(
+                _iInjScratch[targetCompID, default: 0] -= syn.currentToPost(
                     state: synSlice, vPre: vPre, vPost: vPostTarget
                 )
             }
 
             n.writeDerivatives(localState: neuronSlice,
-                               injectedByCompartment: iInj,
+                               injectedByCompartment: _iInjScratch,
                                into: &output,
                                offset: off)
         }
@@ -326,8 +344,8 @@ public final class Network: DerivativeProvider {
         //    the actual target compartment voltage.
         for syn in synapses {
             guard let synOff = synapseOffset[syn.id],
-                  let preNeuron = neurons.first(where: { $0.id == syn.preNeuronID }),
-                  let postNeuron = neurons.first(where: { $0.id == syn.postNeuronID }),
+                  let preNeuron = neuronByID[syn.preNeuronID],
+                  let postNeuron = neuronByID[syn.postNeuronID],
                   let preSomaIdx = compartmentOffset[preNeuron.somaCompartmentID]
             else { continue }
             let targetCompID = syn.postCompartmentID ?? postNeuron.somaCompartmentID

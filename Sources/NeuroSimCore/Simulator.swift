@@ -37,6 +37,14 @@ public final class Simulator {
     /// upward threshold crossings.
     private var prevVoltages: [UUID: Double] = [:]
 
+    // Pre-allocated scratch buffers — sized once to stateCount, then reused
+    // every step so the integrators never heap-allocate during simulation.
+    private var buf1: [Double] = []
+    private var buf2: [Double] = []
+    private var buf3: [Double] = []
+    private var buf4: [Double] = []
+    private var buf5: [Double] = []
+
     public init(network: Network, dt: Double = 0.01) {
         self.network = network
         self.dt = dt
@@ -46,6 +54,14 @@ public final class Simulator {
                 prevVoltages[n.id] = state[i]
             }
         }
+        allocateBuffers()
+    }
+
+    private func allocateBuffers() {
+        let n = network.stateCount
+        guard buf1.count != n else { return }
+        let z = [Double](repeating: 0, count: n)
+        buf1 = z; buf2 = z; buf3 = z; buf4 = z; buf5 = z
     }
 
     /// Reset to the resting state (V = v0, gates at steady state, synapses off).
@@ -66,15 +82,19 @@ public final class Simulator {
     /// dispatch any spikes detected at the new time.
     public func step() {
         network.simulationDt = dt
+        allocateBuffers()
         switch method {
         case .euler:
-            ForwardEuler.step(provider: network, state: &state, time: time, dt: dt)
+            ForwardEuler.step(provider: network, state: &state, time: time, dt: dt, k: &buf1)
         case .rk2:
-            RK2.step(provider: network, state: &state, time: time, dt: dt)
+            RK2.step(provider: network, state: &state, time: time, dt: dt,
+                     k1: &buf1, k2: &buf2, tmp: &buf3)
         case .rk4:
-            RK4.step(provider: network, state: &state, time: time, dt: dt)
+            RK4.step(provider: network, state: &state, time: time, dt: dt,
+                     k1: &buf1, k2: &buf2, k3: &buf3, k4: &buf4, tmp: &buf5)
         case .rushLarsen:
-            RushLarsen.step(network: network, state: &state, time: time, dt: dt)
+            RushLarsen.step(network: network, state: &state, time: time, dt: dt,
+                            deriv: &buf1, deriv2: &buf2)
         case .rk45:
             RK45.step(provider: network, state: &state, time: time, dt: dt)
         }
@@ -107,6 +127,10 @@ public final class Simulator {
 
     // MARK: - Spike dispatch
 
+    // Simulator is sent to background Tasks for the simulation loop.
+    // Safety: the main actor only accesses the simulator when isRunning = false
+    // (via rebuildSimulator / reset) or after a frame completes via MainActor.run.
+
     /// After each step, look for upward V threshold crossings and apply the
     /// corresponding synaptic state jumps. We do this *outside* the RK4 inner
     /// loop on purpose — discrete events shouldn't happen mid-substep.
@@ -116,7 +140,8 @@ public final class Simulator {
             let vNow = state[vIdx]
             let vPrev = prevVoltages[n.id] ?? vNow
             if vPrev < spikeThreshold && vNow >= spikeThreshold {
-                for syn in network.outgoingSynapses(of: n.id) {
+                // visitOutgoingSynapses avoids allocating a new [Synapse] array.
+                network.visitOutgoingSynapses(of: n.id) { syn in
                     if let off = network.stateOffset(ofSynapse: syn.id) {
                         syn.applySpike(into: &state, offset: off)
                     }
@@ -126,3 +151,5 @@ public final class Simulator {
         }
     }
 }
+
+extension Simulator: @unchecked Sendable {}

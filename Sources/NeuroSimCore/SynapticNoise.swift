@@ -34,6 +34,22 @@ public struct SynapticNoiseParams: Codable, Equatable {
     public var seed: UInt64 = 42
 
     public init() {}
+
+    // Backward-compatible decoding: all fields optional so old JSON files
+    // that predate any given field (e.g. `weight`) still load correctly.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        geMean  = try c.decodeIfPresent(Double.self, forKey: .geMean)  ?? 0.012
+        geSigma = try c.decodeIfPresent(Double.self, forKey: .geSigma) ?? 0.003
+        geTau   = try c.decodeIfPresent(Double.self, forKey: .geTau)   ?? 3.0
+        giMean  = try c.decodeIfPresent(Double.self, forKey: .giMean)  ?? 0.057
+        giSigma = try c.decodeIfPresent(Double.self, forKey: .giSigma) ?? 0.0066
+        giTau   = try c.decodeIfPresent(Double.self, forKey: .giTau)   ?? 10.0
+        ee      = try c.decodeIfPresent(Double.self, forKey: .ee)      ?? 0.0
+        ei      = try c.decodeIfPresent(Double.self, forKey: .ei)      ?? -70.0
+        weight  = try c.decodeIfPresent(Double.self, forKey: .weight)  ?? 1.0
+        seed    = try c.decodeIfPresent(UInt64.self, forKey: .seed)    ?? 42
+    }
 }
 
 // MARK: - Runtime noise source (volatile — rebuilt from params on load)
