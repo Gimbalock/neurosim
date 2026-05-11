@@ -724,17 +724,23 @@ final class SimulationViewModel: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
         panel.nameFieldStringValue = "\(documentName).neurosim.json"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        documentURL = url
-        writeDocument(to: url)
+        panel.begin { [weak self] result in
+            guard result == .OK, let url = panel.url, let self else { return }
+            Task { @MainActor in
+                self.documentURL = url
+                self.writeDocument(to: url)
+            }
+        }
     }
 
     func openNetwork() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        loadDocument(from: url)
+        panel.begin { [weak self] result in
+            guard result == .OK, let url = panel.url, let self else { return }
+            Task { @MainActor in self.loadDocument(from: url) }
+        }
     }
 
     /// Merge a saved network file into the current network (neurons + synapses + stimuli + noise).
@@ -745,26 +751,27 @@ final class SimulationViewModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.prompt = "Importer"
         panel.message = "Ajouter un neurone ou un réseau au réseau actuel"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let data = try? Data(contentsOf: url),
-              let doc = try? JSONDecoder().decode(NetworkDocument.self, from: data) else { return }
-
-        let imported = doc.toNetwork()
-        let offsetX = (network.neurons.map(\.positionX).max() ?? -200) + 200
-        for neuron in imported.neurons {
-            neuron.positionX += offsetX
-            network.addNeuron(neuron)
+        panel.begin { [weak self] result in
+            guard result == .OK, let url = panel.url, let self else { return }
+            guard let data = try? Data(contentsOf: url),
+                  let doc = try? JSONDecoder().decode(NetworkDocument.self, from: data) else { return }
+            Task { @MainActor in
+                let imported = doc.toNetwork()
+                let offsetX = (self.network.neurons.map(\.positionX).max() ?? -200) + 200
+                for neuron in imported.neurons {
+                    neuron.positionX += offsetX
+                    self.network.addNeuron(neuron)
+                }
+                for syn in imported.synapses { self.network.addSynapse(syn) }
+                for (compID, stim) in imported.stimuli {
+                    self.network.setStimulus(stim, onCompartment: compID)
+                }
+                for (compID, src) in imported.synapticNoises {
+                    self.network.synapticNoises[compID] = src
+                }
+                self.rebuildSimulator()
+            }
         }
-        for syn in imported.synapses {
-            network.addSynapse(syn)
-        }
-        for (compID, stim) in imported.stimuli {
-            network.setStimulus(stim, onCompartment: compID)
-        }
-        for (compID, src) in imported.synapticNoises {
-            network.synapticNoises[compID] = src
-        }
-        rebuildSimulator()
     }
 
     private func writeDocument(to url: URL) {
@@ -818,12 +825,10 @@ final class SimulationViewModel: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = "neurosim_traces.csv"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let neuronIDs = network.neurons.map(\.id)
-        let names = network.neurons.map(\.name)
-        // Traces share the same time grid (sampled together).
-        let baseline = neuronIDs.first.flatMap { traces[$0] } ?? []
+        let names     = network.neurons.map(\.name)
+        let baseline  = neuronIDs.first.flatMap { traces[$0] } ?? []
         var lines: [String] = []
         lines.append((["t_ms"] + names).joined(separator: ","))
         for (i, p) in baseline.enumerated() {
@@ -834,7 +839,12 @@ final class SimulationViewModel: ObservableObject {
             }
             lines.append(row.joined(separator: ","))
         }
-        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        let csv = lines.joined(separator: "\n")
+
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            try? csv.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 }
 
