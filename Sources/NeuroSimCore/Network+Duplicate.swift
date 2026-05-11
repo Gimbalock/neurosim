@@ -57,9 +57,19 @@ public extension Network {
                           conductance: ac.conductance)
         }
 
+        // Find next available copy index: "N1 copy1", "N1 copy2", …
+        let baseName = original.name
+        let prefix = baseName + " copy"
+        let existingIndices = neurons.compactMap { n -> Int? in
+            guard n.name.hasPrefix(prefix) else { return nil }
+            return Int(n.name.dropFirst(prefix.count))
+        }
+        let nextIndex = (existingIndices.max() ?? 0) + 1
+        let copyName = "\(prefix)\(nextIndex)"
+
         let newNeuron = HHNeuron(
             id:           UUID(),
-            name:         original.name + " copie",
+            name:         copyName,
             compartments: newComps,
             couplings:    newCouplings,
             soma:         compIDMap[original.somaCompartmentID]!
