@@ -31,47 +31,34 @@ struct NeuroSimApp: App {
                 .frame(minWidth: 1100, minHeight: 700)
         }
         .commands {
-            AppCommands(vm: viewModel)
+            CommandGroup(replacing: .newItem) {
+                Button("New Network") { viewModel.newNetwork() }
+                    .keyboardShortcut("n", modifiers: [.command])
+                Button("Open…") { viewModel.openNetwork() }
+                    .keyboardShortcut("o", modifiers: [.command])
+                Button("Import…") { viewModel.importNetwork() }
+                Divider()
+                Button("Save") { viewModel.saveNetwork() }
+                    .keyboardShortcut("s", modifiers: [.command])
+                Button("Save As…") { viewModel.saveNetworkAs() }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+            }
+            CommandMenu("Simulation") {
+                Button("Run / Pause") { viewModel.toggleRunning() }
+                    .keyboardShortcut(.space, modifiers: [])
+                Button("Reset") { viewModel.reset() }
+                    .keyboardShortcut("r", modifiers: [.command])
+                Divider()
+                Button("Export traces (CSV)…") { viewModel.exportTracesCSV() }
+                    .keyboardShortcut("e", modifiers: [.command])
+                Divider()
+                OpenResultsMenuItem()
+            }
         }
 
         Window("Results", id: "results") {
             ResultsWindowView()
                 .environmentObject(viewModel)
-        }
-    }
-}
-
-// MARK: - Commands
-
-/// Using a dedicated Commands struct with @ObservedObject ensures SwiftUI
-/// keeps a live reference to the ViewModel rather than capturing a potentially
-/// stale value from the scene-body closure.
-private struct AppCommands: Commands {
-    @ObservedObject var vm: SimulationViewModel
-
-    var body: some Commands {
-        CommandGroup(replacing: .newItem) {
-            Button("New Network") { vm.newNetwork() }
-                .keyboardShortcut("n", modifiers: [.command])
-            Button("Open…") { vm.openNetwork() }
-                .keyboardShortcut("o", modifiers: [.command])
-            Button("Import…") { vm.importNetwork() }
-            Divider()
-            Button("Save") { vm.saveNetwork() }
-                .keyboardShortcut("s", modifiers: [.command])
-            Button("Save As…") { vm.saveNetworkAs() }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-        }
-        CommandMenu("Simulation") {
-            Button("Run / Pause") { vm.toggleRunning() }
-                .keyboardShortcut(.space, modifiers: [])
-            Button("Reset") { vm.reset() }
-                .keyboardShortcut("r", modifiers: [.command])
-            Divider()
-            Button("Export traces (CSV)…") { vm.exportTracesCSV() }
-                .keyboardShortcut("e", modifiers: [.command])
-            Divider()
-            OpenResultsMenuItem()
         }
     }
 }

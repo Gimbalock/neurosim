@@ -176,6 +176,7 @@ struct NetworkEditorView: View {
                     }
             )
             .focusable()
+            .focusEffectDisabled()
             .onKeyPress(.delete) { vm.removeSelected(); return .handled }
             .onKeyPress(.deleteForward) { vm.removeSelected(); return .handled }
         }
