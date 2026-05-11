@@ -55,10 +55,16 @@ public protocol Synapse: AnyObject {
     /// Discrete state update applied when a pre-synaptic spike fires.
     /// Default: no-op (suitable for stateless synapses like gap junctions).
     func applySpike(into state: inout [Double], offset: Int)
+
+    /// Discrete state update applied when the post-synaptic neuron fires.
+    /// Used by plasticity rules (e.g. STDP) to update eligibility traces and
+    /// modify `weight`. Default: no-op.
+    func applyPostSpike(into state: inout [Double], offset: Int)
 }
 
 public extension Synapse {
     func applySpike(into state: inout [Double], offset: Int) {}
+    func applyPostSpike(into state: inout [Double], offset: Int) {}
 }
 
 // MARK: - Chemical synapse (single-exponential conductance)

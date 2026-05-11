@@ -217,6 +217,12 @@ extension Network {
         for idx in outgoingByPre[neuronID] ?? [] { body(synapses[idx]) }
     }
 
+    /// Iterate incoming synapses without allocating a new array.
+    /// Used by the simulator to dispatch post-synaptic spike events (e.g. STDP).
+    func visitIncomingSynapses(of neuronID: UUID, _ body: (Synapse) -> Void) {
+        for idx in incomingByPost[neuronID] ?? [] { body(synapses[idx]) }
+    }
+
     // MARK: - State-vector introspection (for the results window)
 
     /// The compartment with the given ID, searched across all neurons.

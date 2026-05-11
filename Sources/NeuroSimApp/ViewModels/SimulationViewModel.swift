@@ -285,6 +285,42 @@ final class SimulationViewModel: ObservableObject {
         rebuildSimulator()
     }
 
+    /// Add an NMDA synapse between two neurons.
+    /// Features voltage-dependent Mg²⁺ block — acts as coincidence detector
+    /// (requires both pre-synaptic input AND post-synaptic depolarisation).
+    func addNMDASynapse(from preID: UUID, to postID: UUID, compartmentID: UUID? = nil) {
+        guard preID != postID else { return }
+        let postNeuron = network.neurons.first { $0.id == postID }
+        let targetCompID: UUID? = compartmentID == postNeuron?.somaCompartmentID ? nil : compartmentID
+        if network.synapses.contains(where: {
+            $0 is NMDASynapse
+            && $0.preNeuronID == preID && $0.postNeuronID == postID
+            && $0.postCompartmentID == targetCompID
+        }) { return }
+        network.addSynapse(NMDASynapse(from: preID, to: postID,
+                                       onCompartment: targetCompID,
+                                       gMax: 0.1, reversal: 0.0, tauDecay: 100.0))
+        rebuildSimulator()
+    }
+
+    /// Add an AMPA synapse with STDP plasticity between two neurons.
+    /// Weight evolves via trace-based STDP: LTP on causal spike pairs,
+    /// LTD on anti-causal pairs.
+    func addSTDPSynapse(from preID: UUID, to postID: UUID, compartmentID: UUID? = nil) {
+        guard preID != postID else { return }
+        let postNeuron = network.neurons.first { $0.id == postID }
+        let targetCompID: UUID? = compartmentID == postNeuron?.somaCompartmentID ? nil : compartmentID
+        if network.synapses.contains(where: {
+            $0 is STDPSynapse
+            && $0.preNeuronID == preID && $0.postNeuronID == postID
+            && $0.postCompartmentID == targetCompID
+        }) { return }
+        network.addSynapse(STDPSynapse(from: preID, to: postID,
+                                       onCompartment: targetCompID,
+                                       gMax: 0.1, reversal: 0.0, tauDecay: 5.0))
+        rebuildSimulator()
+    }
+
     /// Add an electrical synapse (gap junction) between two neurons.
     /// Model: I = g · (V_pre − V_post), bidirectional. We avoid
     /// duplicates in either direction since gap junctions are symmetric.

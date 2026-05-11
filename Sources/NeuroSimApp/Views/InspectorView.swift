@@ -875,7 +875,7 @@ private struct SynapseInspector: View {
             }
 
             if let chem = synapse as? ChemicalSynapse {
-                Text("Chemical").font(.callout).foregroundStyle(.secondary)
+                Text("Chemical (AMPA)").font(.callout).foregroundStyle(.secondary)
                 connectivityLabel
                 targetCompartmentPicker
                 paramSlider("g_max", unit: "mS/cm²", value: Binding(
@@ -891,11 +891,94 @@ private struct SynapseInspector: View {
                     set: { chem.tauDecay = max($0, 0.1); vm.objectWillChange.send() }
                 ), range: 0.5...50)
                 weightSlider
-                // Colour convention matches the post-synaptic dot in the
-                // canvas: red = excitatory, green = inhibitory.
                 Text(chem.reversal > -30 ? "Excitatory" : "Inhibitory")
                     .font(.caption)
                     .foregroundStyle(chem.reversal > -30 ? .red : .green)
+
+            } else if let nmda = synapse as? NMDASynapse {
+                Text("NMDA").font(.callout).foregroundStyle(.secondary)
+                connectivityLabel
+                targetCompartmentPicker
+                paramSlider("g_max", unit: "mS/cm²", value: Binding(
+                    get: { nmda.gMax },
+                    set: { nmda.gMax = $0; vm.objectWillChange.send() }
+                ), range: 0...3)
+                paramSlider("E_rev", unit: "mV", value: Binding(
+                    get: { nmda.reversal },
+                    set: { nmda.reversal = $0; vm.objectWillChange.send() }
+                ), range: -90...20)
+                paramSlider("τ_decay", unit: "ms", value: Binding(
+                    get: { nmda.tauDecay },
+                    set: { nmda.tauDecay = max($0, 1); vm.objectWillChange.send() }
+                ), range: 10...300, format: "%.0f")
+                Divider()
+                Text("Mg²⁺ block").font(.caption).foregroundStyle(.secondary)
+                paramSlider("[Mg²⁺]", unit: "mM", value: Binding(
+                    get: { nmda.mgConc },
+                    set: { nmda.mgConc = max($0, 0); vm.objectWillChange.send() }
+                ), range: 0...5)
+                paramSlider("γ", unit: "mV⁻¹", value: Binding(
+                    get: { nmda.mgGamma },
+                    set: { nmda.mgGamma = max($0, 0); vm.objectWillChange.send() }
+                ), range: 0...0.15, format: "%.3f")
+                weightSlider
+                Text("Excitatory · Mg²⁺-gated").font(.caption).foregroundStyle(.red)
+
+            } else if let stdp = synapse as? STDPSynapse {
+                Text("AMPA + STDP").font(.callout).foregroundStyle(.secondary)
+                connectivityLabel
+                targetCompartmentPicker
+                paramSlider("g_max", unit: "mS/cm²", value: Binding(
+                    get: { stdp.gMax },
+                    set: { stdp.gMax = $0; vm.objectWillChange.send() }
+                ), range: 0...3)
+                paramSlider("E_rev", unit: "mV", value: Binding(
+                    get: { stdp.reversal },
+                    set: { stdp.reversal = $0; vm.objectWillChange.send() }
+                ), range: -90...20)
+                paramSlider("τ_decay", unit: "ms", value: Binding(
+                    get: { stdp.tauDecay },
+                    set: { stdp.tauDecay = max($0, 0.1); vm.objectWillChange.send() }
+                ), range: 0.5...50)
+                Divider()
+                Text("STDP").font(.caption).foregroundStyle(.secondary)
+                paramSlider("A+  (LTP)", unit: "", value: Binding(
+                    get: { stdp.aPlus },
+                    set: { stdp.aPlus = max($0, 0); vm.objectWillChange.send() }
+                ), range: 0...0.05, format: "%.4f")
+                paramSlider("A−  (LTD)", unit: "", value: Binding(
+                    get: { stdp.aMinus },
+                    set: { stdp.aMinus = max($0, 0); vm.objectWillChange.send() }
+                ), range: 0...0.05, format: "%.4f")
+                paramSlider("τ+", unit: "ms", value: Binding(
+                    get: { stdp.tauPlus },
+                    set: { stdp.tauPlus = max($0, 1); vm.objectWillChange.send() }
+                ), range: 5...100)
+                paramSlider("τ−", unit: "ms", value: Binding(
+                    get: { stdp.tauMinus },
+                    set: { stdp.tauMinus = max($0, 1); vm.objectWillChange.send() }
+                ), range: 5...100)
+                paramSlider("w_min", unit: "", value: Binding(
+                    get: { stdp.wMin },
+                    set: { stdp.wMin = $0; vm.objectWillChange.send() }
+                ), range: 0...2)
+                paramSlider("w_max", unit: "", value: Binding(
+                    get: { stdp.wMax },
+                    set: { stdp.wMax = max($0, stdp.wMin); vm.objectWillChange.send() }
+                ), range: 0...8)
+                HStack {
+                    Text("weight")
+                        .font(.caption)
+                        .frame(width: 80, alignment: .leading)
+                    Text(String(format: "%.3f", stdp.weight))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text("(live)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Text("Excitatory · plastic").font(.caption).foregroundStyle(.orange)
+
             } else if let gap = synapse as? GapJunction {
                 Text("Electrical (gap junction)")
                     .font(.callout).foregroundStyle(.secondary)
@@ -956,11 +1039,12 @@ private struct SynapseInspector: View {
     private func paramSlider(_ label: String,
                              unit: String,
                              value: Binding<Double>,
-                             range: ClosedRange<Double>) -> some View {
+                             range: ClosedRange<Double>,
+                             format: String = "%.2f") -> some View {
         NumericSlider(label: label,
                       value: value,
                       range: range,
-                      format: "%.2f",
+                      format: format,
                       unit: unit,
                       labelWidth: 90)
     }

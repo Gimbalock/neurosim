@@ -140,10 +140,16 @@ public final class Simulator {
             let vNow = state[vIdx]
             let vPrev = prevVoltages[n.id] ?? vNow
             if vPrev < spikeThreshold && vNow >= spikeThreshold {
-                // visitOutgoingSynapses avoids allocating a new [Synapse] array.
+                // Pre-synaptic event: notify outgoing synapses (conductance jump).
                 network.visitOutgoingSynapses(of: n.id) { syn in
                     if let off = network.stateOffset(ofSynapse: syn.id) {
                         syn.applySpike(into: &state, offset: off)
+                    }
+                }
+                // Post-synaptic event: notify incoming synapses (STDP LTP update).
+                network.visitIncomingSynapses(of: n.id) { syn in
+                    if let off = network.stateOffset(ofSynapse: syn.id) {
+                        syn.applyPostSpike(into: &state, offset: off)
                     }
                 }
             }

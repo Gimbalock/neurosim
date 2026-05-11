@@ -260,11 +260,23 @@ public enum SynapseDoc: Codable {
                   tauDecay: Double, sMax: Double, weight: Double)
     case gapJunction(id: UUID, pre: UUID, post: UUID, postComp: UUID?,
                      conductance: Double, weight: Double)
+    case nmda(id: UUID, pre: UUID, post: UUID, postComp: UUID?,
+              gMax: Double, reversal: Double, tauDecay: Double,
+              sMax: Double, weight: Double,
+              mgConc: Double, mgGamma: Double, mgBeta: Double)
+    case stdp(id: UUID, pre: UUID, post: UUID, postComp: UUID?,
+              gMax: Double, reversal: Double, tauDecay: Double,
+              sMax: Double, weight: Double,
+              aPlus: Double, aMinus: Double,
+              tauPlus: Double, tauMinus: Double,
+              wMin: Double, wMax: Double)
 
     private enum CodingKeys: String, CodingKey {
         case kind, id, pre, post, postComp
         case gMax, reversal, tauDecay, sMax, weight
         case conductance
+        case mgConc, mgGamma, mgBeta
+        case aPlus, aMinus, tauPlus, tauMinus, wMin, wMax
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -289,6 +301,38 @@ public enum SynapseDoc: Codable {
             try c.encodeIfPresent(postComp, forKey: .postComp)
             try c.encode(g,             forKey: .conductance)
             try c.encode(w,             forKey: .weight)
+        case let .nmda(id, pre, post, postComp, gMax, rev, tau, sMax, w, mgC, mgG, mgB):
+            try c.encode("nmda",   forKey: .kind)
+            try c.encode(id,       forKey: .id)
+            try c.encode(pre,      forKey: .pre)
+            try c.encode(post,     forKey: .post)
+            try c.encodeIfPresent(postComp, forKey: .postComp)
+            try c.encode(gMax,     forKey: .gMax)
+            try c.encode(rev,      forKey: .reversal)
+            try c.encode(tau,      forKey: .tauDecay)
+            try c.encode(sMax,     forKey: .sMax)
+            try c.encode(w,        forKey: .weight)
+            try c.encode(mgC,      forKey: .mgConc)
+            try c.encode(mgG,      forKey: .mgGamma)
+            try c.encode(mgB,      forKey: .mgBeta)
+        case let .stdp(id, pre, post, postComp, gMax, rev, tau, sMax, w,
+                       ap, am, tp, tm, wMin, wMax):
+            try c.encode("stdp",   forKey: .kind)
+            try c.encode(id,       forKey: .id)
+            try c.encode(pre,      forKey: .pre)
+            try c.encode(post,     forKey: .post)
+            try c.encodeIfPresent(postComp, forKey: .postComp)
+            try c.encode(gMax,     forKey: .gMax)
+            try c.encode(rev,      forKey: .reversal)
+            try c.encode(tau,      forKey: .tauDecay)
+            try c.encode(sMax,     forKey: .sMax)
+            try c.encode(w,        forKey: .weight)
+            try c.encode(ap,       forKey: .aPlus)
+            try c.encode(am,       forKey: .aMinus)
+            try c.encode(tp,       forKey: .tauPlus)
+            try c.encode(tm,       forKey: .tauMinus)
+            try c.encode(wMin,     forKey: .wMin)
+            try c.encode(wMax,     forKey: .wMax)
         }
     }
 
@@ -315,6 +359,37 @@ public enum SynapseDoc: Codable {
                 postComp:    try c.decodeIfPresent(UUID.self, forKey: .postComp),
                 conductance: try c.decode(Double.self, forKey: .conductance),
                 weight:      try c.decode(Double.self, forKey: .weight))
+        case "nmda":
+            self = .nmda(
+                id:       try c.decode(UUID.self,   forKey: .id),
+                pre:      try c.decode(UUID.self,   forKey: .pre),
+                post:     try c.decode(UUID.self,   forKey: .post),
+                postComp: try c.decodeIfPresent(UUID.self, forKey: .postComp),
+                gMax:     try c.decode(Double.self, forKey: .gMax),
+                reversal: try c.decode(Double.self, forKey: .reversal),
+                tauDecay: try c.decode(Double.self, forKey: .tauDecay),
+                sMax:     try c.decode(Double.self, forKey: .sMax),
+                weight:   try c.decode(Double.self, forKey: .weight),
+                mgConc:   try c.decodeIfPresent(Double.self, forKey: .mgConc)  ?? 1.0,
+                mgGamma:  try c.decodeIfPresent(Double.self, forKey: .mgGamma) ?? 0.062,
+                mgBeta:   try c.decodeIfPresent(Double.self, forKey: .mgBeta)  ?? 3.57)
+        case "stdp":
+            self = .stdp(
+                id:       try c.decode(UUID.self,   forKey: .id),
+                pre:      try c.decode(UUID.self,   forKey: .pre),
+                post:     try c.decode(UUID.self,   forKey: .post),
+                postComp: try c.decodeIfPresent(UUID.self, forKey: .postComp),
+                gMax:     try c.decode(Double.self, forKey: .gMax),
+                reversal: try c.decode(Double.self, forKey: .reversal),
+                tauDecay: try c.decode(Double.self, forKey: .tauDecay),
+                sMax:     try c.decode(Double.self, forKey: .sMax),
+                weight:   try c.decode(Double.self, forKey: .weight),
+                aPlus:    try c.decodeIfPresent(Double.self, forKey: .aPlus)    ?? 0.005,
+                aMinus:   try c.decodeIfPresent(Double.self, forKey: .aMinus)   ?? 0.005,
+                tauPlus:  try c.decodeIfPresent(Double.self, forKey: .tauPlus)  ?? 20.0,
+                tauMinus: try c.decodeIfPresent(Double.self, forKey: .tauMinus) ?? 20.0,
+                wMin:     try c.decodeIfPresent(Double.self, forKey: .wMin)     ?? 0.0,
+                wMax:     try c.decodeIfPresent(Double.self, forKey: .wMax)     ?? 4.0)
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c,
                 debugDescription: "Unknown synapse kind: \(kind)")
@@ -645,6 +720,20 @@ private extension SynapseDoc {
             return .gapJunction(id: gj.id, pre: gj.preNeuronID, post: gj.postNeuronID,
                                 postComp: gj.postCompartmentID,
                                 conductance: gj.conductance, weight: gj.weight)
+        case let nm as NMDASynapse:
+            return .nmda(id: nm.id, pre: nm.preNeuronID, post: nm.postNeuronID,
+                         postComp: nm.postCompartmentID,
+                         gMax: nm.gMax, reversal: nm.reversal,
+                         tauDecay: nm.tauDecay, sMax: nm.sMax, weight: nm.weight,
+                         mgConc: nm.mgConc, mgGamma: nm.mgGamma, mgBeta: nm.mgBeta)
+        case let st as STDPSynapse:
+            return .stdp(id: st.id, pre: st.preNeuronID, post: st.postNeuronID,
+                         postComp: st.postCompartmentID,
+                         gMax: st.gMax, reversal: st.reversal,
+                         tauDecay: st.tauDecay, sMax: st.sMax, weight: st.weight,
+                         aPlus: st.aPlus, aMinus: st.aMinus,
+                         tauPlus: st.tauPlus, tauMinus: st.tauMinus,
+                         wMin: st.wMin, wMax: st.wMax)
         default:
             // Fallback: encode as a silent chemical synapse to avoid data loss.
             return .chemical(id: s.id, pre: s.preNeuronID, post: s.postNeuronID,
@@ -664,6 +753,21 @@ private extension SynapseDoc {
             return GapJunction(id: id, from: pre, to: post,
                                onCompartment: postComp,
                                conductance: g, weight: w)
+        case let .nmda(id, pre, post, postComp, gMax, rev, tau, sMax, w, mgC, mgG, mgB):
+            return NMDASynapse(id: id, from: pre, to: post,
+                               onCompartment: postComp,
+                               gMax: gMax, reversal: rev,
+                               tauDecay: tau, sMax: sMax, weight: w,
+                               mgConc: mgC, mgGamma: mgG, mgBeta: mgB)
+        case let .stdp(id, pre, post, postComp, gMax, rev, tau, sMax, w,
+                       ap, am, tp, tm, wMin, wMax):
+            return STDPSynapse(id: id, from: pre, to: post,
+                               onCompartment: postComp,
+                               gMax: gMax, reversal: rev,
+                               tauDecay: tau, sMax: sMax, weight: w,
+                               aPlus: ap, aMinus: am,
+                               tauPlus: tp, tauMinus: tm,
+                               wMin: wMin, wMax: wMax)
         }
     }
 }
