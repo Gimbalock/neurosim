@@ -12,11 +12,12 @@ import Foundation
 // MARK: - Root
 
 public struct NetworkDocument: Codable {
-    public var neurons:     [NeuronDoc]
-    public var synapses:    [SynapseDoc]
-    public var stimuli:     [StimulusEntry]   // keyed by compartment UUID
-    public var graphConfig: GraphConfigDoc?   // nil in old files → ignored on load
-    public var noiseParams: [String: SynapticNoiseParams]?  // UUID string → params
+    public var neurons:       [NeuronDoc]
+    public var synapses:      [SynapseDoc]
+    public var stimuli:       [StimulusEntry]      // keyed by compartment UUID
+    public var graphConfig:   GraphConfigDoc?      // nil in old files → ignored on load
+    public var noiseParams:   [String: SynapticNoiseParams]?  // UUID string → params
+    public var optimSettings: OptimSettingsDoc?    // nil in old files → ignored on load
 
     public struct StimulusEntry: Codable {
         public var compartmentID: UUID
@@ -40,6 +41,47 @@ public struct NetworkDocument: Codable {
         public var plotWindow: Double
         public init(entries: [Entry], plotWindow: Double) {
             self.entries = entries; self.plotWindow = plotWindow
+        }
+    }
+
+    // MARK: Optimisation settings
+
+    public struct OptimSettingsDoc: Codable {
+        public var algorithm:     String   // OptimizerAlgorithm.rawValue
+        public var maxIterations: Int
+        public var targetError:   Double
+        public var simDuration:   Double
+        public var deF:           Double
+        public var deCR:          Double
+        public var dePopFactor:   Int
+        public var cmaeSigma0:    Double
+        public var params:        [OptimParamDoc]
+
+        public init(algorithm: String, maxIterations: Int, targetError: Double,
+                    simDuration: Double, deF: Double, deCR: Double,
+                    dePopFactor: Int, cmaeSigma0: Double, params: [OptimParamDoc]) {
+            self.algorithm = algorithm; self.maxIterations = maxIterations
+            self.targetError = targetError; self.simDuration = simDuration
+            self.deF = deF; self.deCR = deCR; self.dePopFactor = dePopFactor
+            self.cmaeSigma0 = cmaeSigma0; self.params = params
+        }
+    }
+
+    /// Flat encoding of a ParamTarget + its user-editable fields.
+    /// `chi` and `gi` are -1 when not applicable.
+    public struct OptimParamDoc: Codable {
+        public var targetKind: String   // matches ParamTarget case name
+        public var ci:         Int
+        public var chi:        Int
+        public var gi:         Int
+        public var isActive:   Bool
+        public var minBound:   Double
+        public var maxBound:   Double
+
+        public init(targetKind: String, ci: Int, chi: Int, gi: Int,
+                    isActive: Bool, minBound: Double, maxBound: Double) {
+            self.targetKind = targetKind; self.ci = ci; self.chi = chi; self.gi = gi
+            self.isActive = isActive; self.minBound = minBound; self.maxBound = maxBound
         }
     }
 }

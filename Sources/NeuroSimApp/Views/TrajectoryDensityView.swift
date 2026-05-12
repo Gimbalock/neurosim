@@ -202,8 +202,11 @@ struct TrajectoryDensityView: View {
             if leftNeuronID  == nil { leftNeuronID  = ids.first }
             if rightNeuronID == nil { rightNeuronID = ids.dropFirst().first ?? ids.first }
             rebuildOptimParams()
+            loadOptimSettings()
         }
         .onChange(of: rightNeuronID) { _, _ in rebuildOptimParams() }
+        .onChange(of: optimConfig)   { _, _ in persistOptimSettings() }
+        .onChange(of: optimParams)   { _, _ in persistOptimSettings() }
     }
 
     private func rebuildOptimParams() {
@@ -221,6 +224,25 @@ struct TrajectoryDensityView: View {
             }
         }
         optimParams = fresh
+    }
+
+    // Restore OptimConfig + param flags/bounds from the document (called on appear).
+    private func loadOptimSettings() {
+        guard let doc = vm.optimSettings else { return }
+        optimConfig = doc.toConfig()
+        let overrides = doc.paramOverrides()
+        for i in optimParams.indices {
+            if let saved = overrides[optimParams[i].target] {
+                optimParams[i].isActive  = saved.isActive
+                optimParams[i].minBound  = saved.minBound
+                optimParams[i].maxBound  = saved.maxBound
+            }
+        }
+    }
+
+    // Write current settings back to the view model so the next Save includes them.
+    private func persistOptimSettings() {
+        vm.optimSettings = optimConfig.toDoc(params: optimParams)
     }
 
     // MARK: - Left panel (Référence — import ou neurone)

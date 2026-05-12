@@ -19,7 +19,7 @@ enum OptimizerAlgorithm: String, CaseIterable, Identifiable {
     var shortName: String { self == .differentialEvolution ? "DE" : "CMA-ES" }
 }
 
-struct OptimConfig {
+struct OptimConfig: Equatable {
     var algorithm:      OptimizerAlgorithm = .differentialEvolution
     var maxIterations:  Int    = 150
     var targetError:    Double = 1e-7
@@ -76,7 +76,7 @@ struct DifferentialEvolution {
         (0..<popSize).map { i in
             let others = (0..<popSize).filter { $0 != i }.shuffled()
             let (a, b, c) = (population[others[0]], population[others[1]], population[others[2]])
-            var mutant = (0..<n).map { j in (a[j] + F*(b[j]-c[j])).clamped(to: bounds[j].lo...bounds[j].hi) }
+            let mutant = (0..<n).map { j in (a[j] + F*(b[j]-c[j])).clamped(to: bounds[j].lo...bounds[j].hi) }
             let jRand = Int.random(in: 0..<n)
             var trial = population[i]
             for j in 0..<n where j == jRand || .random(in: 0.0...1.0) < CR { trial[j] = mutant[j] }

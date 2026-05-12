@@ -75,6 +75,10 @@ final class SimulationViewModel: ObservableObject {
     /// Chart cards observe this to trigger autoscale.
     @Published private(set) var autoscaleGeneration: Int = 0
 
+    // MARK: - Optimisation settings (persisted with the network document)
+
+    @Published var optimSettings: NetworkDocument.OptimSettingsDoc? = nil
+
     /// Add a new signal. Pass `groupID` to overlay it on an existing chart;
     /// omit (or pass nil) to open it on its own new chart.
     func addSignalTrace(_ signal: TracedSignal, toGroup groupID: UUID? = nil) {
@@ -879,6 +883,7 @@ final class SimulationViewModel: ObservableObject {
             },
             plotWindow: plotWindow
         )
+        doc.optimSettings = optimSettings
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(doc) else { return }
@@ -892,6 +897,7 @@ final class SimulationViewModel: ObservableObject {
         pause()
         network = doc.toNetwork()
         documentURL = url
+        optimSettings = doc.optimSettings
         if let gc = doc.graphConfig {
             plotWindow = gc.plotWindow
             signalTraces = gc.entries.enumerated().map { idx, entry in

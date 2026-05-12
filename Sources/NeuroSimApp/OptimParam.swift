@@ -12,7 +12,7 @@ import NeuroSimCore
 
 // MARK: - Descriptor
 
-struct OptimParam: Identifiable {
+struct OptimParam: Identifiable, Equatable {
     let id           = UUID()
     var isActive:      Bool
     let label:         String      // e.g. "Na·gMax"
@@ -149,6 +149,157 @@ func makeOptimParams(for neuron: HHNeuron) -> [OptimParam] {
         }
     }
     return params
+}
+
+// MARK: - Apply
+
+// MARK: - Document ↔ OptimParam conversion
+
+extension ParamTarget {
+
+    var docKind: String {
+        switch self {
+        case .compartmentCm:     return "compartmentCm"
+        case .channelGMax:       return "channelGMax"
+        case .channelReversal:   return "channelReversal"
+        case .customGateVHalf:   return "customGateVHalf"
+        case .customGateSlope:   return "customGateSlope"
+        case .customGateTauMin:  return "customGateTauMin"
+        case .customGateTauMax:  return "customGateTauMax"
+        case .customGateVPeak:   return "customGateVPeak"
+        case .customGateTauWidth:return "customGateTauWidth"
+        case .skHalfActivation:  return "skHalfActivation"
+        case .skHillCoeff:       return "skHillCoeff"
+        case .skTauActivation:   return "skTauActivation"
+        case .bkVHalfAtRef:      return "bkVHalfAtRef"
+        case .bkCaShift:         return "bkCaShift"
+        case .bkSlopeFactor:     return "bkSlopeFactor"
+        case .bkTauMin:          return "bkTauMin"
+        case .bkTauMax:          return "bkTauMax"
+        }
+    }
+
+    var docCI:  Int { if case .compartmentCm(let ci) = self { return ci }
+                      if case .channelGMax(let ci, _) = self { return ci }
+                      if case .channelReversal(let ci, _) = self { return ci }
+                      if case .customGateVHalf(let ci, _, _) = self { return ci }
+                      if case .customGateSlope(let ci, _, _) = self { return ci }
+                      if case .customGateTauMin(let ci, _, _) = self { return ci }
+                      if case .customGateTauMax(let ci, _, _) = self { return ci }
+                      if case .customGateVPeak(let ci, _, _) = self { return ci }
+                      if case .customGateTauWidth(let ci, _, _) = self { return ci }
+                      if case .skHalfActivation(let ci, _) = self { return ci }
+                      if case .skHillCoeff(let ci, _) = self { return ci }
+                      if case .skTauActivation(let ci, _) = self { return ci }
+                      if case .bkVHalfAtRef(let ci, _) = self { return ci }
+                      if case .bkCaShift(let ci, _) = self { return ci }
+                      if case .bkSlopeFactor(let ci, _) = self { return ci }
+                      if case .bkTauMin(let ci, _) = self { return ci }
+                      if case .bkTauMax(let ci, _) = self { return ci }
+                      return 0 }
+
+    var docCHI: Int { if case .channelGMax(_, let chi) = self { return chi }
+                      if case .channelReversal(_, let chi) = self { return chi }
+                      if case .customGateVHalf(_, let chi, _) = self { return chi }
+                      if case .customGateSlope(_, let chi, _) = self { return chi }
+                      if case .customGateTauMin(_, let chi, _) = self { return chi }
+                      if case .customGateTauMax(_, let chi, _) = self { return chi }
+                      if case .customGateVPeak(_, let chi, _) = self { return chi }
+                      if case .customGateTauWidth(_, let chi, _) = self { return chi }
+                      if case .skHalfActivation(_, let chi) = self { return chi }
+                      if case .skHillCoeff(_, let chi) = self { return chi }
+                      if case .skTauActivation(_, let chi) = self { return chi }
+                      if case .bkVHalfAtRef(_, let chi) = self { return chi }
+                      if case .bkCaShift(_, let chi) = self { return chi }
+                      if case .bkSlopeFactor(_, let chi) = self { return chi }
+                      if case .bkTauMin(_, let chi) = self { return chi }
+                      if case .bkTauMax(_, let chi) = self { return chi }
+                      return -1 }
+
+    var docGI:  Int { if case .customGateVHalf(_, _, let gi) = self { return gi }
+                      if case .customGateSlope(_, _, let gi) = self { return gi }
+                      if case .customGateTauMin(_, _, let gi) = self { return gi }
+                      if case .customGateTauMax(_, _, let gi) = self { return gi }
+                      if case .customGateVPeak(_, _, let gi) = self { return gi }
+                      if case .customGateTauWidth(_, _, let gi) = self { return gi }
+                      return -1 }
+
+    static func from(kind: String, ci: Int, chi: Int, gi: Int) -> ParamTarget? {
+        switch kind {
+        case "compartmentCm":     return .compartmentCm(ci: ci)
+        case "channelGMax":       return .channelGMax(ci: ci, chi: chi)
+        case "channelReversal":   return .channelReversal(ci: ci, chi: chi)
+        case "customGateVHalf":   return .customGateVHalf(ci: ci, chi: chi, gi: gi)
+        case "customGateSlope":   return .customGateSlope(ci: ci, chi: chi, gi: gi)
+        case "customGateTauMin":  return .customGateTauMin(ci: ci, chi: chi, gi: gi)
+        case "customGateTauMax":  return .customGateTauMax(ci: ci, chi: chi, gi: gi)
+        case "customGateVPeak":   return .customGateVPeak(ci: ci, chi: chi, gi: gi)
+        case "customGateTauWidth":return .customGateTauWidth(ci: ci, chi: chi, gi: gi)
+        case "skHalfActivation":  return .skHalfActivation(ci: ci, chi: chi)
+        case "skHillCoeff":       return .skHillCoeff(ci: ci, chi: chi)
+        case "skTauActivation":   return .skTauActivation(ci: ci, chi: chi)
+        case "bkVHalfAtRef":      return .bkVHalfAtRef(ci: ci, chi: chi)
+        case "bkCaShift":         return .bkCaShift(ci: ci, chi: chi)
+        case "bkSlopeFactor":     return .bkSlopeFactor(ci: ci, chi: chi)
+        case "bkTauMin":          return .bkTauMin(ci: ci, chi: chi)
+        case "bkTauMax":          return .bkTauMax(ci: ci, chi: chi)
+        default:                  return nil
+        }
+    }
+}
+
+extension OptimConfig {
+
+    func toDoc(params: [OptimParam]) -> NetworkDocument.OptimSettingsDoc {
+        NetworkDocument.OptimSettingsDoc(
+            algorithm:     algorithm.rawValue,
+            maxIterations: maxIterations,
+            targetError:   targetError,
+            simDuration:   simDuration,
+            deF:           deF,
+            deCR:          deCR,
+            dePopFactor:   dePopFactor,
+            cmaeSigma0:    cmaeSigma0,
+            params:        params.map { p in
+                NetworkDocument.OptimParamDoc(
+                    targetKind: p.target.docKind,
+                    ci:         p.target.docCI,
+                    chi:        p.target.docCHI,
+                    gi:         p.target.docGI,
+                    isActive:   p.isActive,
+                    minBound:   p.minBound,
+                    maxBound:   p.maxBound)
+            }
+        )
+    }
+}
+
+extension NetworkDocument.OptimSettingsDoc {
+
+    func toConfig() -> OptimConfig {
+        var c = OptimConfig()
+        c.algorithm     = OptimizerAlgorithm(rawValue: algorithm) ?? .differentialEvolution
+        c.maxIterations = maxIterations
+        c.targetError   = targetError
+        c.simDuration   = simDuration
+        c.deF           = deF
+        c.deCR          = deCR
+        c.dePopFactor   = dePopFactor
+        c.cmaeSigma0    = cmaeSigma0
+        return c
+    }
+
+    /// Returns a dictionary keyed by ParamTarget for fast lookup when
+    /// merging saved settings into a freshly-built OptimParam list.
+    func paramOverrides() -> [ParamTarget: NetworkDocument.OptimParamDoc] {
+        var dict: [ParamTarget: NetworkDocument.OptimParamDoc] = [:]
+        for p in params {
+            if let t = ParamTarget.from(kind: p.targetKind, ci: p.ci, chi: p.chi, gi: p.gi) {
+                dict[t] = p
+            }
+        }
+        return dict
+    }
 }
 
 // MARK: - Apply

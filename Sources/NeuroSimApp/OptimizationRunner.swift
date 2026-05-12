@@ -93,7 +93,6 @@ final class OptimizationRunner: ObservableObject {
         }
 
         let bounds  = active.map { (lo: $0.minBound, hi: $0.maxBound) }
-        let nParams = active.count
 
         // Reusable simulator (shares the same Network reference — params changes
         // via updateNeuron are immediately visible without recreating it).
