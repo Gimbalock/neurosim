@@ -136,6 +136,14 @@ extension Network {
         rebuildLayout()
     }
 
+    /// Mutate a neuron's fields (parameters, channel values, etc.) in place.
+    /// Does NOT rebuild the state-vector layout — call notifyStructuralChange()
+    /// separately if you add/remove channels or compartments.
+    public func updateNeuron(id: UUID, _ body: (inout HHNeuron) -> Void) {
+        guard let i = neurons.firstIndex(where: { $0.id == id }) else { return }
+        body(&neurons[i])
+    }
+
     // MARK: - Layout
 
     private func rebuildLayout() {

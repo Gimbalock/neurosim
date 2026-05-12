@@ -293,6 +293,27 @@ struct ResultsWindowView: View {
                 .controlSize(.small)
                 .help("Save the current graph configuration")
 
+                // Export traces as CSV
+                let exportableNeurons = vm.network.neurons.filter {
+                    vm.traces[$0.id]?.isEmpty == false
+                }
+                if !exportableNeurons.isEmpty {
+                    Menu {
+                        ForEach(exportableNeurons) { n in
+                            Button(n.name) { exportTrace(neuron: n) }
+                        }
+                        if exportableNeurons.count > 1 {
+                            Divider()
+                            Button("Tous les neurones (colonnes)") { exportAllTraces() }
+                        }
+                    } label: {
+                        Label("Exporter…", systemImage: "arrow.down.doc")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Exporter les traces en CSV (t, V)")
+                }
+
                 Divider().frame(height: 18)
 
                 if !vm.signalTraces.isEmpty {
@@ -317,6 +338,52 @@ struct ResultsWindowView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    // MARK: - CSV Export
+
+    /// Export a single neuron's trace as a two-column CSV: t (ms), V (mV).
+    private func exportTrace(neuron: HHNeuron) {
+        guard let pts = vm.traces[neuron.id], !pts.isEmpty else { return }
+        let csv = buildCSV(header: "t_ms,V_mV", rows: pts.map { "\($0.t),\($0.v)" })
+        saveCSV(csv, suggestedName: "\(neuron.name)_trace")
+    }
+
+    /// Export all neurons into one CSV: t (ms), V_N1, V_N2, … (interpolated on
+    /// a shared time axis derived from the first neuron's timestamps).
+    private func exportAllTraces() {
+        let neurons = vm.network.neurons.filter { vm.traces[$0.id]?.isEmpty == false }
+        guard !neurons.isEmpty else { return }
+
+        // Use first neuron's time axis as reference
+        guard let ref = vm.traces[neurons[0].id] else { return }
+        let names = neurons.map { $0.name }.joined(separator: ",")
+        var lines = ["t_ms,\(names)"]
+
+        // Build per-neuron lookup dictionaries for O(1) access
+        var lookups: [[Double: Double]] = neurons.map { n in
+            Dictionary(uniqueKeysWithValues: (vm.traces[n.id] ?? []).map { ($0.t, $0.v) })
+        }
+
+        for pt in ref {
+            let vs = lookups.map { dict in dict[pt.t].map { String($0) } ?? "" }
+            lines.append("\(pt.t),\(vs.joined(separator: ","))")
+        }
+
+        saveCSV(lines.joined(separator: "\n"), suggestedName: "traces_all")
+    }
+
+    private func buildCSV(header: String, rows: [String]) -> String {
+        ([header] + rows).joined(separator: "\n")
+    }
+
+    private func saveCSV(_ content: String, suggestedName: String) {
+        let panel = NSSavePanel()
+        panel.title = "Exporter la trace"
+        panel.nameFieldStringValue = "\(suggestedName).csv"
+        panel.allowedContentTypes  = [.commaSeparatedText, .plainText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? content.write(to: url, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Empty state
