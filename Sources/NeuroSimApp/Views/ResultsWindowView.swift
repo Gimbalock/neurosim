@@ -361,7 +361,7 @@ struct ResultsWindowView: View {
         var lines = ["t_ms,\(names)"]
 
         // Build per-neuron lookup dictionaries for O(1) access
-        var lookups: [[Double: Double]] = neurons.map { n in
+        let lookups: [[Double: Double]] = neurons.map { n in
             Dictionary(uniqueKeysWithValues: (vm.traces[n.id] ?? []).map { ($0.t, $0.v) })
         }
 

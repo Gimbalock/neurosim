@@ -321,74 +321,60 @@ func applyOptimParam(_ param: OptimParam, value: Double,
             n.compartments[ci].channels[chi].reversal = value
 
         case .customGateVHalf(let ci, let chi, let gi):
-            guard var cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
+            guard let cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
             cc.definition.gates[gi].vHalf = value
-            n.compartments[ci].channels[chi] = cc
 
         case .customGateSlope(let ci, let chi, let gi):
-            guard var cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
+            guard let cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
             cc.definition.gates[gi].slope = value
-            n.compartments[ci].channels[chi] = cc
 
         case .customGateTauMin(let ci, let chi, let gi):
-            guard var cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
+            guard let cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
             cc.definition.gates[gi].tauMin = value
-            n.compartments[ci].channels[chi] = cc
 
         case .customGateTauMax(let ci, let chi, let gi):
-            guard var cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
+            guard let cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
             cc.definition.gates[gi].tauMax = value
-            n.compartments[ci].channels[chi] = cc
 
         case .customGateVPeak(let ci, let chi, let gi):
-            guard var cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
+            guard let cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
             cc.definition.gates[gi].vPeak = value
-            n.compartments[ci].channels[chi] = cc
 
         case .customGateTauWidth(let ci, let chi, let gi):
-            guard var cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
+            guard let cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
             cc.definition.gates[gi].tauWidth = value
-            n.compartments[ci].channels[chi] = cc
 
         case .skHalfActivation(let ci, let chi):
-            guard var sk = n.compartments[ci].channels[chi] as? SKChannel else { return }
+            guard let sk = n.compartments[ci].channels[chi] as? SKChannel else { return }
             sk.halfActivation = value
-            n.compartments[ci].channels[chi] = sk
 
         case .skHillCoeff(let ci, let chi):
-            guard var sk = n.compartments[ci].channels[chi] as? SKChannel else { return }
+            guard let sk = n.compartments[ci].channels[chi] as? SKChannel else { return }
             sk.hillCoefficient = value
-            n.compartments[ci].channels[chi] = sk
 
         case .skTauActivation(let ci, let chi):
-            guard var sk = n.compartments[ci].channels[chi] as? SKChannel else { return }
+            guard let sk = n.compartments[ci].channels[chi] as? SKChannel else { return }
             sk.tauActivation = value
-            n.compartments[ci].channels[chi] = sk
 
         case .bkVHalfAtRef(let ci, let chi):
-            guard var bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
+            guard let bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
             bk.vHalfAtRef = value
-            n.compartments[ci].channels[chi] = bk
 
         case .bkCaShift(let ci, let chi):
-            guard var bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
+            guard let bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
             bk.caShift = value
-            n.compartments[ci].channels[chi] = bk
 
         case .bkSlopeFactor(let ci, let chi):
-            guard var bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
+            guard let bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
             bk.slopeFactor = value
-            n.compartments[ci].channels[chi] = bk
 
         case .bkTauMin(let ci, let chi):
-            guard var bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
+            guard let bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
             bk.tauMin = value
-            n.compartments[ci].channels[chi] = bk
 
         case .bkTauMax(let ci, let chi):
-            guard var bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
+            guard let bk = n.compartments[ci].channels[chi] as? BKChannel else { return }
             bk.tauMax = value
-            n.compartments[ci].channels[chi] = bk
         }
     }
 }
