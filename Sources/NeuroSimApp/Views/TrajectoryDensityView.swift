@@ -37,12 +37,6 @@ fileprivate struct DensityGrid {
     var total: Int { counts.reduce(0, +) }
 }
 
-fileprivate struct ErrorPoint: Identifiable {
-    let id = UUID()
-    let iteration: Int
-    let error: Double
-}
-
 // MARK: - Root view
 
 struct TrajectoryDensityView: View {
@@ -58,11 +52,12 @@ struct TrajectoryDensityView: View {
     @State private var leftDvdtMax:  Double = 500
     @State private var rightDvdtMax: Double = 500
 
-    // Error history
-    @State private var errorHistory: [ErrorPoint] = []
-
     // Optimizable parameters (built from the Modèle neuron)
     @State private var optimParams: [OptimParam] = []
+
+    // Optimizer
+    @StateObject private var runner = OptimizationRunner()
+    @State private var optimConfig  = OptimConfig()
 
     // Grid resolution
     private let nBinsV    = 100
@@ -371,36 +366,35 @@ struct TrajectoryDensityView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.white.opacity(0.45))
                 Spacer()
-                if let e = currentError {
-                    Text(String(format: "E courante = %.4e", e))
+                if runner.bestError < .infinity {
+                    Text(String(format: "E = %.3e  (iter. %d)", runner.bestError, runner.iteration))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.orange)
+                } else if let e = currentError {
+                    Text(String(format: "E courante = %.4e", e))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.orange.opacity(0.6))
                 }
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
             .padding(.bottom, 4)
 
-            if errorHistory.isEmpty {
+            if runner.errorHistory.isEmpty {
                 Spacer()
-                Text("L'historique s'affichera ici au fil des itérations d'optimisation")
+                Text("L'historique de convergence s'affichera ici")
                     .font(.system(size: 10))
                     .foregroundStyle(.white.opacity(0.2))
                     .multilineTextAlignment(.center)
                 Spacer()
             } else {
-                Chart(errorHistory) { pt in
-                    LineMark(
-                        x: .value("Itération", pt.iteration),
-                        y: .value("E", pt.error)
-                    )
-                    .foregroundStyle(.orange)
-                    .lineStyle(StrokeStyle(lineWidth: 1.5))
-                    AreaMark(
-                        x: .value("Itération", pt.iteration),
-                        y: .value("E", pt.error)
-                    )
-                    .foregroundStyle(.orange.opacity(0.08))
+                Chart(runner.errorHistory.indices, id: \.self) { i in
+                    let pt = runner.errorHistory[i]
+                    LineMark(x: .value("Iter", pt.iteration), y: .value("E", pt.error))
+                        .foregroundStyle(.orange)
+                        .lineStyle(StrokeStyle(lineWidth: 1.5))
+                    AreaMark(x: .value("Iter", pt.iteration), y: .value("E", pt.error))
+                        .foregroundStyle(.orange.opacity(0.08))
                 }
                 .chartXAxis {
                     AxisMarks(values: .automatic) {
@@ -415,7 +409,6 @@ struct TrajectoryDensityView: View {
                     }
                 }
                 .chartXAxisLabel("Itération", alignment: .center)
-
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             }
@@ -428,23 +421,17 @@ struct TrajectoryDensityView: View {
     private var sidebarView: some View {
         VStack(alignment: .leading, spacing: 0) {
 
-            // ── Header ──────────────────────────────────────────────────────
+            // ── Paramètres header ────────────────────────────────────────────
             HStack(spacing: 4) {
                 Text("PARAMÈTRES")
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.3))
                 Spacer()
                 quickSelectButton("gMax") {
-                    for i in optimParams.indices {
-                        optimParams[i].isActive = optimParams[i].label.hasSuffix("·gMax")
-                    }
+                    for i in optimParams.indices { optimParams[i].isActive = optimParams[i].label.hasSuffix("·gMax") }
                 }
-                quickSelectButton("Tout") {
-                    for i in optimParams.indices { optimParams[i].isActive = true }
-                }
-                quickSelectButton("Aucun") {
-                    for i in optimParams.indices { optimParams[i].isActive = false }
-                }
+                quickSelectButton("Tout")   { for i in optimParams.indices { optimParams[i].isActive = true  } }
+                quickSelectButton("Aucun")  { for i in optimParams.indices { optimParams[i].isActive = false } }
             }
             .padding(.horizontal, 8)
             .padding(.top, 10)
@@ -469,6 +456,7 @@ struct TrajectoryDensityView: View {
                     VStack(spacing: 0) {
                         ForEach($optimParams) { $p in
                             OptimParamRow(param: $p)
+                                .disabled(runner.isRunning)
                             Divider().opacity(0.08)
                         }
                     }
@@ -477,17 +465,100 @@ struct TrajectoryDensityView: View {
 
             Divider().opacity(0.2)
 
-            // ── Footer metrics ───────────────────────────────────────────────
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 4) {
-                    Text("E =")
+            // ── Optimizer config ─────────────────────────────────────────────
+            VStack(alignment: .leading, spacing: 8) {
+
+                // Algorithm picker
+                HStack(spacing: 6) {
+                    Text("Algo")
                         .font(.system(size: 9))
-                        .foregroundStyle(.white.opacity(0.35))
-                    Text(currentError.map { String(format: "%.3e", $0) } ?? "—")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.orange.opacity(currentError == nil ? 0.3 : 0.9))
+                        .foregroundStyle(.white.opacity(0.4))
+                    Picker("", selection: $optimConfig.algorithm) {
+                        ForEach(OptimizerAlgorithm.allCases) { a in
+                            Text(a.shortName).tag(a)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .disabled(runner.isRunning)
                 }
-                Text("\(optimParams.filter(\.isActive).count) param(s) actif(s)  •  \(errorHistory.count) iter.")
+
+                // Simulation duration per eval
+                HStack(spacing: 4) {
+                    Text("Durée sim")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white.opacity(0.4))
+                    Slider(value: $optimConfig.simDuration, in: 100...2000, step: 100)
+                        .frame(maxWidth: .infinity)
+                        .tint(.white.opacity(0.4))
+                        .disabled(runner.isRunning)
+                    Text(String(format: "%.0f ms", optimConfig.simDuration))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 44)
+                }
+
+                // Max iterations
+                HStack(spacing: 4) {
+                    Text("Iter. max")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white.opacity(0.4))
+                    Slider(value: Binding(
+                        get:  { Double(optimConfig.maxIterations) },
+                        set:  { optimConfig.maxIterations = Int($0) }
+                    ), in: 20...500, step: 10)
+                    .frame(maxWidth: .infinity)
+                    .tint(.white.opacity(0.4))
+                    .disabled(runner.isRunning)
+                    Text("\(optimConfig.maxIterations)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 30)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+
+            Divider().opacity(0.2)
+
+            // ── Status + Start/Stop ──────────────────────────────────────────
+            VStack(alignment: .leading, spacing: 6) {
+                Text(runner.status)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 6) {
+                    Button(runner.isRunning ? "Stop" : "Lancer") {
+                        if runner.isRunning {
+                            runner.stop()
+                        } else {
+                            guard let id = resolvedRight else { return }
+                            runner.start(
+                                vm:         vm,
+                                params:     optimParams,
+                                neuronID:   id,
+                                refPoints:  leftPoints,
+                                config:     optimConfig,
+                                nBinsV:     nBinsV,
+                                nBinsDvdt:  nBinsDvdt
+                            )
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(runner.isRunning ? .red : .orange)
+
+                    if runner.isRunning {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                            .tint(.orange)
+                    }
+                }
+
+                Text("\(optimParams.filter(\.isActive).count) param(s)  •  \(runner.iteration) iter.")
                     .font(.system(size: 9))
                     .foregroundStyle(.white.opacity(0.25))
             }
@@ -508,6 +579,7 @@ struct TrajectoryDensityView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 3))
         }
         .buttonStyle(.plain)
+        .disabled(runner.isRunning)
     }
 
     // MARK: - Import
