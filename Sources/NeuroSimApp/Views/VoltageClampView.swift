@@ -1,0 +1,341 @@
+//
+//  VoltageClampView.swift
+//  NeuroSimApp
+//
+//  Voltage-clamp protocol editor + I(t) family + I-V curve.
+//
+
+import SwiftUI
+import Charts
+import NeuroSimCore
+
+// MARK: - Data models for Charts
+
+private struct TracePoint: Identifiable {
+    let id = UUID()
+    let time:      Double   // ms
+    let current:   Double   // µA/cm²
+    let stepIndex: Int      // for color mapping
+    let stepVoltage: Double // mV — used in legend
+}
+
+private struct IVPoint: Identifiable {
+    let id = UUID()
+    let voltage:     Double
+    let current:     Double
+    let channelName: String
+}
+
+// MARK: - Main view
+
+struct VoltageClampView: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    @StateObject private var runner = VoltageClampRunner()
+
+    // Track which channel(s) to show in I(t) (nil = total)
+    @State private var selectedChannelIndex: Int? = nil   // nil = sum
+
+    var body: some View {
+        VStack(spacing: 0) {
+            controlBar
+            Divider()
+            HSplitView {
+                itChart
+                    .frame(minWidth: 200)
+                ivChart
+                    .frame(minWidth: 160, maxWidth: 300)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear { autoSelectNeuron() }
+        .onChange(of: vm.network.neurons.map(\.id)) { _, _ in autoSelectNeuron() }
+    }
+
+    // MARK: - Control bar
+
+    private var controlBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                neuronPicker
+                if let nid = runner.selectedNeuronID,
+                   let neuron = vm.network.neurons.first(where: { $0.id == nid }),
+                   neuron.compartments.count > 1 {
+                    compartmentPicker(neuron: neuron)
+                }
+                Divider().frame(height: 24)
+                labeledField("V hold",  value: $runner.vcProtocol.vHold,  range: -120...0,   unit: "mV", fmt: "%.0f")
+                labeledField("V start", value: $runner.vcProtocol.vStart, range: -120...0,   unit: "mV", fmt: "%.0f")
+                labeledField("V end",   value: $runner.vcProtocol.vEnd,   range: -80...120,  unit: "mV", fmt: "%.0f")
+                labeledIntField("Paliers", value: $runner.vcProtocol.nSteps, range: 2...30)
+                Divider().frame(height: 24)
+                labeledField("t pré",   value: $runner.vcProtocol.tPre,   range: 5...500,    unit: "ms", fmt: "%.0f")
+                labeledField("t palier",value: $runner.vcProtocol.tStep,  range: 10...2000,  unit: "ms", fmt: "%.0f")
+                Divider().frame(height: 24)
+                runButton
+                if runner.isRunning {
+                    ProgressView(value: Double(runner.progress),
+                                 total: Double(max(1, runner.vcProtocol.nSteps)))
+                        .frame(width: 80)
+                }
+                Text(runner.status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .frame(height: 44)
+    }
+
+    @ViewBuilder
+    private var neuronPicker: some View {
+        let neurons = vm.network.neurons
+        if neurons.isEmpty {
+            Text("Aucun neurone").font(.caption).foregroundStyle(.secondary)
+        } else {
+            Picker("Neurone", selection: $runner.selectedNeuronID) {
+                ForEach(neurons) { n in
+                    Text(n.name).tag(Optional(n.id))
+                }
+            }
+            .labelsHidden()
+            .frame(width: 110)
+        }
+    }
+
+    @ViewBuilder
+    private func compartmentPicker(neuron: HHNeuron) -> some View {
+        Picker("Compartiment", selection: $runner.selectedCompartmentID) {
+            ForEach(neuron.compartments) { c in
+                Text(c.name).tag(Optional(c.id))
+            }
+        }
+        .labelsHidden()
+        .frame(width: 90)
+    }
+
+    @ViewBuilder
+    private func labeledField(_ label: String, value: Binding<Double>,
+                               range: ClosedRange<Double>, unit: String, fmt: String) -> some View {
+        VStack(alignment: .center, spacing: 1) {
+            Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
+            HStack(spacing: 2) {
+                TextField("", value: value, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 46)
+                    .multilineTextAlignment(.trailing)
+                Text(unit).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func labeledIntField(_ label: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
+        VStack(alignment: .center, spacing: 1) {
+            Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
+            TextField("", value: value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 38)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    @ViewBuilder
+    private var runButton: some View {
+        if runner.isRunning {
+            Button(action: { runner.stop() }) {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+        } else {
+            Button(action: { runner.run(network: vm.network) }) {
+                Label("Lancer", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(runner.selectedNeuronID == nil)
+        }
+    }
+
+    // MARK: - I(t) chart
+
+    @ViewBuilder
+    private var itChart: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            channelSelector
+            if let result = runner.result, !result.traces.isEmpty {
+                Chart(itData(result: result)) { pt in
+                    LineMark(
+                        x: .value("t (ms)", pt.time),
+                        y: .value("I (µA/cm²)", pt.current)
+                    )
+                    .foregroundStyle(stepColor(index: pt.stepIndex,
+                                               total: result.traces.count))
+                    .lineStyle(.init(lineWidth: 1))
+                }
+                .chartXAxisLabel("t (ms)")
+                .chartYAxisLabel("I (µA/cm²)")
+                .chartLegend(.hidden)
+                .padding(12)
+            } else {
+                emptyPlaceholder(text: runner.isRunning ? "Calcul en cours…" : "Lancez le protocole")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var channelSelector: some View {
+        if let result = runner.result, result.channelNames.count > 1 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    Button("Total") { selectedChannelIndex = nil }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .tint(selectedChannelIndex == nil ? .accentColor : .secondary)
+                    ForEach(result.channelNames.indices, id: \.self) { ci in
+                        Button(result.channelNames[ci]) { selectedChannelIndex = ci }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            .tint(selectedChannelIndex == ci ? channelColor(ci) : .secondary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+            }
+            .frame(height: 34)
+        }
+    }
+
+    // MARK: - I-V chart
+
+    @ViewBuilder
+    private var ivChart: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("I-V (steady-state)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 12)
+                .padding(.top, 8)
+            if let result = runner.result, !result.traces.isEmpty {
+                let data = ivData(result: result)
+                Chart(data) { pt in
+                    LineMark(
+                        x: .value("V (mV)", pt.voltage),
+                        y: .value("I (µA/cm²)", pt.current)
+                    )
+                    .foregroundStyle(by: .value("Canal", pt.channelName))
+                    PointMark(
+                        x: .value("V (mV)", pt.voltage),
+                        y: .value("I (µA/cm²)", pt.current)
+                    )
+                    .foregroundStyle(by: .value("Canal", pt.channelName))
+                    .symbolSize(20)
+                }
+                .chartXAxisLabel("V (mV)")
+                .chartYAxisLabel("I (µA/cm²)")
+                .chartForegroundStyleScale(channelColorScale(result: result))
+                .chartLegend(position: .bottom, alignment: .center)
+                .padding(12)
+            } else {
+                emptyPlaceholder(text: "")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Data builders
+
+    private func itData(result: VClampResult) -> [TracePoint] {
+        var pts: [TracePoint] = []
+        for (si, stepTraces) in result.traces.enumerated() {
+            let vTest = result.vcProtocol.stepVoltages[si]
+            guard let refTrace = stepTraces.first else { continue }
+            let nPts = refTrace.times.count
+            for ti in 0..<nPts {
+                let I: Double
+                if let ci = selectedChannelIndex, ci < stepTraces.count {
+                    I = stepTraces[ci].currentsDensity[ti]
+                } else {
+                    // Sum all channels
+                    I = stepTraces.reduce(0.0) { $0 + ($1.currentsDensity.indices.contains(ti) ? $1.currentsDensity[ti] : 0) }
+                }
+                pts.append(TracePoint(time: refTrace.times[ti], current: I,
+                                      stepIndex: si, stepVoltage: vTest))
+            }
+        }
+        return pts
+    }
+
+    private func ivData(result: VClampResult) -> [IVPoint] {
+        var pts: [IVPoint] = []
+        let matrix = result.steadyStateMatrix   // [channelIndex][stepIndex]
+        let stepVs = result.vcProtocol.stepVoltages
+        for (ci, name) in result.channelNames.enumerated() {
+            guard ci < matrix.count else { continue }
+            for (si, v) in stepVs.enumerated() {
+                guard si < matrix[ci].count else { continue }
+                pts.append(IVPoint(voltage: v, current: matrix[ci][si], channelName: name))
+            }
+        }
+        return pts
+    }
+
+    // MARK: - Color helpers
+
+    private func stepColor(index: Int, total: Int) -> Color {
+        let t = total > 1 ? Double(index) / Double(total - 1) : 0.5
+        return Color(hue: (1 - t) * 0.67, saturation: 0.9, brightness: 0.85)
+    }
+
+    private let channelColors: [Color] = [.blue, .orange, .red, .green, .purple, .teal, .pink, .yellow]
+
+    private func channelColor(_ index: Int) -> Color {
+        channelColors[index % channelColors.count]
+    }
+
+    private func channelColorScale(result: VClampResult) -> KeyValuePairs<String, Color> {
+        // Build explicit scale for chartForegroundStyleScale
+        var pairs: [(String, Color)] = []
+        for (ci, name) in result.channelNames.enumerated() {
+            pairs.append((name, channelColor(ci)))
+        }
+        // KeyValuePairs doesn't have a direct init from [(K,V)]; use a switch on count
+        switch pairs.count {
+        case 1:  return [pairs[0].0: pairs[0].1]
+        case 2:  return [pairs[0].0: pairs[0].1, pairs[1].0: pairs[1].1]
+        case 3:  return [pairs[0].0: pairs[0].1, pairs[1].0: pairs[1].1,
+                         pairs[2].0: pairs[2].1]
+        case 4:  return [pairs[0].0: pairs[0].1, pairs[1].0: pairs[1].1,
+                         pairs[2].0: pairs[2].1, pairs[3].0: pairs[3].1]
+        case 5:  return [pairs[0].0: pairs[0].1, pairs[1].0: pairs[1].1,
+                         pairs[2].0: pairs[2].1, pairs[3].0: pairs[3].1,
+                         pairs[4].0: pairs[4].1]
+        default: return [pairs[0].0: pairs[0].1]
+        }
+    }
+
+    // MARK: - Placeholder
+
+    @ViewBuilder
+    private func emptyPlaceholder(text: String) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.03))
+                .padding(12)
+            if !text.isEmpty {
+                Text(text).foregroundStyle(.tertiary).font(.caption)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Auto-select
+
+    private func autoSelectNeuron() {
+        if runner.selectedNeuronID == nil || !vm.network.neurons.contains(where: { $0.id == runner.selectedNeuronID }) {
+            runner.selectedNeuronID = vm.network.neurons.first?.id
+        }
+    }
+}

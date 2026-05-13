@@ -30,6 +30,7 @@ private enum AnalysisTab: String, CaseIterable {
     case isi     = "ISI"
     case phase   = "Phase"
     case density = "Densité"
+    case clamp   = "Clamp"
 }
 
 struct ResultsWindowView: View {
@@ -79,7 +80,7 @@ struct ResultsWindowView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 440)
+            .frame(maxWidth: 520)
             .padding(.horizontal, 16)
             .padding(.vertical, 5)
             Divider()
@@ -90,6 +91,7 @@ struct ResultsWindowView: View {
             case .isi:     ISIView()
             case .phase:   PhaseView()
             case .density: TrajectoryDensityView()
+            case .clamp:   VoltageClampView()
             }
         }
         .frame(minWidth: 640, minHeight: 480)
