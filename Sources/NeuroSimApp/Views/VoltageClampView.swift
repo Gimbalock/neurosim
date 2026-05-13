@@ -165,19 +165,22 @@ struct VoltageClampView: View {
         VStack(alignment: .leading, spacing: 4) {
             channelSelector
             if let result = runner.result, !result.traces.isEmpty {
+                let stepColors = (0..<result.traces.count).map { i in
+                    stepColor(index: i, total: result.traces.count)
+                }
                 Chart {
                     ForEach(0..<result.traces.count, id: \.self) { si in
-                        let color = stepColor(index: si, total: result.traces.count)
                         ForEach(itDataForStep(result: result, stepIndex: si)) { pt in
                             LineMark(
                                 x: .value("t (ms)", pt.time),
                                 y: .value("I (µA/cm²)", pt.current)
                             )
-                            .foregroundStyle(color)
+                            .foregroundStyle(by: .value("palier", pt.stepIndex))
                             .lineStyle(.init(lineWidth: 1))
                         }
                     }
                 }
+                .chartForegroundStyleScale(range: stepColors)
                 .chartXAxisLabel("t (ms)")
                 .chartYAxisLabel("I (µA/cm²)")
                 .chartLegend(.hidden)
