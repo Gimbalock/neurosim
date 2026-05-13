@@ -32,8 +32,11 @@ struct VoltageClampView: View {
     @EnvironmentObject var vm: SimulationViewModel
     @StateObject private var runner = VoltageClampRunner()
 
-    // Track which channel(s) to show in I(t) (nil = total)
     @State private var selectedChannelIndex: Int? = nil   // nil = sum
+
+    // Cursor (I(t) chart)
+    @State private var cursorTime: Double?  = nil
+    @State private var cursorAbs:  CGPoint? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -179,11 +182,41 @@ struct VoltageClampView: View {
                             .lineStyle(.init(lineWidth: 1))
                         }
                     }
+                    if let t = cursorTime {
+                        RuleMark(x: .value("", t))
+                            .foregroundStyle(.white.opacity(0.45))
+                            .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
+                    }
                 }
                 .chartForegroundStyleScale(range: stepColors)
                 .chartXAxisLabel("t (ms)")
                 .chartYAxisLabel("I (µA/cm²)")
                 .chartLegend(.hidden)
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        let f = geo[proxy.plotAreaFrame]
+                        Rectangle().fill(Color.clear).contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let loc):
+                                    let rx = loc.x - f.minX
+                                    guard rx >= 0, rx <= f.width else { cursorTime = nil; return }
+                                    cursorAbs  = loc
+                                    cursorTime = proxy.value(atX: rx, as: Double.self)
+                                case .ended:
+                                    cursorTime = nil; cursorAbs = nil
+                                }
+                            }
+                        if let loc = cursorAbs, let t = cursorTime {
+                            let lx = loc.x + 10 > f.maxX - 100 ? loc.x - 105 : loc.x + 10
+                            Text(String(format: "t = %.1f ms", t))
+                                .font(.system(size: 10, design: .monospaced))
+                                .padding(.horizontal, 6).padding(.vertical, 4)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+                                .position(x: lx + 46, y: max(loc.y - 4, f.minY + 14))
+                        }
+                    }
+                }
                 .padding(12)
             } else {
                 emptyPlaceholder(text: runner.isRunning ? "Calcul en cours…" : "Lancez le protocole")

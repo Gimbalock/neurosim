@@ -17,6 +17,10 @@ struct BifurcationView: View {
     // Current parameter tag (encodes BifSweepParam as a String for Picker)
     @State private var paramTag: String = "iInj"
 
+    // Cursor
+    @State private var cursorParam: Double?  = nil
+    @State private var cursorAbs:   CGPoint? = nil
+
     var body: some View {
         VStack(spacing: 0) {
             controlBar
@@ -117,6 +121,18 @@ struct BifurcationView: View {
 
     // MARK: - Chart
 
+    @ChartContentBuilder
+    private func bifPoints(_ pts: [BifPoint], branch: String, xLabel: String) -> some ChartContent {
+        ForEach(pts) { pt in
+            LineMark(x: .value(xLabel, pt.param), y: .value("V (mV)", pt.v))
+                .foregroundStyle(by: .value("Branche", branch))
+                .lineStyle(.init(lineWidth: 1.5))
+            PointMark(x: .value(xLabel, pt.param), y: .value("V (mV)", pt.v))
+                .foregroundStyle(by: .value("Branche", branch))
+                .symbolSize(18)
+        }
+    }
+
     @ViewBuilder
     private var chartArea: some View {
         if runner.points.isEmpty {
@@ -130,31 +146,49 @@ struct BifurcationView: View {
             let minPts = runner.points.filter { !$0.isMax }
             let xLabel = paramLabel
             Chart {
-                ForEach(maxPts) { pt in
-                    LineMark(x: .value(xLabel, pt.param),
-                             y: .value("V (mV)", pt.v))
-                    .foregroundStyle(by: .value("Branche", "Maxima"))
-                    .lineStyle(.init(lineWidth: 1.5))
-                    PointMark(x: .value(xLabel, pt.param),
-                              y: .value("V (mV)", pt.v))
-                    .foregroundStyle(by: .value("Branche", "Maxima"))
-                    .symbolSize(18)
-                }
-                ForEach(minPts) { pt in
-                    LineMark(x: .value(xLabel, pt.param),
-                             y: .value("V (mV)", pt.v))
-                    .foregroundStyle(by: .value("Branche", "Minima"))
-                    .lineStyle(.init(lineWidth: 1.5))
-                    PointMark(x: .value(xLabel, pt.param),
-                              y: .value("V (mV)", pt.v))
-                    .foregroundStyle(by: .value("Branche", "Minima"))
-                    .symbolSize(18)
+                bifPoints(maxPts, branch: "Maxima", xLabel: xLabel)
+                bifPoints(minPts, branch: "Minima", xLabel: xLabel)
+                if let p = cursorParam {
+                    RuleMark(x: .value("", p))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
                 }
             }
             .chartForegroundStyleScale(["Maxima": Color.orange, "Minima": Color.teal])
             .chartXAxisLabel(xLabel)
             .chartYAxisLabel("V (mV)")
             .chartLegend(position: .topLeading, alignment: .leading)
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    let f = geo[proxy.plotAreaFrame]
+                    Rectangle().fill(Color.clear).contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let loc):
+                                let rx = loc.x - f.minX
+                                guard rx >= 0, rx <= f.width else { cursorParam = nil; return }
+                                cursorAbs   = loc
+                                cursorParam = proxy.value(atX: rx, as: Double.self)
+                            case .ended:
+                                cursorParam = nil; cursorAbs = nil
+                            }
+                        }
+                    if let loc = cursorAbs, let p = cursorParam {
+                        let vMax  = maxPts.min(by: { abs($0.param - p) < abs($1.param - p) })?.v
+                        let vMin  = minPts.min(by: { abs($0.param - p) < abs($1.param - p) })?.v
+                        let tooltip = ([String(format: "\(runner.sweepParam.unit) = %.2f", p)]
+                            + [vMax.map { String(format: "Vmax = %.1f mV", $0) },
+                               vMin.map { String(format: "Vmin = %.1f mV", $0) }].compactMap { $0 }
+                        ).joined(separator: "\n")
+                        let lx = loc.x + 10 > f.maxX - 120 ? loc.x - 125 : loc.x + 10
+                        Text(tooltip)
+                            .font(.system(size: 10, design: .monospaced))
+                            .padding(.horizontal, 6).padding(.vertical, 4)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+                            .position(x: lx + 55, y: max(loc.y, f.minY + 30))
+                    }
+                }
+            }
             .padding(16)
         }
     }

@@ -897,6 +897,8 @@ fileprivate struct DensityCanvas: View {
     private let mT: CGFloat = 6    // marginTop
     private let mR: CGFloat = 8    // marginRight
 
+    @State private var hoverLoc: CGPoint? = nil
+
     var body: some View {
         GeometryReader { geo in
             Canvas { ctx, size in
@@ -964,6 +966,20 @@ fileprivate struct DensityCanvas: View {
                 ctx.draw(Text("V  (mV)").font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.white.opacity(0.4)),
                          at: CGPoint(x: mL + pW / 2, y: size.height - 2), anchor: .bottom)
+
+                // Crosshair
+                if let cp = hoverLoc,
+                   cp.x >= mL, cp.x <= mL + pW,
+                   cp.y >= mT, cp.y <= mT + pH {
+                    var vLine = Path()
+                    vLine.move(to:    CGPoint(x: cp.x, y: mT))
+                    vLine.addLine(to: CGPoint(x: cp.x, y: mT + pH))
+                    ctx.stroke(vLine, with: .color(.white.opacity(0.55)), lineWidth: 1)
+                    var hLine = Path()
+                    hLine.move(to:    CGPoint(x: mL,      y: cp.y))
+                    hLine.addLine(to: CGPoint(x: mL + pW, y: cp.y))
+                    ctx.stroke(hLine, with: .color(.white.opacity(0.55)), lineWidth: 1)
+                }
             }
 
             // Rotated Y label
@@ -973,8 +989,32 @@ fileprivate struct DensityCanvas: View {
                 .rotationEffect(.degrees(-90))
                 .fixedSize()
                 .position(x: 8, y: geo.size.height / 2)
+
+            // Cursor label
+            if let cp = hoverLoc {
+                let pW = geo.size.width  - mL - mR
+                let pH = geo.size.height - mT - mB
+                if cp.x >= mL, cp.x <= mL + pW,
+                   cp.y >= mT, cp.y <= mT + pH {
+                    let v = grid.vMin    + Double(cp.x - mL) / Double(pW) * (grid.vMax    - grid.vMin)
+                    let d = grid.dvdtMin + (1.0 - Double(cp.y - mT) / Double(pH)) * (grid.dvdtMax - grid.dvdtMin)
+                    let lx = cp.x + 8 > geo.size.width - mR - 120 ? cp.x - 115 : cp.x + 8
+                    Text(String(format: "V = %.1f mV\ndV/dt = %.1f mV/ms", v, d))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 4)
+                        .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 5))
+                        .position(x: lx + 55, y: max(cp.y - 8, mT + 20))
+                }
+            }
         }
         .background(.black)
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let loc): hoverLoc = loc
+            case .ended:           hoverLoc = nil
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

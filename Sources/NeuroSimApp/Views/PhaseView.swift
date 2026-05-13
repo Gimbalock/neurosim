@@ -19,6 +19,11 @@ import NeuroSimCore
 struct PhaseView: View {
     @EnvironmentObject var vm: SimulationViewModel
 
+    // Cursor
+    @State private var cursorV:    Double?    = nil
+    @State private var cursorDvdt: Double?    = nil
+    @State private var cursorAbs:  CGPoint?   = nil
+
     // MARK: - Data model
 
     private struct PhasePoint: Identifiable {
@@ -75,18 +80,34 @@ struct PhaseView: View {
 
     // MARK: - Chart
 
+    @ChartContentBuilder
+    private func phaseLines(for phase: NeuronPhase) -> some ChartContent {
+        let color = phase.color.opacity(0.65)
+        ForEach(phase.points) { pt in
+            LineMark(
+                x: .value("V (mV)", pt.v),
+                y: .value("dV/dt (mV/ms)", pt.dvdt),
+                series: .value("Neurone", phase.name)
+            )
+            .foregroundStyle(color)
+            .lineStyle(StrokeStyle(lineWidth: 1.0))
+        }
+    }
+
     private var phaseChart: some View {
         Chart {
             ForEach(phases) { phase in
-                ForEach(phase.points) { pt in
-                    LineMark(
-                        x: .value("V (mV)", pt.v),
-                        y: .value("dV/dt (mV/ms)", pt.dvdt),
-                        series: .value("Neurone", phase.name)
-                    )
-                    .foregroundStyle(phase.color.opacity(0.65))
-                    .lineStyle(StrokeStyle(lineWidth: 1.0))
-                }
+                phaseLines(for: phase)
+            }
+            if let v = cursorV {
+                RuleMark(x: .value("", v))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
+            }
+            if let d = cursorDvdt {
+                RuleMark(y: .value("", d))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
             }
         }
         .chartXAxisLabel("V  (mV)", alignment: .center)
@@ -104,6 +125,36 @@ struct PhaseView: View {
             }
         }
         .chartLegend(position: .topLeading, spacing: 8)
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                let f = geo[proxy.plotAreaFrame]
+                Rectangle().fill(Color.clear).contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let loc):
+                            let rx = loc.x - f.minX
+                            let ry = loc.y - f.minY
+                            guard rx >= 0, rx <= f.width, ry >= 0, ry <= f.height else {
+                                cursorV = nil; return
+                            }
+                            cursorAbs  = loc
+                            cursorV    = proxy.value(atX: rx, as: Double.self)
+                            cursorDvdt = proxy.value(atY: ry, as: Double.self)
+                        case .ended:
+                            cursorV = nil; cursorDvdt = nil; cursorAbs = nil
+                        }
+                    }
+                if let loc = cursorAbs, let v = cursorV, let d = cursorDvdt {
+                    let lx = loc.x + 10 > f.maxX - 110 ? loc.x - 115 : loc.x + 10
+                    let ly = max(loc.y - 4, f.minY + 4)
+                    Text(String(format: "V = %.1f mV\ndV/dt = %.1f mV/ms", v, d))
+                        .font(.system(size: 10, design: .monospaced))
+                        .padding(.horizontal, 6).padding(.vertical, 4)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+                        .position(x: lx + 50, y: ly + 18)
+                }
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
