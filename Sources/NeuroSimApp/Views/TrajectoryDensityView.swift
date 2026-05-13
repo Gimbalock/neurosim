@@ -187,8 +187,13 @@ struct TrajectoryDensityView: View {
 
                 Divider().opacity(0.3)
 
-                errorChartView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                HStack(spacing: 0) {
+                    errorChartView
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Divider().opacity(0.2)
+                    paramEvolutionView
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
 
             Divider()
@@ -307,12 +312,17 @@ struct TrajectoryDensityView: View {
             rightToolbar
             Divider().opacity(0.25)
             Group {
-                if let id = resolvedRight,
-                   let grid = buildDisplayGrid(pts: pointsFromNeuron(id),
-                                               dvdtMax: rightDvdtMax) {
+                let pts: [(v: Double, dvdt: Double)] = {
+                    if runner.isRunning && !runner.lastBestPoints.isEmpty {
+                        return runner.lastBestPoints
+                    }
+                    if let id = resolvedRight { return pointsFromNeuron(id) }
+                    return []
+                }()
+                if let grid = buildDisplayGrid(pts: pts, dvdtMax: rightDvdtMax) {
                     DensityCanvas(grid: grid)
                 } else {
-                    panelEmpty(hint: "Lance la simulation")
+                    panelEmpty(hint: runner.isRunning ? "Calcul en cours…" : "Lance la simulation")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -438,6 +448,92 @@ struct TrajectoryDensityView: View {
         .background(.black)
     }
 
+    // MARK: - Parameter evolution chart
+
+    private struct ParamPoint: Identifiable {
+        let id = UUID()
+        let paramIdx:  Int
+        let label:     String
+        let iteration: Int
+        let normValue: Double
+    }
+
+    private var paramChartPoints: [ParamPoint] {
+        let info = runner.activeParamInfo
+        guard !info.isEmpty else { return [] }
+        return runner.paramSnapshots.flatMap { snap in
+            snap.values.indices.compactMap { i -> ParamPoint? in
+                guard i < info.count else { return nil }
+                let range = info[i].hi - info[i].lo
+                guard range > 0 else { return nil }
+                let norm = ((snap.values[i] - info[i].lo) / range).clamped(to: 0...1)
+                return ParamPoint(paramIdx: i, label: info[i].label,
+                                  iteration: snap.iteration, normValue: norm)
+            }
+        }
+    }
+
+    private var paramEvolutionView: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Évolution des paramètres (normalisé)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.45))
+                Spacer()
+                if runner.paramSnapshots.last != nil,
+                   !runner.activeParamInfo.isEmpty {
+                    Text("\(runner.activeParamInfo.count) param(s)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.3))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            let pts = paramChartPoints
+            if pts.isEmpty {
+                Spacer()
+                Text("L'évolution des paramètres s'affichera ici")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.2))
+                    .multilineTextAlignment(.center)
+                Spacer()
+            } else {
+                Chart(pts) { pt in
+                    LineMark(
+                        x: .value("Iter", pt.iteration),
+                        y: .value("Valeur", pt.normValue)
+                    )
+                    .foregroundStyle(by: .value("Param", pt.label))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+                }
+                .chartForegroundStyleScale(
+                    range: (0..<min(runner.activeParamInfo.count, kTracePalette.count))
+                        .map { kTracePalette[$0] }
+                )
+                .chartXAxis {
+                    AxisMarks(values: .automatic) {
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4)).foregroundStyle(.white.opacity(0.15))
+                        AxisValueLabel().foregroundStyle(.white.opacity(0.45))
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(values: .stride(by: 0.25)) {
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4)).foregroundStyle(.white.opacity(0.15))
+                        AxisValueLabel().foregroundStyle(.white.opacity(0.45))
+                    }
+                }
+                .chartYScale(domain: 0...1)
+                .chartXAxisLabel("Itération", alignment: .center)
+                .chartLegend(.hidden)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
+        }
+        .background(.black)
+    }
+
     // MARK: - Sidebar
 
     private var sidebarView: some View {
@@ -477,7 +573,14 @@ struct TrajectoryDensityView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach($optimParams) { $p in
-                            OptimParamRow(param: $p)
+                            let bestVal: Double? = {
+                                guard runner.isRunning || !runner.bestParams.isEmpty,
+                                      let idx = runner.activeParamInfo.firstIndex(where: { $0.label == p.label }),
+                                      idx < runner.bestParams.count
+                                else { return nil }
+                                return runner.bestParams[idx]
+                            }()
+                            OptimParamRow(param: $p, bestValue: bestVal)
                                 .disabled(runner.isRunning)
                             Divider().opacity(0.08)
                         }
@@ -675,10 +778,11 @@ struct TrajectoryDensityView: View {
 
 fileprivate struct OptimParamRow: View {
     @Binding var param: OptimParam
+    var bestValue: Double? = nil   // non-nil when optimisation is running/done
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            // Line 1: checkbox + label + current value
+            // Line 1: checkbox + label + (best value if running, else current)
             HStack(spacing: 5) {
                 Toggle("", isOn: $param.isActive)
                     .toggleStyle(.checkbox)
@@ -690,12 +794,19 @@ fileprivate struct OptimParamRow: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 Spacer(minLength: 2)
-                Text(fmtVal(param.currentValue))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.4))
+                if let bv = bestValue {
+                    Text(fmtVal(bv))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.orange.opacity(0.85))
+                        .transition(.opacity)
+                } else {
+                    Text(fmtVal(param.currentValue))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
             }
-            // Line 2: min … max (only when active)
-            if param.isActive {
+            // Line 2: min … max (only when active and not running)
+            if param.isActive && bestValue == nil {
                 HStack(spacing: 3) {
                     Spacer().frame(width: 18)
                     CompactNumField(value: $param.minBound)
@@ -709,6 +820,22 @@ fileprivate struct OptimParamRow: View {
                         .lineLimit(1)
                         .frame(maxWidth: 30)
                 }
+            }
+            // Line 2 (running): progress bar showing where best falls in [min, max]
+            if param.isActive, let bv = bestValue {
+                let pct = max(0, min(1, (bv - param.minBound) / max(param.maxBound - param.minBound, 1e-12)))
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.white.opacity(0.07))
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.orange.opacity(0.5))
+                            .frame(width: geo.size.width * pct)
+                    }
+                }
+                .frame(height: 3)
+                .padding(.leading, 18)
+                .padding(.trailing, 6)
             }
         }
         .padding(.horizontal, 6)

@@ -59,6 +59,14 @@ func ssdNormalized(_ a: EvalDensityGrid, _ b: EvalDensityGrid) -> Double {
     return e
 }
 
+// MARK: - Param info (published for the view)
+
+struct ActiveParamInfo {
+    let label: String
+    let lo:    Double
+    let hi:    Double
+}
+
 // MARK: - Runner
 
 @MainActor
@@ -69,6 +77,16 @@ final class OptimizationRunner: ObservableObject {
     @Published var bestParams: [Double] = []
     @Published var errorHistory: [(iteration: Int, error: Double)] = []
     @Published var status      = "Prêt"
+
+    // Live feedback
+    @Published var lastBestPoints: [(v: Double, dvdt: Double)] = []
+    @Published var paramSnapshots: [(iteration: Int, values: [Double])] = []
+    @Published var activeParamInfo: [ActiveParamInfo] = []
+
+    // Pts captured by the last evalFn call (written synchronously on main actor)
+    private var _lastEvalPts: [(v: Double, dvdt: Double)] = []
+    // Stored so updateBest can trigger a re-eval of best params
+    private var _evalFn: (([Double]) -> Double)?
 
     private var runTask: Task<Void, Never>?
 
@@ -87,19 +105,16 @@ final class OptimizationRunner: ObservableObject {
         guard !active.isEmpty else { status = "Aucun paramètre sélectionné"; return }
         guard !refPoints.isEmpty else { status = "Pas de trace de référence"; return }
 
-        // Pre-compute reference grid (fixed for the whole run)
         guard let refGrid = buildEvalGrid(refPoints, nV: nBinsV, nD: nBinsDvdt) else {
             status = "Référence insuffisante"; return
         }
 
         let bounds  = active.map { (lo: $0.minBound, hi: $0.maxBound) }
 
-        // Reusable simulator (shares the same Network reference — params changes
-        // via updateNeuron are immediately visible without recreating it).
         let sim     = Simulator(network: vm.network, dt: 0.025)
         sim.method  = .rushLarsen
 
-        // Evaluation closure (synchronous, ~5-30ms per call)
+        // Evaluation closure — also stores the last trajectory into _lastEvalPts
         let evalFn: ([Double]) -> Double = { [weak vm] candidate in
             guard let vm else { return .infinity }
             for (i, param) in active.enumerated() {
@@ -126,13 +141,21 @@ final class OptimizationRunner: ObservableObject {
                                           vLo: refGrid.vMin, vHi: refGrid.vMax,
                                           dLo: refGrid.dvdtMin, dHi: refGrid.dvdtMax,
                                           nV: nBinsV, nD: nBinsDvdt)
+            self._lastEvalPts = pts   // captured on main actor — always safe
             return ssdNormalized(refGrid, cg)
         }
 
-        // Reset published state
-        isRunning = true; iteration = 0; bestError = .infinity
-        bestParams = []; errorHistory = []
-        status = "Démarrage…"
+        // Reset all published state
+        isRunning      = true
+        iteration      = 0
+        bestError      = .infinity
+        bestParams     = []
+        errorHistory   = []
+        lastBestPoints = []
+        paramSnapshots = []
+        activeParamInfo = active.map { ActiveParamInfo(label: $0.label, lo: $0.minBound, hi: $0.maxBound) }
+        status         = "Démarrage…"
+        _evalFn        = evalFn
 
         runTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -150,15 +173,18 @@ final class OptimizationRunner: ObservableObject {
                 }
                 vm.reset()
             }
+            self._evalFn   = nil
             self.isRunning = false
-            self.status = String(format: "Terminé  E = %.3e  (%d iter.)",
-                                 self.bestError, self.iteration)
+            self.status    = String(format: "Terminé  E = %.3e  (%d iter.)",
+                                    self.bestError, self.iteration)
         }
     }
 
     func stop() {
         runTask?.cancel(); runTask = nil
-        isRunning = false; status = "Arrêté"
+        _evalFn   = nil
+        isRunning = false
+        status    = "Arrêté"
     }
 
     // MARK: - DE loop
@@ -170,30 +196,45 @@ final class OptimizationRunner: ObservableObject {
                                        F: config.deF, CR: config.deCR)
         status = "DE — init (\(de.popSize) candidats)…"
 
-        // Evaluate initial population
+        // Evaluate initial population, track best pts within this batch
         let initCandidates = de.initialCandidates()
         var initFitness = [Double](repeating: .infinity, count: de.popSize)
+        var bestInitErr  = Double.infinity
+        var bestInitPts: [(v: Double, dvdt: Double)] = []
         for (i, c) in initCandidates.enumerated() {
             guard !Task.isCancelled else { isRunning = false; return }
             initFitness[i] = evalFn(c)
+            if initFitness[i] < bestInitErr {
+                bestInitErr = initFitness[i]
+                bestInitPts = _lastEvalPts
+            }
             await Task.yield()
         }
         de.setInitialFitness(initFitness)
-        updateBest(params: de.population[initFitness.indices.min(by: { initFitness[$0] < initFitness[$1] })!],
-                   error: initFitness.min()!, gen: 0)
+        let bestInitIdx = initFitness.indices.min(by: { initFitness[$0] < initFitness[$1] })!
+        updateBest(params: de.population[bestInitIdx], error: initFitness.min()!,
+                   gen: 0, pts: bestInitPts)
 
         // Generational loop
         for _ in 0..<config.maxIterations {
             guard !Task.isCancelled else { break }
-            let trials  = de.generateTrials()
-            var errors  = [Double](repeating: .infinity, count: de.popSize)
+            let trials = de.generateTrials()
+            var errors = [Double](repeating: .infinity, count: de.popSize)
+            var bestGenErr = Double.infinity
+            var bestGenPts: [(v: Double, dvdt: Double)] = []
             for (i, t) in trials.enumerated() {
                 guard !Task.isCancelled else { break }
                 errors[i] = evalFn(t)
+                if errors[i] < bestGenErr {
+                    bestGenErr = errors[i]
+                    bestGenPts = _lastEvalPts
+                }
                 await Task.yield()
             }
             let result = de.applyTrials(trials, errors: errors)
-            updateBest(params: result.bestParams, error: result.bestError, gen: result.generation)
+            updateBest(params: result.bestParams, error: result.bestError,
+                       gen: result.generation,
+                       pts: result.bestError < bestError ? bestGenPts : nil)
             if result.bestError < config.targetError { break }
         }
     }
@@ -210,23 +251,37 @@ final class OptimizationRunner: ObservableObject {
             guard !Task.isCancelled else { break }
             let offspring = cma.generateOffspring()
             var errors = [Double](repeating: .infinity, count: cma.lambda)
+            var bestGenErr = Double.infinity
+            var bestGenPts: [(v: Double, dvdt: Double)] = []
             for (i, o) in offspring.enumerated() {
                 guard !Task.isCancelled else { break }
                 errors[i] = evalFn(o.x)
+                if errors[i] < bestGenErr {
+                    bestGenErr = errors[i]
+                    bestGenPts = _lastEvalPts
+                }
                 await Task.yield()
             }
             let result = cma.applyOffspring(offspring, errors: errors)
-            updateBest(params: result.bestParams, error: result.bestError, gen: result.generation)
+            updateBest(params: result.bestParams, error: result.bestError,
+                       gen: result.generation,
+                       pts: result.bestError < bestError ? bestGenPts : nil)
             if result.bestError < config.targetError { break }
         }
     }
 
     // MARK: - Helpers
 
-    private func updateBest(params: [Double], error: Double, gen: Int) {
+    private func updateBest(params: [Double], error: Double, gen: Int,
+                            pts: [(v: Double, dvdt: Double)]? = nil) {
         iteration = gen
         errorHistory.append((iteration: gen, error: error))
-        if error < bestError { bestError = error; bestParams = params }
+        if error < bestError {
+            bestError  = error
+            bestParams = params
+            if let pts { lastBestPoints = pts }
+            paramSnapshots.append((iteration: gen, values: params))
+        }
         status = String(format: "%@  gen %d  E = %.3e",
                         errorHistory.count > 1 ? "…" : "init", gen, error)
     }
