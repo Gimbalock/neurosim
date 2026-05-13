@@ -126,45 +126,37 @@ struct BifurcationView: View {
                     .foregroundStyle(.tertiary).font(.caption)
             }
         } else {
-            let pts    = runner.points
+            let maxPts = runner.points.filter(\.isMax)
+            let minPts = runner.points.filter { !$0.isMax }
             let xLabel = paramLabel
             Chart {
-                ForEach(pts.filter(\.isMax)) { pt in
+                ForEach(maxPts) { pt in
+                    LineMark(x: .value(xLabel, pt.param),
+                             y: .value("V (mV)", pt.v))
+                    .foregroundStyle(by: .value("Branche", "Maxima"))
+                    .lineStyle(.init(lineWidth: 1.5))
                     PointMark(x: .value(xLabel, pt.param),
                               y: .value("V (mV)", pt.v))
-                    .foregroundStyle(.orange)
-                    .symbolSize(12)
+                    .foregroundStyle(by: .value("Branche", "Maxima"))
+                    .symbolSize(18)
                 }
-                ForEach(pts.filter { !$0.isMax }) { pt in
+                ForEach(minPts) { pt in
+                    LineMark(x: .value(xLabel, pt.param),
+                             y: .value("V (mV)", pt.v))
+                    .foregroundStyle(by: .value("Branche", "Minima"))
+                    .lineStyle(.init(lineWidth: 1.5))
                     PointMark(x: .value(xLabel, pt.param),
                               y: .value("V (mV)", pt.v))
-                    .foregroundStyle(.teal)
-                    .symbolSize(12)
+                    .foregroundStyle(by: .value("Branche", "Minima"))
+                    .symbolSize(18)
                 }
             }
+            .chartForegroundStyleScale(["Maxima": Color.orange, "Minima": Color.teal])
             .chartXAxisLabel(xLabel)
             .chartYAxisLabel("V (mV)")
-            .chartLegend(.hidden)
+            .chartLegend(position: .topLeading, alignment: .leading)
             .padding(16)
-            // Colour legend (manual — small pills)
-            .overlay(alignment: .topLeading) {
-                HStack(spacing: 10) {
-                    legendPill("Maxima", color: .orange)
-                    legendPill("Minima", color: .teal)
-                }
-                .padding(10)
-            }
         }
-    }
-
-    @ViewBuilder
-    private func legendPill(_ label: String, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 8, height: 8)
-            Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 6).padding(.vertical, 3)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
     }
 
     // MARK: - Field helpers
