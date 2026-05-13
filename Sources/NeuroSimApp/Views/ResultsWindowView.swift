@@ -25,12 +25,13 @@ private let kTraceColors: [Color] = kTracePalette
 // MARK: - Root view
 
 private enum AnalysisTab: String, CaseIterable {
-    case traces  = "Traces"
-    case raster  = "Raster"
-    case isi     = "ISI"
-    case phase   = "Phase"
-    case density = "Densité"
-    case clamp   = "Clamp"
+    case traces      = "Traces"
+    case raster      = "Raster"
+    case isi         = "ISI"
+    case phase       = "Phase"
+    case density     = "Densité"
+    case clamp       = "Clamp"
+    case bifurcation = "Bifurcation"
 }
 
 struct ResultsWindowView: View {
@@ -80,18 +81,19 @@ struct ResultsWindowView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 520)
+            .frame(maxWidth: 640)
             .padding(.horizontal, 16)
             .padding(.vertical, 5)
             Divider()
             // Tab content
             switch selectedTab {
-            case .traces:  tracesContent
-            case .raster:  RasterView()
-            case .isi:     ISIView()
-            case .phase:   PhaseView()
-            case .density: TrajectoryDensityView()
-            case .clamp:   VoltageClampView()
+            case .traces:       tracesContent
+            case .raster:       RasterView()
+            case .isi:          ISIView()
+            case .phase:        PhaseView()
+            case .density:      TrajectoryDensityView()
+            case .clamp:        VoltageClampView()
+            case .bifurcation:  BifurcationView()
             }
         }
         .frame(minWidth: 640, minHeight: 480)
