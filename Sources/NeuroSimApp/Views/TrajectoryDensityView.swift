@@ -998,13 +998,18 @@ fileprivate struct DensityCanvas: View {
                    cp.y >= mT, cp.y <= mT + pH {
                     let v = grid.vMin    + Double(cp.x - mL) / Double(pW) * (grid.vMax    - grid.vMin)
                     let d = grid.dvdtMin + (1.0 - Double(cp.y - mT) / Double(pH)) * (grid.dvdtMax - grid.dvdtMin)
-                    let lx = cp.x + 8 > geo.size.width - mR - 120 ? cp.x - 115 : cp.x + 8
-                    Text(String(format: "V = %.1f mV\ndV/dt = %.1f mV/ms", v, d))
+                    // Density at cursor bin
+                    let col = max(0, min(grid.nV    - 1, Int((cp.x - mL) / pW * CGFloat(grid.nV))))
+                    let row = max(0, min(grid.nDvdt - 1, Int((1.0 - (cp.y - mT) / pH) * CGFloat(grid.nDvdt))))
+                    let count   = grid.counts[row * grid.nV + col]
+                    let density = grid.total > 0 ? Double(count) / Double(grid.total) * 100.0 : 0.0
+                    let lx = cp.x + 8 > geo.size.width - mR - 140 ? cp.x - 145 : cp.x + 8
+                    Text(String(format: "V = %.2f mV\ndV/dt = %.1f mV/ms\nρ = %.3f %%", v, d, density))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6).padding(.vertical, 4)
                         .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 5))
-                        .position(x: lx + 55, y: max(cp.y - 8, mT + 20))
+                        .position(x: lx + 60, y: max(cp.y - 8, mT + 28))
                 }
             }
         }

@@ -19,6 +19,7 @@ struct BifurcationView: View {
 
     // Cursor
     @State private var cursorParam: Double?  = nil
+    @State private var cursorBifV:  Double?  = nil   // raw Y at cursor
     @State private var cursorAbs:   CGPoint? = nil
 
     var body: some View {
@@ -148,11 +149,7 @@ struct BifurcationView: View {
             Chart {
                 bifPoints(maxPts, branch: "Maxima", xLabel: xLabel)
                 bifPoints(minPts, branch: "Minima", xLabel: xLabel)
-                if let p = cursorParam {
-                    RuleMark(x: .value("", p))
-                        .foregroundStyle(.white.opacity(0.45))
-                        .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
-                }
+                // No RuleMark — cursor drawn as Path overlay to avoid chart re-render on hover
             }
             .chartForegroundStyleScale(["Maxima": Color.orange, "Minima": Color.teal])
             .chartXAxisLabel(xLabel)
@@ -166,26 +163,34 @@ struct BifurcationView: View {
                             switch phase {
                             case .active(let loc):
                                 let rx = loc.x - f.minX
-                                guard rx >= 0, rx <= f.width else { cursorParam = nil; return }
+                                let ry = loc.y - f.minY
+                                guard rx >= 0, rx <= f.width, ry >= 0, ry <= f.height else {
+                                    cursorParam = nil; return
+                                }
                                 cursorAbs   = loc
                                 cursorParam = proxy.value(atX: rx, as: Double.self)
+                                cursorBifV  = proxy.value(atY: ry, as: Double.self)
                             case .ended:
-                                cursorParam = nil; cursorAbs = nil
+                                cursorParam = nil; cursorBifV = nil; cursorAbs = nil
                             }
                         }
-                    if let loc = cursorAbs, let p = cursorParam {
-                        let vMax  = maxPts.min(by: { abs($0.param - p) < abs($1.param - p) })?.v
-                        let vMin  = minPts.min(by: { abs($0.param - p) < abs($1.param - p) })?.v
-                        let tooltip = ([String(format: "\(runner.sweepParam.unit) = %.2f", p)]
-                            + [vMax.map { String(format: "Vmax = %.1f mV", $0) },
-                               vMin.map { String(format: "Vmin = %.1f mV", $0) }].compactMap { $0 }
-                        ).joined(separator: "\n")
-                        let lx = loc.x + 10 > f.maxX - 120 ? loc.x - 125 : loc.x + 10
-                        Text(tooltip)
+                    // Cursor vertical line
+                    if let loc = cursorAbs {
+                        Path { p in
+                            p.move(to: CGPoint(x: loc.x, y: f.minY))
+                            p.addLine(to: CGPoint(x: loc.x, y: f.maxY))
+                        }
+                        .stroke(Color.white.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        .allowsHitTesting(false)
+                    }
+                    // Label
+                    if let loc = cursorAbs, let p = cursorParam, let v = cursorBifV {
+                        let lx = loc.x + 10 > f.maxX - 130 ? loc.x - 135 : loc.x + 10
+                        Text(String(format: "\(runner.sweepParam.unit) = %.3g\nV = %.1f mV", p, v))
                             .font(.system(size: 10, design: .monospaced))
                             .padding(.horizontal, 6).padding(.vertical, 4)
                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
-                            .position(x: lx + 55, y: max(loc.y, f.minY + 30))
+                            .position(x: lx + 55, y: max(loc.y, f.minY + 24))
                     }
                 }
             }

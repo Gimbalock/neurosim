@@ -34,9 +34,14 @@ struct VoltageClampView: View {
 
     @State private var selectedChannelIndex: Int? = nil   // nil = sum
 
-    // Cursor (I(t) chart)
+    // Cursor — I(t) chart
     @State private var cursorTime: Double?  = nil
+    @State private var cursorI:    Double?  = nil
     @State private var cursorAbs:  CGPoint? = nil
+    // Cursor — I/V chart
+    @State private var cursorIV_V:   Double?  = nil
+    @State private var cursorIV_I:   Double?  = nil
+    @State private var cursorIV_Abs: CGPoint? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -182,11 +187,7 @@ struct VoltageClampView: View {
                             .lineStyle(.init(lineWidth: 1))
                         }
                     }
-                    if let t = cursorTime {
-                        RuleMark(x: .value("", t))
-                            .foregroundStyle(.white.opacity(0.45))
-                            .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
-                    }
+                    // No RuleMark — cursor drawn as Path overlay to avoid chart re-render
                 }
                 .chartForegroundStyleScale(range: stepColors)
                 .chartXAxisLabel("t (ms)")
@@ -200,20 +201,34 @@ struct VoltageClampView: View {
                                 switch phase {
                                 case .active(let loc):
                                     let rx = loc.x - f.minX
-                                    guard rx >= 0, rx <= f.width else { cursorTime = nil; return }
+                                    let ry = loc.y - f.minY
+                                    guard rx >= 0, rx <= f.width, ry >= 0, ry <= f.height else {
+                                        cursorTime = nil; return
+                                    }
                                     cursorAbs  = loc
                                     cursorTime = proxy.value(atX: rx, as: Double.self)
+                                    cursorI    = proxy.value(atY: ry, as: Double.self)
                                 case .ended:
-                                    cursorTime = nil; cursorAbs = nil
+                                    cursorTime = nil; cursorI = nil; cursorAbs = nil
                                 }
                             }
-                        if let loc = cursorAbs, let t = cursorTime {
-                            let lx = loc.x + 10 > f.maxX - 100 ? loc.x - 105 : loc.x + 10
-                            Text(String(format: "t = %.1f ms", t))
+                        // Cursor vertical line
+                        if let loc = cursorAbs {
+                            Path { p in
+                                p.move(to: CGPoint(x: loc.x, y: f.minY))
+                                p.addLine(to: CGPoint(x: loc.x, y: f.maxY))
+                            }
+                            .stroke(Color.white.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .allowsHitTesting(false)
+                        }
+                        // Label
+                        if let loc = cursorAbs, let t = cursorTime, let i = cursorI {
+                            let lx = loc.x + 10 > f.maxX - 120 ? loc.x - 125 : loc.x + 10
+                            Text(String(format: "t = %.2f ms\nI = %.3g µA/cm²", t, i))
                                 .font(.system(size: 10, design: .monospaced))
                                 .padding(.horizontal, 6).padding(.vertical, 4)
                                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
-                                .position(x: lx + 46, y: max(loc.y - 4, f.minY + 14))
+                                .position(x: lx + 53, y: max(loc.y - 4, f.minY + 18))
                         }
                     }
                 }
@@ -277,6 +292,50 @@ struct VoltageClampView: View {
                 .chartYAxisLabel("I (µA/cm²)")
                 .chartForegroundStyleScale(channelColorScale(result: result))
                 .chartLegend(position: .bottom, alignment: .center)
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        let f = geo[proxy.plotAreaFrame]
+                        Rectangle().fill(Color.clear).contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let loc):
+                                    let rx = loc.x - f.minX
+                                    let ry = loc.y - f.minY
+                                    guard rx >= 0, rx <= f.width, ry >= 0, ry <= f.height else {
+                                        cursorIV_V = nil; return
+                                    }
+                                    cursorIV_Abs = loc
+                                    cursorIV_V   = proxy.value(atX: rx, as: Double.self)
+                                    cursorIV_I   = proxy.value(atY: ry, as: Double.self)
+                                case .ended:
+                                    cursorIV_V = nil; cursorIV_I = nil; cursorIV_Abs = nil
+                                }
+                            }
+                        if let loc = cursorIV_Abs {
+                            let style = StrokeStyle(lineWidth: 1, dash: [4, 4])
+                            Path { p in
+                                p.move(to: CGPoint(x: loc.x, y: f.minY))
+                                p.addLine(to: CGPoint(x: loc.x, y: f.maxY))
+                            }
+                            .stroke(Color.white.opacity(0.45), style: style)
+                            .allowsHitTesting(false)
+                            Path { p in
+                                p.move(to: CGPoint(x: f.minX, y: loc.y))
+                                p.addLine(to: CGPoint(x: f.maxX, y: loc.y))
+                            }
+                            .stroke(Color.white.opacity(0.45), style: style)
+                            .allowsHitTesting(false)
+                        }
+                        if let loc = cursorIV_Abs, let v = cursorIV_V, let i = cursorIV_I {
+                            let lx = loc.x + 10 > f.maxX - 130 ? loc.x - 135 : loc.x + 10
+                            Text(String(format: "V = %.1f mV\nI = %.3g µA/cm²", v, i))
+                                .font(.system(size: 10, design: .monospaced))
+                                .padding(.horizontal, 6).padding(.vertical, 4)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+                                .position(x: lx + 53, y: max(loc.y, f.minY + 24))
+                        }
+                    }
+                }
                 .padding(12)
             } else {
                 emptyPlaceholder(text: "")
