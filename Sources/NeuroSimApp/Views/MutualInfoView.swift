@@ -2,15 +2,16 @@
 //  MutualInfoView.swift
 //  NeuroSimApp
 //
-//  Mutual information I(A ; B) between two spike trains, as a function of
-//  time lag τ.  Approach: bin both trains at Δt ms, build a joint binary
-//  distribution P(a,b) ∈ {0,1}², compute
+//  Two measures on the same binary-binned spike trains:
 //
-//      I(A;B) = Σ_{a,b} P(a,b) · log₂[ P(a,b) / (P(a)·P(b)) ]   (bits)
+//  1. Mutual Information  I(A;B) vs lag τ  (symmetric)
+//       I(A;B) = Σ_{a,b} P(a,b) · log₂[ P(a,b)/(P(a)·P(b)) ]
 //
-//  and sweep τ from −maxLag to +maxLag by shifting train B.
-//  The zero-lag MI and the peak MI (+ its lag) are reported in the header.
-//  Normalised MI = I / min(H(A), H(B)) is also shown.
+//  2. Transfer Entropy  TE(A→B) and TE(B→A) vs source delay τ  (asymmetric)
+//       TE(A→B, τ) = I( B_{t+1} ; A_{t-τ} | B_t )
+//                  = Σ P(b_t, a_{t-τ}, b_{t+1}) · log₂[ P(b_{t+1}|b_t,a_{t-τ}) / P(b_{t+1}|b_t) ]
+//
+//  TE encodes direction: TE(A→B) > TE(B→A) implies net information flow A→B.
 //
 
 import SwiftUI
@@ -74,6 +75,50 @@ private func mutualInfo(spikesA: [Double], spikesB: [Double],
     }
     return term(p00, pA0, pB0) + term(p01, pA0, pB1)
          + term(p10, pA1, pB0) + term(p11, pA1, pB1)
+}
+
+// MARK: - Transfer Entropy engine
+
+/// TE(source → target, lagBins) using binary bins and history depth = 1.
+/// Returns max(0, te) — small negatives are numerical noise.
+private func transferEntropy(src: [Bool], tgt: [Bool], lagBins: Int) -> Double {
+    let n = tgt.count
+    guard lagBins >= 0, n > lagBins + 1 else { return 0 }
+
+    // c[b_t][a_lag][b_{t+1}]  — joint counts for the triplet
+    var c = [[[Int]]](repeating: [[Int]](repeating: [0, 0], count: 2), count: 2)
+    var total = 0
+
+    for t in lagBins ..< (n - 1) {
+        let bt  = tgt[t]           ? 1 : 0
+        let bt1 = tgt[t + 1]       ? 1 : 0
+        let al  = src[t - lagBins] ? 1 : 0
+        c[bt][al][bt1] += 1
+        total += 1
+    }
+    guard total > 0 else { return 0 }
+    let N = Double(total)
+
+    var te = 0.0
+    for bt in 0 ... 1 {
+        let cBT = c[bt][0][0] + c[bt][0][1] + c[bt][1][0] + c[bt][1][1]
+        guard cBT > 0 else { continue }
+        for al in 0 ... 1 {
+            let cBT_AL = c[bt][al][0] + c[bt][al][1]
+            guard cBT_AL > 0 else { continue }
+            for bt1 in 0 ... 1 {
+                let cFull = c[bt][al][bt1]
+                guard cFull > 0 else { continue }
+                let cBT_BT1 = c[bt][0][bt1] + c[bt][1][bt1]
+                guard cBT_BT1 > 0 else { continue }
+                let p = Double(cFull) / N
+                let pCond_joint = Double(cFull)  / Double(cBT_AL)  // P(b_{t+1}|b_t,a_lag)
+                let pCond_marg  = Double(cBT_BT1) / Double(cBT)    // P(b_{t+1}|b_t)
+                te += p * log2(pCond_joint / pCond_marg)
+            }
+        }
+    }
+    return max(0.0, te)
 }
 
 // MARK: - MutualInfoView
@@ -181,6 +226,62 @@ struct MutualInfoView: View {
         return miAtZero / hMin
     }
 
+    // MARK: - Transfer Entropy curves
+
+    private struct TEPoint: Identifiable {
+        let id = UUID(); let lag: Double; let te: Double; let direction: String
+    }
+
+    /// Build binary spike array from spike times
+    private func binnedSpikes(_ spikes: [Double], tStart: Double, tEnd: Double) -> [Bool] {
+        let nBins = Int((tEnd - tStart) / effectiveBinWidth)
+        var arr = [Bool](repeating: false, count: max(nBins, 0))
+        for t in spikes {
+            let i = Int((t - tStart) / effectiveBinWidth)
+            if i >= 0, i < nBins { arr[i] = true }
+        }
+        return arr
+    }
+
+    /// TE(A→B) and TE(B→A) for lags 0…maxLag, interleaved for a single Chart
+    private var teCurve: [TEPoint] {
+        guard let aID = resolvedA, let bID = resolvedB,
+              let (tStart, tEnd) = timeRange else { return [] }
+        let spA = spikesFor(aID)
+        let spB = spikesFor(bID)
+        guard !spA.isEmpty, !spB.isEmpty else { return [] }
+
+        let srcA = binnedSpikes(spA, tStart: tStart, tEnd: tEnd)
+        let srcB = binnedSpikes(spB, tStart: tStart, tEnd: tEnd)
+        let maxLagBins = max(1, Int(maxLag / effectiveBinWidth))
+        var pts: [TEPoint] = []
+        for lagBins in 0 ... maxLagBins {
+            let lagMs = Double(lagBins) * effectiveBinWidth
+            pts.append(TEPoint(lag: lagMs,
+                               te: transferEntropy(src: srcA, tgt: srcB, lagBins: lagBins),
+                               direction: "A → B"))
+            pts.append(TEPoint(lag: lagMs,
+                               te: transferEntropy(src: srcB, tgt: srcA, lagBins: lagBins),
+                               direction: "B → A"))
+        }
+        return pts
+    }
+
+    private var teAB: [TEPoint] { teCurve.filter { $0.direction == "A → B" } }
+    private var teBA: [TEPoint] { teCurve.filter { $0.direction == "B → A" } }
+
+    /// Directionality index DI = TE(A→B) − TE(B→A) at the lag where |DI| is max
+    private var directionalityIndex: (di: Double, lagMs: Double) {
+        let pairs = zip(teAB, teBA)
+        guard let best = pairs.max(by: { abs($0.0.te - $0.1.te) < abs($1.0.te - $1.1.te) })
+        else { return (0, 0) }
+        return (best.0.te - best.1.te, best.0.lag)
+    }
+
+    // Cursor on TE chart
+    @State private var cursorTE_Lag: Double?  = nil
+    @State private var cursorTE_Abs: CGPoint? = nil
+
     // MARK: - Body
 
     var body: some View {
@@ -198,7 +299,10 @@ struct MutualInfoView: View {
                     }
                     .frame(height: 100)
                     Divider()
-                    miChartView
+                    HSplitView {
+                        miChartView.frame(minWidth: 200)
+                        teChartView.frame(minWidth: 200)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -230,9 +334,17 @@ struct MutualInfoView: View {
                     statLabel("NMI",      String(format: "%.3f", normalizedMI))
                     statLabel("H(A)",     String(format: "%.4f bits", entropyA))
                     statLabel("H(B)",     String(format: "%.4f bits", entropyB))
-                    if let pk = miPeak {
-                        statLabel("MI max",
-                                  String(format: "%.4f bits  @  τ=%.0f ms", pk.mi, pk.lag))
+                }
+                if !teCurve.isEmpty {
+                    Divider().frame(height: 24)
+                    let di = directionalityIndex
+                    let arrow = di.di > 0 ? "A → B" : "B → A"
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("DI = TE(A→B) − TE(B→A)").font(.system(size: 9)).foregroundStyle(.secondary)
+                        Text(String(format: "%+.4f bits  ·  %@  ·  τ=%.0f ms",
+                                    di.di, arrow, di.lagMs))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(di.di > 0 ? Color.orange : Color.teal)
                     }
                 }
             }
@@ -388,6 +500,95 @@ struct MutualInfoView: View {
                             .padding(.horizontal, 6).padding(.vertical, 4)
                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
                             .position(x: lx + 55, y: max(loc.y, f.minY + 24))
+                    }
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    // MARK: - TE vs lag chart
+
+    @ViewBuilder
+    private var teChartView: some View {
+        let pts = teCurve
+        if pts.isEmpty {
+            ZStack {
+                Color.clear
+                VStack(spacing: 6) {
+                    Text("Transfer Entropy")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("TE(A→B) & TE(B→A) vs délai source")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+            }
+        } else {
+            let ab = teAB; let ba = teBA
+            let yMax = max(pts.map(\.te).max() ?? 0.001, 0.001)
+            Chart {
+                ForEach(ab) { pt in
+                    LineMark(x: .value("Délai τ (ms)", pt.lag),
+                             y: .value("TE (bits)", pt.te))
+                    .foregroundStyle(by: .value("Direction", pt.direction))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+                }
+                ForEach(ba) { pt in
+                    LineMark(x: .value("Délai τ (ms)", pt.lag),
+                             y: .value("TE (bits)", pt.te))
+                    .foregroundStyle(by: .value("Direction", pt.direction))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+                }
+            }
+            .chartForegroundStyleScale(["A → B": Color.orange, "B → A": Color.teal])
+            .chartYScale(domain: 0.0 ... yMax)
+            .chartXAxisLabel("Délai source τ (ms)", alignment: .center)
+            .chartYAxisLabel("TE (bits)", alignment: .center)
+            .chartLegend(position: .topLeading, alignment: .leading)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 8)) {
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4))
+                    AxisValueLabel()
+                }
+            }
+            .chartYAxis {
+                AxisMarks(values: .automatic(desiredCount: 5)) {
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4))
+                    AxisValueLabel()
+                }
+            }
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    let f = geo[proxy.plotAreaFrame]
+                    Rectangle().fill(Color.clear).contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let loc):
+                                let rx = loc.x - f.minX
+                                guard rx >= 0, rx <= f.width else { cursorTE_Lag = nil; return }
+                                cursorTE_Abs = loc
+                                cursorTE_Lag = proxy.value(atX: rx, as: Double.self)
+                            case .ended:
+                                cursorTE_Lag = nil; cursorTE_Abs = nil
+                            }
+                        }
+                    if let loc = cursorTE_Abs {
+                        Path { p in
+                            p.move(to: CGPoint(x: loc.x, y: f.minY))
+                            p.addLine(to: CGPoint(x: loc.x, y: f.maxY))
+                        }
+                        .stroke(Color.white.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        .allowsHitTesting(false)
+                    }
+                    if let loc = cursorTE_Abs, let lag = cursorTE_Lag {
+                        let nearAB = ab.min(by: { abs($0.lag - lag) < abs($1.lag - lag) })
+                        let nearBA = ba.min(by: { abs($0.lag - lag) < abs($1.lag - lag) })
+                        let lx = loc.x + 10 > f.maxX - 145 ? loc.x - 150 : loc.x + 10
+                        Text(String(format: "τ = %.1f ms\nA→B = %.4f bits\nB→A = %.4f bits",
+                                    lag, nearAB?.te ?? 0, nearBA?.te ?? 0))
+                            .font(.system(size: 10, design: .monospaced))
+                            .padding(.horizontal, 6).padding(.vertical, 4)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+                            .position(x: lx + 60, y: max(loc.y, f.minY + 32))
                     }
                 }
             }
