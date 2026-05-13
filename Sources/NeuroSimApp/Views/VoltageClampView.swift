@@ -43,7 +43,7 @@ struct VoltageClampView: View {
                 itChart
                     .frame(minWidth: 200)
                 ivChart
-                    .frame(minWidth: 160, maxWidth: 300)
+                    .frame(minWidth: 160)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -165,14 +165,18 @@ struct VoltageClampView: View {
         VStack(alignment: .leading, spacing: 4) {
             channelSelector
             if let result = runner.result, !result.traces.isEmpty {
-                Chart(itData(result: result)) { pt in
-                    LineMark(
-                        x: .value("t (ms)", pt.time),
-                        y: .value("I (µA/cm²)", pt.current)
-                    )
-                    .foregroundStyle(stepColor(index: pt.stepIndex,
-                                               total: result.traces.count))
-                    .lineStyle(.init(lineWidth: 1))
+                Chart {
+                    ForEach(0..<result.traces.count, id: \.self) { si in
+                        let color = stepColor(index: si, total: result.traces.count)
+                        ForEach(itDataForStep(result: result, stepIndex: si)) { pt in
+                            LineMark(
+                                x: .value("t (ms)", pt.time),
+                                y: .value("I (µA/cm²)", pt.current)
+                            )
+                            .foregroundStyle(color)
+                            .lineStyle(.init(lineWidth: 1))
+                        }
+                    }
                 }
                 .chartXAxisLabel("t (ms)")
                 .chartYAxisLabel("I (µA/cm²)")
@@ -247,25 +251,20 @@ struct VoltageClampView: View {
 
     // MARK: - Data builders
 
-    private func itData(result: VClampResult) -> [TracePoint] {
-        var pts: [TracePoint] = []
-        for (si, stepTraces) in result.traces.enumerated() {
-            let vTest = result.vcProtocol.stepVoltages[si]
-            guard let refTrace = stepTraces.first else { continue }
-            let nPts = refTrace.times.count
-            for ti in 0..<nPts {
-                let I: Double
-                if let ci = selectedChannelIndex, ci < stepTraces.count {
-                    I = stepTraces[ci].currentsDensity[ti]
-                } else {
-                    // Sum all channels
-                    I = stepTraces.reduce(0.0) { $0 + ($1.currentsDensity.indices.contains(ti) ? $1.currentsDensity[ti] : 0) }
-                }
-                pts.append(TracePoint(time: refTrace.times[ti], current: I,
-                                      stepIndex: si, stepVoltage: vTest))
+    private func itDataForStep(result: VClampResult, stepIndex si: Int) -> [TracePoint] {
+        let stepTraces = result.traces[si]
+        guard let refTrace = stepTraces.first else { return [] }
+        let vTest = result.vcProtocol.stepVoltages[si]
+        return refTrace.times.indices.map { ti in
+            let I: Double
+            if let ci = selectedChannelIndex, ci < stepTraces.count {
+                I = stepTraces[ci].currentsDensity[ti]
+            } else {
+                I = stepTraces.reduce(0.0) { $0 + $1.currentsDensity[ti] }
             }
+            return TracePoint(time: refTrace.times[ti], current: I,
+                              stepIndex: si, stepVoltage: vTest)
         }
-        return pts
     }
 
     private func ivData(result: VClampResult) -> [IVPoint] {
