@@ -381,7 +381,7 @@ private func applyGateInfSigmoid<C: HHGated & AnyObject>(
     _ ch: C, gi: Int, transform: (Double, Double, Double, Double) -> GateCurve) {
     guard gi < ch.gateInfOverrides.count,
           let curve = ch.gateInfOverrides[gi],
-          case .sigmoid(let lo, let hi, let vHalf, let k, let domain) = curve
+          case .sigmoid(let lo, let hi, let vHalf, let k, _) = curve
     else { return }
     ch.gateInfOverrides[gi] = transform(lo, hi, vHalf, k)
 }
@@ -391,7 +391,7 @@ private func applyGateTauGaussian<C: HHGated & AnyObject>(
     _ ch: C, gi: Int, transform: (Double, Double, Double, Double) -> GateCurve) {
     guard gi < ch.gateTauOverrides.count,
           let curve = ch.gateTauOverrides[gi],
-          case .gaussian(let tMin, let tMax, let vPeak, let width, let domain) = curve
+          case .gaussian(let tMin, let tMax, let vPeak, let width, _) = curve
     else { return }
     ch.gateTauOverrides[gi] = transform(tMin, tMax, vPeak, width)
 }
