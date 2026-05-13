@@ -26,12 +26,17 @@ struct OptimParam: Identifiable, Equatable {
 // MARK: - Write path
 
 enum ParamTarget: Hashable {
-    // Membrane
-    case compartmentCm(ci: Int)
     // All channels
     case channelGMax(ci: Int, chi: Int)
-    case channelReversal(ci: Int, chi: Int)
-    // CustomChannel gate
+    // HHGated standard channels: sigmoid x∞ override
+    case gateInfVHalf(ci: Int, chi: Int, gi: Int)
+    case gateInfSlope(ci: Int, chi: Int, gi: Int)
+    // HHGated standard channels: gaussian τ override
+    case gateTauMin(ci: Int, chi: Int, gi: Int)
+    case gateTauMax(ci: Int, chi: Int, gi: Int)
+    case gateTauVPeak(ci: Int, chi: Int, gi: Int)
+    case gateTauWidth(ci: Int, chi: Int, gi: Int)
+    // CustomChannel gate definition
     case customGateVHalf(ci: Int, chi: Int, gi: Int)
     case customGateSlope(ci: Int, chi: Int, gi: Int)
     case customGateTauMin(ci: Int, chi: Int, gi: Int)
@@ -61,12 +66,6 @@ func makeOptimParams(for neuron: HHNeuron) -> [OptimParam] {
     for (ci, comp) in neuron.compartments.enumerated() {
         let cpfx = multi ? "\(comp.name)·" : ""
 
-        // Membrane capacitance
-        params.append(OptimParam(
-            isActive: false, label: "\(cpfx)Cm", unit: "µF/cm²",
-            currentValue: comp.capacitance, minBound: 0.1, maxBound: 10.0,
-            target: .compartmentCm(ci: ci)))
-
         for (chi, ch) in comp.channels.enumerated() {
             let pfx = "\(cpfx)\(ch.name)"
 
@@ -77,12 +76,51 @@ func makeOptimParams(for neuron: HHNeuron) -> [OptimParam] {
                 minBound: 0.0, maxBound: max(ch.gMax * 5, 1.0),
                 target: .channelGMax(ci: ci, chi: chi)))
 
-            // Reversal potential
-            params.append(OptimParam(
-                isActive: false, label: "\(pfx)·E_rev", unit: "mV",
-                currentValue: ch.reversal,
-                minBound: ch.reversal - 50, maxBound: ch.reversal + 50,
-                target: .channelReversal(ci: ci, chi: chi)))
+            // HHGated standard channels: expose sigmoid x∞ and gaussian τ overrides.
+            // Skipped for CustomChannel (handled separately below via its gate definition).
+            if !(ch is CustomChannel), let gated = ch as? any HHGated {
+                for (gi, gateName) in gated.gateNames.enumerated() {
+                    let gp = "\(pfx)[\(gateName)]"
+                    // Sigmoid x∞ override
+                    if gi < gated.gateInfOverrides.count,
+                       let infCurve = gated.gateInfOverrides[gi],
+                       case .sigmoid(_, _, let vHalf, let k, _) = infCurve {
+                        params += [
+                            OptimParam(isActive: false, label: "\(gp)·x∞·vHalf", unit: "mV",
+                                       currentValue: vHalf,
+                                       minBound: vHalf - 40, maxBound: vHalf + 40,
+                                       target: .gateInfVHalf(ci: ci, chi: chi, gi: gi)),
+                            OptimParam(isActive: false, label: "\(gp)·x∞·slope", unit: "mV",
+                                       currentValue: k,
+                                       minBound: -60, maxBound: 60,
+                                       target: .gateInfSlope(ci: ci, chi: chi, gi: gi)),
+                        ]
+                    }
+                    // Gaussian τ override
+                    if gi < gated.gateTauOverrides.count,
+                       let tauCurve = gated.gateTauOverrides[gi],
+                       case .gaussian(let tMin, let tMax, let vPeak, let width, _) = tauCurve {
+                        params += [
+                            OptimParam(isActive: false, label: "\(gp)·τ·min",   unit: "ms",
+                                       currentValue: tMin,
+                                       minBound: 0.01, maxBound: 100,
+                                       target: .gateTauMin(ci: ci, chi: chi, gi: gi)),
+                            OptimParam(isActive: false, label: "\(gp)·τ·max",   unit: "ms",
+                                       currentValue: tMax,
+                                       minBound: 0.1, maxBound: 1000,
+                                       target: .gateTauMax(ci: ci, chi: chi, gi: gi)),
+                            OptimParam(isActive: false, label: "\(gp)·τ·vPeak", unit: "mV",
+                                       currentValue: vPeak,
+                                       minBound: vPeak - 40, maxBound: vPeak + 40,
+                                       target: .gateTauVPeak(ci: ci, chi: chi, gi: gi)),
+                            OptimParam(isActive: false, label: "\(gp)·τ·width", unit: "mV",
+                                       currentValue: width,
+                                       minBound: 1, maxBound: 100,
+                                       target: .gateTauWidth(ci: ci, chi: chi, gi: gi)),
+                        ]
+                    }
+                }
+            }
 
             // CustomChannel: per-gate kinetic parameters
             if let cc = ch as? CustomChannel {
@@ -159,91 +197,125 @@ extension ParamTarget {
 
     var docKind: String {
         switch self {
-        case .compartmentCm:     return "compartmentCm"
-        case .channelGMax:       return "channelGMax"
-        case .channelReversal:   return "channelReversal"
-        case .customGateVHalf:   return "customGateVHalf"
-        case .customGateSlope:   return "customGateSlope"
-        case .customGateTauMin:  return "customGateTauMin"
-        case .customGateTauMax:  return "customGateTauMax"
-        case .customGateVPeak:   return "customGateVPeak"
-        case .customGateTauWidth:return "customGateTauWidth"
-        case .skHalfActivation:  return "skHalfActivation"
-        case .skHillCoeff:       return "skHillCoeff"
-        case .skTauActivation:   return "skTauActivation"
-        case .bkVHalfAtRef:      return "bkVHalfAtRef"
-        case .bkCaShift:         return "bkCaShift"
-        case .bkSlopeFactor:     return "bkSlopeFactor"
-        case .bkTauMin:          return "bkTauMin"
-        case .bkTauMax:          return "bkTauMax"
+        case .channelGMax:        return "channelGMax"
+        case .gateInfVHalf:       return "gateInfVHalf"
+        case .gateInfSlope:       return "gateInfSlope"
+        case .gateTauMin:         return "gateTauMin"
+        case .gateTauMax:         return "gateTauMax"
+        case .gateTauVPeak:       return "gateTauVPeak"
+        case .gateTauWidth:       return "gateTauWidth"
+        case .customGateVHalf:    return "customGateVHalf"
+        case .customGateSlope:    return "customGateSlope"
+        case .customGateTauMin:   return "customGateTauMin"
+        case .customGateTauMax:   return "customGateTauMax"
+        case .customGateVPeak:    return "customGateVPeak"
+        case .customGateTauWidth: return "customGateTauWidth"
+        case .skHalfActivation:   return "skHalfActivation"
+        case .skHillCoeff:        return "skHillCoeff"
+        case .skTauActivation:    return "skTauActivation"
+        case .bkVHalfAtRef:       return "bkVHalfAtRef"
+        case .bkCaShift:          return "bkCaShift"
+        case .bkSlopeFactor:      return "bkSlopeFactor"
+        case .bkTauMin:           return "bkTauMin"
+        case .bkTauMax:           return "bkTauMax"
         }
     }
 
-    var docCI:  Int { if case .compartmentCm(let ci) = self { return ci }
-                      if case .channelGMax(let ci, _) = self { return ci }
-                      if case .channelReversal(let ci, _) = self { return ci }
-                      if case .customGateVHalf(let ci, _, _) = self { return ci }
-                      if case .customGateSlope(let ci, _, _) = self { return ci }
-                      if case .customGateTauMin(let ci, _, _) = self { return ci }
-                      if case .customGateTauMax(let ci, _, _) = self { return ci }
-                      if case .customGateVPeak(let ci, _, _) = self { return ci }
-                      if case .customGateTauWidth(let ci, _, _) = self { return ci }
-                      if case .skHalfActivation(let ci, _) = self { return ci }
-                      if case .skHillCoeff(let ci, _) = self { return ci }
-                      if case .skTauActivation(let ci, _) = self { return ci }
-                      if case .bkVHalfAtRef(let ci, _) = self { return ci }
-                      if case .bkCaShift(let ci, _) = self { return ci }
-                      if case .bkSlopeFactor(let ci, _) = self { return ci }
-                      if case .bkTauMin(let ci, _) = self { return ci }
-                      if case .bkTauMax(let ci, _) = self { return ci }
-                      return 0 }
+    var docCI: Int {
+        switch self {
+        case .channelGMax(let ci, _):           return ci
+        case .gateInfVHalf(let ci, _, _):       return ci
+        case .gateInfSlope(let ci, _, _):       return ci
+        case .gateTauMin(let ci, _, _):         return ci
+        case .gateTauMax(let ci, _, _):         return ci
+        case .gateTauVPeak(let ci, _, _):       return ci
+        case .gateTauWidth(let ci, _, _):       return ci
+        case .customGateVHalf(let ci, _, _):    return ci
+        case .customGateSlope(let ci, _, _):    return ci
+        case .customGateTauMin(let ci, _, _):   return ci
+        case .customGateTauMax(let ci, _, _):   return ci
+        case .customGateVPeak(let ci, _, _):    return ci
+        case .customGateTauWidth(let ci, _, _): return ci
+        case .skHalfActivation(let ci, _):      return ci
+        case .skHillCoeff(let ci, _):           return ci
+        case .skTauActivation(let ci, _):       return ci
+        case .bkVHalfAtRef(let ci, _):          return ci
+        case .bkCaShift(let ci, _):             return ci
+        case .bkSlopeFactor(let ci, _):         return ci
+        case .bkTauMin(let ci, _):              return ci
+        case .bkTauMax(let ci, _):              return ci
+        }
+    }
 
-    var docCHI: Int { if case .channelGMax(_, let chi) = self { return chi }
-                      if case .channelReversal(_, let chi) = self { return chi }
-                      if case .customGateVHalf(_, let chi, _) = self { return chi }
-                      if case .customGateSlope(_, let chi, _) = self { return chi }
-                      if case .customGateTauMin(_, let chi, _) = self { return chi }
-                      if case .customGateTauMax(_, let chi, _) = self { return chi }
-                      if case .customGateVPeak(_, let chi, _) = self { return chi }
-                      if case .customGateTauWidth(_, let chi, _) = self { return chi }
-                      if case .skHalfActivation(_, let chi) = self { return chi }
-                      if case .skHillCoeff(_, let chi) = self { return chi }
-                      if case .skTauActivation(_, let chi) = self { return chi }
-                      if case .bkVHalfAtRef(_, let chi) = self { return chi }
-                      if case .bkCaShift(_, let chi) = self { return chi }
-                      if case .bkSlopeFactor(_, let chi) = self { return chi }
-                      if case .bkTauMin(_, let chi) = self { return chi }
-                      if case .bkTauMax(_, let chi) = self { return chi }
-                      return -1 }
+    var docCHI: Int {
+        switch self {
+        case .channelGMax(_, let chi):           return chi
+        case .gateInfVHalf(_, let chi, _):       return chi
+        case .gateInfSlope(_, let chi, _):       return chi
+        case .gateTauMin(_, let chi, _):         return chi
+        case .gateTauMax(_, let chi, _):         return chi
+        case .gateTauVPeak(_, let chi, _):       return chi
+        case .gateTauWidth(_, let chi, _):       return chi
+        case .customGateVHalf(_, let chi, _):    return chi
+        case .customGateSlope(_, let chi, _):    return chi
+        case .customGateTauMin(_, let chi, _):   return chi
+        case .customGateTauMax(_, let chi, _):   return chi
+        case .customGateVPeak(_, let chi, _):    return chi
+        case .customGateTauWidth(_, let chi, _): return chi
+        case .skHalfActivation(_, let chi):      return chi
+        case .skHillCoeff(_, let chi):           return chi
+        case .skTauActivation(_, let chi):       return chi
+        case .bkVHalfAtRef(_, let chi):          return chi
+        case .bkCaShift(_, let chi):             return chi
+        case .bkSlopeFactor(_, let chi):         return chi
+        case .bkTauMin(_, let chi):              return chi
+        case .bkTauMax(_, let chi):              return chi
+        }
+    }
 
-    var docGI:  Int { if case .customGateVHalf(_, _, let gi) = self { return gi }
-                      if case .customGateSlope(_, _, let gi) = self { return gi }
-                      if case .customGateTauMin(_, _, let gi) = self { return gi }
-                      if case .customGateTauMax(_, _, let gi) = self { return gi }
-                      if case .customGateVPeak(_, _, let gi) = self { return gi }
-                      if case .customGateTauWidth(_, _, let gi) = self { return gi }
-                      return -1 }
+    var docGI: Int {
+        switch self {
+        case .gateInfVHalf(_, _, let gi):       return gi
+        case .gateInfSlope(_, _, let gi):       return gi
+        case .gateTauMin(_, _, let gi):         return gi
+        case .gateTauMax(_, _, let gi):         return gi
+        case .gateTauVPeak(_, _, let gi):       return gi
+        case .gateTauWidth(_, _, let gi):       return gi
+        case .customGateVHalf(_, _, let gi):    return gi
+        case .customGateSlope(_, _, let gi):    return gi
+        case .customGateTauMin(_, _, let gi):   return gi
+        case .customGateTauMax(_, _, let gi):   return gi
+        case .customGateVPeak(_, _, let gi):    return gi
+        case .customGateTauWidth(_, _, let gi): return gi
+        default:                                return -1
+        }
+    }
 
     static func from(kind: String, ci: Int, chi: Int, gi: Int) -> ParamTarget? {
         switch kind {
-        case "compartmentCm":     return .compartmentCm(ci: ci)
-        case "channelGMax":       return .channelGMax(ci: ci, chi: chi)
-        case "channelReversal":   return .channelReversal(ci: ci, chi: chi)
-        case "customGateVHalf":   return .customGateVHalf(ci: ci, chi: chi, gi: gi)
-        case "customGateSlope":   return .customGateSlope(ci: ci, chi: chi, gi: gi)
-        case "customGateTauMin":  return .customGateTauMin(ci: ci, chi: chi, gi: gi)
-        case "customGateTauMax":  return .customGateTauMax(ci: ci, chi: chi, gi: gi)
-        case "customGateVPeak":   return .customGateVPeak(ci: ci, chi: chi, gi: gi)
-        case "customGateTauWidth":return .customGateTauWidth(ci: ci, chi: chi, gi: gi)
-        case "skHalfActivation":  return .skHalfActivation(ci: ci, chi: chi)
-        case "skHillCoeff":       return .skHillCoeff(ci: ci, chi: chi)
-        case "skTauActivation":   return .skTauActivation(ci: ci, chi: chi)
-        case "bkVHalfAtRef":      return .bkVHalfAtRef(ci: ci, chi: chi)
-        case "bkCaShift":         return .bkCaShift(ci: ci, chi: chi)
-        case "bkSlopeFactor":     return .bkSlopeFactor(ci: ci, chi: chi)
-        case "bkTauMin":          return .bkTauMin(ci: ci, chi: chi)
-        case "bkTauMax":          return .bkTauMax(ci: ci, chi: chi)
-        default:                  return nil
+        case "channelGMax":        return .channelGMax(ci: ci, chi: chi)
+        case "gateInfVHalf":       return .gateInfVHalf(ci: ci, chi: chi, gi: gi)
+        case "gateInfSlope":       return .gateInfSlope(ci: ci, chi: chi, gi: gi)
+        case "gateTauMin":         return .gateTauMin(ci: ci, chi: chi, gi: gi)
+        case "gateTauMax":         return .gateTauMax(ci: ci, chi: chi, gi: gi)
+        case "gateTauVPeak":       return .gateTauVPeak(ci: ci, chi: chi, gi: gi)
+        case "gateTauWidth":       return .gateTauWidth(ci: ci, chi: chi, gi: gi)
+        case "customGateVHalf":    return .customGateVHalf(ci: ci, chi: chi, gi: gi)
+        case "customGateSlope":    return .customGateSlope(ci: ci, chi: chi, gi: gi)
+        case "customGateTauMin":   return .customGateTauMin(ci: ci, chi: chi, gi: gi)
+        case "customGateTauMax":   return .customGateTauMax(ci: ci, chi: chi, gi: gi)
+        case "customGateVPeak":    return .customGateVPeak(ci: ci, chi: chi, gi: gi)
+        case "customGateTauWidth": return .customGateTauWidth(ci: ci, chi: chi, gi: gi)
+        case "skHalfActivation":   return .skHalfActivation(ci: ci, chi: chi)
+        case "skHillCoeff":        return .skHillCoeff(ci: ci, chi: chi)
+        case "skTauActivation":    return .skTauActivation(ci: ci, chi: chi)
+        case "bkVHalfAtRef":       return .bkVHalfAtRef(ci: ci, chi: chi)
+        case "bkCaShift":          return .bkCaShift(ci: ci, chi: chi)
+        case "bkSlopeFactor":      return .bkSlopeFactor(ci: ci, chi: chi)
+        case "bkTauMin":           return .bkTauMin(ci: ci, chi: chi)
+        case "bkTauMax":           return .bkTauMax(ci: ci, chi: chi)
+        // Legacy keys (old files that had Cm / E_rev) — silently dropped
+        default:                   return nil
         }
     }
 }
@@ -302,6 +374,50 @@ extension NetworkDocument.OptimSettingsDoc {
     }
 }
 
+// MARK: - Gate override helpers
+
+/// Update a sigmoid x∞ override on any HHGated class-based channel.
+private func applyGateInfSigmoid<C: HHGated & AnyObject>(
+    _ ch: C, gi: Int, transform: (Double, Double, Double, Double) -> GateCurve) {
+    guard gi < ch.gateInfOverrides.count,
+          let curve = ch.gateInfOverrides[gi],
+          case .sigmoid(let lo, let hi, let vHalf, let k, let domain) = curve
+    else { return }
+    ch.gateInfOverrides[gi] = transform(lo, hi, vHalf, k)
+}
+
+/// Update a gaussian τ override on any HHGated class-based channel.
+private func applyGateTauGaussian<C: HHGated & AnyObject>(
+    _ ch: C, gi: Int, transform: (Double, Double, Double, Double) -> GateCurve) {
+    guard gi < ch.gateTauOverrides.count,
+          let curve = ch.gateTauOverrides[gi],
+          case .gaussian(let tMin, let tMax, let vPeak, let width, let domain) = curve
+    else { return }
+    ch.gateTauOverrides[gi] = transform(tMin, tMax, vPeak, width)
+}
+
+/// Dispatch gate inf update to whatever concrete HHGated type owns the channel.
+private func withGateInf(_ ch: IonChannel, gi: Int,
+                          inf: @escaping (Double, Double, Double, Double) -> GateCurve) {
+    switch ch {
+    case let c as SodiumChannel:       applyGateInfSigmoid(c, gi: gi, transform: inf)
+    case let c as PotassiumChannel:    applyGateInfSigmoid(c, gi: gi, transform: inf)
+    case let c as TTypeCalciumChannel: applyGateInfSigmoid(c, gi: gi, transform: inf)
+    default: break
+    }
+}
+
+/// Dispatch gate tau update to whatever concrete HHGated type owns the channel.
+private func withGateTau(_ ch: IonChannel, gi: Int,
+                          tau: @escaping (Double, Double, Double, Double) -> GateCurve) {
+    switch ch {
+    case let c as SodiumChannel:       applyGateTauGaussian(c, gi: gi, transform: tau)
+    case let c as PotassiumChannel:    applyGateTauGaussian(c, gi: gi, transform: tau)
+    case let c as TTypeCalciumChannel: applyGateTauGaussian(c, gi: gi, transform: tau)
+    default: break
+    }
+}
+
 // MARK: - Apply
 
 /// Write a single parameter value back into the network model.
@@ -311,14 +427,36 @@ func applyOptimParam(_ param: OptimParam, value: Double,
     network.updateNeuron(id: neuronID) { n in
         switch param.target {
 
-        case .compartmentCm(let ci):
-            n.compartments[ci].capacitance = value
-
         case .channelGMax(let ci, let chi):
             n.compartments[ci].channels[chi].gMax = value
 
-        case .channelReversal(let ci, let chi):
-            n.compartments[ci].channels[chi].reversal = value
+        // HHGated standard channels — sigmoid x∞ override
+        case .gateInfVHalf(let ci, let chi, let gi):
+            withGateInf(n.compartments[ci].channels[chi], gi: gi) { lo, hi, _, k in
+                .sigmoid(lo: lo, hi: hi, vHalf: value, k: k, domain: nil)
+            }
+        case .gateInfSlope(let ci, let chi, let gi):
+            withGateInf(n.compartments[ci].channels[chi], gi: gi) { lo, hi, vHalf, _ in
+                .sigmoid(lo: lo, hi: hi, vHalf: vHalf, k: value, domain: nil)
+            }
+
+        // HHGated standard channels — gaussian τ override
+        case .gateTauMin(let ci, let chi, let gi):
+            withGateTau(n.compartments[ci].channels[chi], gi: gi) { _, tMax, vPeak, width in
+                .gaussian(tauMin: value, tauMax: tMax, vPeak: vPeak, width: width, domain: nil)
+            }
+        case .gateTauMax(let ci, let chi, let gi):
+            withGateTau(n.compartments[ci].channels[chi], gi: gi) { tMin, _, vPeak, width in
+                .gaussian(tauMin: tMin, tauMax: value, vPeak: vPeak, width: width, domain: nil)
+            }
+        case .gateTauVPeak(let ci, let chi, let gi):
+            withGateTau(n.compartments[ci].channels[chi], gi: gi) { tMin, tMax, _, width in
+                .gaussian(tauMin: tMin, tauMax: tMax, vPeak: value, width: width, domain: nil)
+            }
+        case .gateTauWidth(let ci, let chi, let gi):
+            withGateTau(n.compartments[ci].channels[chi], gi: gi) { tMin, tMax, vPeak, _ in
+                .gaussian(tauMin: tMin, tauMax: tMax, vPeak: vPeak, width: value, domain: nil)
+            }
 
         case .customGateVHalf(let ci, let chi, let gi):
             guard let cc = n.compartments[ci].channels[chi] as? CustomChannel else { return }
