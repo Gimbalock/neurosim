@@ -4,6 +4,10 @@
 //
 //  Delayed-rectifier K+ channel: n^4.
 //
+//  Default E_rev = -98 mV — Nernst potential for mammalian neurons at 37 °C
+//  with [K]_i = 140 mM, [K]_o = 4 mM.  (The original HH squid value was
+//  -77 mV; that reflects very different concentrations at 6 °C.)
+//
 
 import Foundation
 
@@ -17,7 +21,7 @@ public final class PotassiumChannel: IonChannel, HHGated {
     public var gateInfOverrides: [GateCurve?] = [nil]
     public var gateTauOverrides: [GateCurve?] = [nil]
 
-    public init(gMax: Double = 36.0, reversal: Double = -77.0) {
+    public init(gMax: Double = 12.0, reversal: Double = -98.0) {
         self.gMax = gMax
         self.reversal = reversal
     }

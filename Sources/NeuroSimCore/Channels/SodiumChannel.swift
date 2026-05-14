@@ -6,6 +6,10 @@
 //  Rate constants from Hodgkin & Huxley (1952), squid giant axon,
 //  shifted to V_rest = -65 mV (modern convention).
 //
+//  Default E_rev = +67 mV — Nernst potential for mammalian neurons at 37 °C
+//  with [Na]_i = 15 mM, [Na]_o = 145 mM.  (The original HH squid value was
+//  +50 mV; that reflects very different concentrations at 6 °C.)
+//
 
 import Foundation
 
@@ -22,7 +26,7 @@ public final class SodiumChannel: IonChannel, HHGated {
     public var gateInfOverrides: [GateCurve?] = [nil, nil]
     public var gateTauOverrides: [GateCurve?] = [nil, nil]
 
-    public init(gMax: Double = 120.0, reversal: Double = 50.0) {
+    public init(gMax: Double = 56.0, reversal: Double = 67.0) {
         self.gMax = gMax
         self.reversal = reversal
     }

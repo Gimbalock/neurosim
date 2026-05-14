@@ -4,6 +4,9 @@
 //
 //  Passive (non-gated) leak current.
 //
+//  Default E_rev = -70 mV — typical mammalian resting potential / mixed
+//  Na⁺-K⁺-Cl⁻ leak reversal.  (Original HH squid value was -54.4 mV.)
+//
 
 import Foundation
 
@@ -12,7 +15,7 @@ public final class LeakChannel: IonChannel {
     public var gMax: Double      // mS/cm²
     public var reversal: Double  // mV
 
-    public init(gMax: Double = 0.3, reversal: Double = -54.4) {
+    public init(gMax: Double = 0.3, reversal: Double = -70.0) {
         self.gMax = gMax
         self.reversal = reversal
     }
