@@ -710,9 +710,9 @@ final class SimulationViewModel: ObservableObject {
                     if !capturedSignals.isEmpty {
                         let st = capturedSim.state
                         for (j, sig) in capturedSignals.enumerated() {
-                            if let v = sig.value(state: st, network: capturedNet, time: t) {
-                                sigSamples[j].append(.init(t: t, v: v))
-                            }
+                            let v = sig.value(state: st, network: capturedNet, time: t)
+                                   ?? sig.energyValue(energyStates: capturedSim.energyStates)
+                            if let v { sigSamples[j].append(.init(t: t, v: v)) }
                         }
                     }
                 }

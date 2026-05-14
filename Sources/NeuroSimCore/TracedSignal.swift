@@ -42,10 +42,14 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
     /// Intracellular concentration of an ion species (mM), tracked in a compartment.
     case ionConcentration(neuronID: UUID, compartmentID: UUID, ionSymbol: String)
 
+    /// A metabolic/energy quantity from the energy sub-model (requires energyParams.enabled).
+    /// `quantity` is one of: "atp", "adp", "pi", "atpConsumed", "naI", "kI", "eNa", "eK"
+    case energyQuantity(neuronID: UUID, quantity: String)
+
         // MARK: - Codable
 
     private enum CodingKeys: String, CodingKey {
-        case kind, neuronID, compartmentID, channelIndex, gateIndex, synapseID, ionSymbol
+        case kind, neuronID, compartmentID, channelIndex, gateIndex, synapseID, ionSymbol, quantity
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -80,6 +84,10 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
             try c.encode(n, forKey: .neuronID)
             try c.encode(comp, forKey: .compartmentID)
             try c.encode(sym, forKey: .ionSymbol)
+        case let .energyQuantity(n, q):
+            try c.encode("energyQuantity", forKey: .kind)
+            try c.encode(n, forKey: .neuronID)
+            try c.encode(q, forKey: .quantity)
         }
     }
 
@@ -110,6 +118,10 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
                 neuronID:      try c.decode(UUID.self,   forKey: .neuronID),
                 compartmentID: try c.decode(UUID.self,   forKey: .compartmentID),
                 ionSymbol:     try c.decode(String.self, forKey: .ionSymbol))
+        case "energyQuantity":
+            self = .energyQuantity(
+                neuronID: try c.decode(UUID.self,   forKey: .neuronID),
+                quantity: try c.decode(String.self, forKey: .quantity))
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c,
                 debugDescription: "Unknown TracedSignal kind: \(kind)")
@@ -127,6 +139,7 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case let .synapticCurrent(s):        return "isyn-\(s)"
         case let .stimulusCurrent(c):        return "istim-\(c)"
         case let .ionConcentration(_, c, sym): return "conc-\(c)-\(sym)"
+        case let .energyQuantity(n, q):      return "eq-\(n)-\(q)"
         }
     }
 
@@ -193,6 +206,21 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
             let n = network.neurons.first { $0.id == nID }
             let c = n?.compartments.first { $0.id == cID }
             return "\(n?.name ?? "?") · \(c?.name ?? "?")  [\(sym)]_in(t)"
+
+        case let .energyQuantity(nID, q):
+            let n = network.neurons.first { $0.id == nID }
+            let nName = n?.name ?? "?"
+            switch q {
+            case "atp":         return "\(nName)  [ATP](t)"
+            case "adp":         return "\(nName)  [ADP](t)"
+            case "pi":          return "\(nName)  [Pi](t)"
+            case "atpConsumed": return "\(nName)  ATP_consommé(t)"
+            case "naI":         return "\(nName)  [Na]_i(t)"
+            case "kI":          return "\(nName)  [K]_i(t)"
+            case "eNa":         return "\(nName)  E_Na(t)"
+            case "eK":          return "\(nName)  E_K(t)"
+            default:            return "\(nName)  \(q)(t)"
+            }
         }
     }
 
@@ -206,6 +234,11 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case .synapticCurrent:           return "µA/cm²"
         case .stimulusCurrent:           return "µA/cm²"
         case .ionConcentration:          return "mM"
+        case let .energyQuantity(_, q):
+            switch q {
+            case "eNa", "eK": return "mV"
+            default:          return "mM"
+            }
         }
     }
 
@@ -216,6 +249,13 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case .gate:            return 0...1
         case .synapticGating:  return 0...1
         case .ionConcentration: return nil
+        case let .energyQuantity(_, q):
+            switch q {
+            case "atp", "adp", "pi": return 0...3
+            case "eNa":              return 50...80
+            case "eK":               return -110 ... -80
+            default:                 return nil
+            }
         default:               return nil    // auto-scale currents
         }
     }
@@ -286,6 +326,29 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
                   state.indices.contains(idx)
             else { return nil }
             return state[idx]
+
+        case .energyQuantity:
+            // Energy quantities are not in the HH state vector — use energyValue(_:) instead.
+            return nil
+        }
+    }
+
+    /// Sample an energy/metabolic quantity from the simulator's energy state dictionary.
+    /// Returns nil for non-energy signals or when the neuron has no energy state.
+    public func energyValue(energyStates: [UUID: EnergyState]) -> Double? {
+        guard case let .energyQuantity(neuronID, quantity) = self,
+              let es = energyStates[neuronID]
+        else { return nil }
+        switch quantity {
+        case "atp":         return es.atp
+        case "adp":         return es.adp
+        case "pi":          return es.pi
+        case "atpConsumed": return es.atpConsumedTotal
+        case "naI":         return es.naI
+        case "kI":          return es.kI
+        case "eNa":         return es.eNa
+        case "eK":          return es.eK
+        default:            return nil
         }
     }
 }

@@ -212,7 +212,7 @@ struct SignalPickerView: View {
         }
     }
 
-    // ⚗ Métabolique — ion concentrations
+    // ⚗ Métabolique — ion concentrations + energy quantities
     @ViewBuilder
     private var metabolicSection: some View {
         let allConc: [(label: String, signal: TracedSignal)] = vm.network.neurons.flatMap { neuron in
@@ -230,11 +230,34 @@ struct SignalPickerView: View {
             }
         }
 
-        if !allConc.isEmpty {
+        let energyNeurons = vm.network.neurons.filter { $0.energyParams.enabled }
+        let allEnergy: [(label: String, signal: TracedSignal)] = energyNeurons.flatMap { neuron in
+            let quantities: [(String, String)] = [
+                ("atp",         "\(neuron.name)  [ATP](t)  [mM]"),
+                ("adp",         "\(neuron.name)  [ADP](t)  [mM]"),
+                ("pi",          "\(neuron.name)  [Pi](t)  [mM]"),
+                ("atpConsumed", "\(neuron.name)  ATP_consommé(t)  [mM]"),
+                ("naI",         "\(neuron.name)  [Na]_i(t)  [mM]"),
+                ("kI",          "\(neuron.name)  [K]_i(t)  [mM]"),
+                ("eNa",         "\(neuron.name)  E_Na(t)  [mV]"),
+                ("eK",          "\(neuron.name)  E_K(t)  [mV]"),
+            ]
+            return quantities.map { (q, label) in
+                (label: label, signal: TracedSignal.energyQuantity(neuronID: neuron.id, quantity: q))
+            }
+        }
+
+        if !allConc.isEmpty || !allEnergy.isEmpty {
             Section("⚗ Métabolique") {
                 ForEach(Array(allConc.enumerated()), id: \.offset) { _, item in
                     if matches(item.label) {
                         SignalRow(label: item.label, icon: "atom", color: .cyan,
+                                  signal: item.signal, groupID: targetGroupID, isPresented: $isPresented)
+                    }
+                }
+                ForEach(Array(allEnergy.enumerated()), id: \.offset) { _, item in
+                    if matches(item.label) {
+                        SignalRow(label: item.label, icon: "bolt.heart", color: .mint,
                                   signal: item.signal, groupID: targetGroupID, isPresented: $isPresented)
                     }
                 }
@@ -308,6 +331,28 @@ struct SignalPickerView: View {
             if matches(concLabel) {
                 SignalRow(label: concLabel, icon: "atom", color: .cyan,
                           signal: concSignal, groupID: targetGroupID, isPresented: $isPresented)
+            }
+        }
+
+        // Energy quantities — only shown for neurons with energy model enabled.
+        // These are per-neuron (not per-compartment), so only emit once for the soma.
+        if neuron.energyParams.enabled && comp.id == neuron.somaCompartmentID {
+            let energyQuantities: [(String, String)] = [
+                ("atp",         "\(neuron.name)  [ATP](t)  [mM]"),
+                ("adp",         "\(neuron.name)  [ADP](t)  [mM]"),
+                ("pi",          "\(neuron.name)  [Pi](t)  [mM]"),
+                ("atpConsumed", "\(neuron.name)  ATP_consommé(t)  [mM]"),
+                ("naI",         "\(neuron.name)  [Na]_i(t)  [mM]"),
+                ("kI",          "\(neuron.name)  [K]_i(t)  [mM]"),
+                ("eNa",         "\(neuron.name)  E_Na(t)  [mV]"),
+                ("eK",          "\(neuron.name)  E_K(t)  [mV]"),
+            ]
+            ForEach(energyQuantities, id: \.0) { q, label in
+                if matches(label) {
+                    SignalRow(label: label, icon: "bolt.heart", color: .mint,
+                              signal: TracedSignal.energyQuantity(neuronID: neuron.id, quantity: q),
+                              groupID: targetGroupID, isPresented: $isPresented)
+                }
             }
         }
     }
