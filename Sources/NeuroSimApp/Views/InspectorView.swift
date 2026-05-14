@@ -187,6 +187,10 @@ private struct NeuronInspector: View {
                 Divider().padding(.vertical, 4)
                 CouplingsSection(neuron: neuron)
             }
+
+            // ─── Energy model ───────────────────────────────────
+            Divider().padding(.vertical, 4)
+            EnergyParamsSection(neuron: neuron)
         }
     }
 }
@@ -1047,5 +1051,78 @@ private struct SynapseInspector: View {
                       format: format,
                       unit: unit,
                       labelWidth: 90)
+    }
+}
+
+// MARK: - Energy params section
+
+private struct EnergyParamsSection: View {
+    @EnvironmentObject var vm: SimulationViewModel
+    let neuron: HHNeuron
+
+    private var params: EnergyParams {
+        neuron.energyParams
+    }
+
+    private func bind<T>(_ kp: WritableKeyPath<EnergyParams, T>) -> Binding<T> {
+        Binding(
+            get: { neuron.energyParams[keyPath: kp] },
+            set: {
+                neuron.energyParams[keyPath: kp] = $0
+                vm.objectWillChange.send()
+            })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Modèle énergie").font(.subheadline.bold())
+                Spacer()
+                Toggle("", isOn: bind(\.enabled))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
+
+            if params.enabled {
+                Group {
+                    Text("Concentrations initiales (mM)").font(.caption).foregroundStyle(.secondary)
+                    row("[ Na ]ᵢ₀", bind(\.naI0), "mM")
+                    row("[ K  ]ᵢ₀", bind(\.kI0),  "mM")
+                    row("[ Na ]ₒ₀", bind(\.naO0), "mM")
+                    row("[ K  ]ₒ₀", bind(\.kO0),  "mM")
+                    row("[ ATP ]₀",  bind(\.atp0),  "mM")
+                    row("[ ADP ]₀",  bind(\.adp0),  "mM")
+                }
+                Group {
+                    Text("Pompe Na/K").font(.caption).foregroundStyle(.secondary)
+                    row("J_max",    bind(\.pumpJmax),  "mM/ms")
+                    row("Km [Na]ᵢ", bind(\.pumpKmNa), "mM")
+                    row("Km [K]ₒ",  bind(\.pumpKmK),  "mM")
+                    row("Km ATP",   bind(\.pumpKmATP), "mM")
+                }
+                Group {
+                    Text("Mitochondries").font(.caption).foregroundStyle(.secondary)
+                    row("J_mito",   bind(\.mitoJmax),   "mM/ms")
+                    row("Km ADP",   bind(\.mitoKmADP),  "mM")
+                    row("Basal",    bind(\.basalATPRate),"mM/ms")
+                    row("Vol ratio",bind(\.extracellularRatio), "vol_o/vol_i")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ value: Binding<Double>, _ unit: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 11))
+                .frame(width: 82, alignment: .leading)
+            TextField("", value: value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(width: 64)
+                .multilineTextAlignment(.trailing)
+            Text(unit).font(.system(size: 10)).foregroundStyle(.secondary)
+        }
     }
 }

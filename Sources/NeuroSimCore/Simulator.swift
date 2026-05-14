@@ -33,6 +33,10 @@ public final class Simulator {
     public private(set) var time: Double = 0
     public private(set) var state: [Double]
 
+    /// Current metabolic/ionic state for each neuron that has energy tracking enabled.
+    /// Populated lazily on first step; read by the ViewModel to build energy traces.
+    public private(set) var energyStates: [UUID: EnergyState] = [:]
+
     /// V at the end of the previous fully-completed step — used to detect
     /// upward threshold crossings.
     private var prevVoltages: [UUID: Double] = [:]
@@ -76,6 +80,13 @@ public final class Simulator {
         }
         for stim in network.stimuli.values { stim.reset() }
         for noise in network.synapticNoises.values { noise.reset() }
+        // Re-initialise energy states and restore default channel reversals.
+        energyStates.removeAll(keepingCapacity: true)
+        for n in network.neurons where n.energyParams.enabled {
+            let es = EnergyState(params: n.energyParams)
+            energyStates[n.id] = es
+            applyNernstReversals(neuron: n, eNa: es.eNa, eK: es.eK)
+        }
     }
 
     /// Advance by one `dt` using the chosen integration method, then
@@ -100,6 +111,7 @@ public final class Simulator {
         }
         time += dt
         dispatchSpikes()
+        stepEnergy()
     }
 
     /// Convenience: integrate for `duration` ms, calling `onSample` once per
@@ -154,6 +166,55 @@ public final class Simulator {
                 }
             }
             prevVoltages[n.id] = vNow
+        }
+    }
+
+    // MARK: - Energy engine
+
+    /// Called once per step (after spike dispatch). Updates metabolic state
+    /// for every neuron with energy tracking enabled, then writes the new
+    /// Nernst potentials back into the matching channel reversals so the
+    /// *next* HH step uses the updated E_Na / E_K.
+    private func stepEnergy() {
+        for neuron in network.neurons {
+            let params = neuron.energyParams
+            guard params.enabled else { continue }
+
+            // Find soma compartment and its offset in the full state vector.
+            guard let somaComp = neuron.compartments.first(where: { $0.id == neuron.somaCompartmentID }),
+                  let vIdx = network.voltageIndex(ofCompartment: somaComp.id) else { continue }
+
+            let sliceEnd = vIdx + somaComp.stateCount
+            guard sliceEnd <= state.count else { continue }
+            let somaSlice = state[vIdx..<sliceEnd]
+
+            // Lazy init (first step).
+            if energyStates[neuron.id] == nil {
+                energyStates[neuron.id] = EnergyState(params: params)
+            }
+            let es = energyStates[neuron.id]!
+
+            let result = EnergyEngine.step(
+                energyState: es,
+                params: params,
+                somaCompartment: somaComp,
+                somaState: somaSlice,
+                dt: dt)
+
+            energyStates[neuron.id] = result.state
+            applyNernstReversals(neuron: neuron, eNa: result.eNa, eK: result.eK)
+        }
+    }
+
+    /// Update the reversal potential of every Na and K channel in the neuron's soma.
+    private func applyNernstReversals(neuron: HHNeuron, eNa: Double, eK: Double) {
+        guard let somaComp = neuron.compartments.first(where: { $0.id == neuron.somaCompartmentID }) else { return }
+        for ch in somaComp.channels {
+            switch ch.species?.symbol {
+            case "Na": ch.reversal = eNa
+            case "K":  ch.reversal = eK
+            default: break
+            }
         }
     }
 }

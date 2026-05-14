@@ -58,6 +58,10 @@ public final class HHNeuron: Identifiable {
     public var positionX: Double = 0
     public var positionY: Double = 0
 
+    /// Metabolic energy sub-model parameters. Disabled by default — enabling
+    /// activates concentration tracking, Na/K pump, and mitochondrial ATP synthesis.
+    public var energyParams: EnergyParams = EnergyParams()
+
     // MARK: - Initialisers
 
     /// Single-compartment initialiser — backward-compatible with the

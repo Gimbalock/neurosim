@@ -33,6 +33,7 @@ private enum AnalysisTab: String, CaseIterable {
     case clamp       = "Clamp"
     case bifurcation = "Bifurcation"
     case mutualInfo  = "Info Mut."
+    case energy      = "Énergie"
 }
 
 struct ResultsWindowView: View {
@@ -82,7 +83,7 @@ struct ResultsWindowView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 760)
+            .frame(maxWidth: 860)
             .padding(.horizontal, 16)
             .padding(.vertical, 5)
             Divider()
@@ -96,6 +97,7 @@ struct ResultsWindowView: View {
             case .clamp:        VoltageClampView()
             case .bifurcation:  BifurcationView()
             case .mutualInfo:   MutualInfoView()
+            case .energy:       EnergyView()
             }
         }
         .frame(minWidth: 640, minHeight: 480)

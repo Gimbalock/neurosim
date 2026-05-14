@@ -59,6 +59,25 @@ final class SimulationViewModel: ObservableObject {
         var id: Double { t }
     }
 
+    // MARK: - Energy traces
+
+    /// One time-stamped metabolic snapshot per neuron (only for neurons with energy enabled).
+    struct EnergyPlotPoint {
+        let t: Double
+        let naI: Double      // [Na]_i mM
+        let kI:  Double      // [K]_i  mM
+        let naO: Double      // [Na]_o mM
+        let kO:  Double      // [K]_o  mM
+        let atp: Double      // [ATP]  mM
+        let adp: Double      // [ADP]  mM
+        let pi:  Double      // [Pi]   mM
+        let atpConsumed: Double  // cumulative (mM)
+        let eNa: Double      // Nernst E_Na mV
+        let eK:  Double      // Nernst E_K  mV
+    }
+
+    @Published private(set) var energyTraces: [UUID: [EnergyPlotPoint]] = [:]
+
     // MARK: - Signal traces (Results window)
 
     struct SignalTrace: Identifiable {
@@ -575,6 +594,9 @@ final class SimulationViewModel: ObservableObject {
         for n in network.neurons { t[n.id] = [] }
         traces = t
         for i in signalTraces.indices { signalTraces[i].points = [] }
+        var et: [UUID: [EnergyPlotPoint]] = [:]
+        for n in network.neurons where n.energyParams.enabled { et[n.id] = [] }
+        energyTraces = et
     }
 
     // MARK: - Run / pause / reset
@@ -639,6 +661,7 @@ final class SimulationViewModel: ObservableObject {
             guard let i = network.voltageIndex(of: n.id) else { return nil }
             return (n.id, i)
         }
+        let energyNeuronIDs: [UUID] = network.neurons.filter { $0.energyParams.enabled }.map(\.id)
         let capturedSignals = signalTraces.map { $0.signal }
         let stride     = plotDownsampleStride
         let plotWin    = plotWindow
@@ -652,6 +675,7 @@ final class SimulationViewModel: ObservableObject {
             // ── Hot simulation loop — runs on a background thread ─────────────
             var voltSamples: [(UUID, Double, Double)] = []
             voltSamples.reserveCapacity(nSteps * neuronIdx.count)
+            var energySamples: [(UUID, Double, SimulationViewModel.EnergyPlotPoint)] = []
             var sigSamples: [[SimulationViewModel.PlotPoint]] =
                 capturedSignals.isEmpty ? [] : Array(repeating: [], count: capturedSignals.count)
             var divergeMsg: String? = nil
@@ -672,6 +696,17 @@ final class SimulationViewModel: ObservableObject {
                     for (id, vIdx) in neuronIdx {
                         voltSamples.append((id, t, capturedSim.state[vIdx]))
                     }
+                    // Energy samples — only for neurons with energy tracking enabled.
+                    for nid in energyNeuronIDs {
+                        if let es = capturedSim.energyStates[nid] {
+                            let ep = SimulationViewModel.EnergyPlotPoint(
+                                t: t, naI: es.naI, kI: es.kI, naO: es.naO, kO: es.kO,
+                                atp: es.atp, adp: es.adp, pi: es.pi,
+                                atpConsumed: es.atpConsumedTotal,
+                                eNa: es.eNa, eK: es.eK)
+                            energySamples.append((nid, t, ep))
+                        }
+                    }
                     if !capturedSignals.isEmpty {
                         let st = capturedSim.state
                         for (j, sig) in capturedSignals.enumerated() {
@@ -684,10 +719,11 @@ final class SimulationViewModel: ObservableObject {
             }
             // Freeze mutable vars into immutable lets before the actor hop
             // so the compiler can verify there's no cross-actor mutation.
-            let finalTime    = capturedSim.time
-            let fVoltSamples = voltSamples
-            let fSigSamples  = sigSamples
-            let fDivergeMsg  = divergeMsg
+            let finalTime      = capturedSim.time
+            let fVoltSamples   = voltSamples
+            let fEnergySamples = energySamples
+            let fSigSamples    = sigSamples
+            let fDivergeMsg    = divergeMsg
             let elapsed      = ContinuousClock.now - wallStart
             let wallMs       = Double(elapsed.components.seconds) * 1_000.0
                              + Double(elapsed.components.attoseconds) / 1e15
@@ -726,6 +762,26 @@ final class SimulationViewModel: ObservableObject {
                     updatedTraces[id] = arr
                 }
                 self.traces = updatedTraces
+
+                // Energy traces — append and trim to plotWindow.
+                if !fEnergySamples.isEmpty {
+                    var et = self.energyTraces
+                    for (id, _, ep) in fEnergySamples {
+                        et[id, default: []].append(ep)
+                    }
+                    for id in et.keys {
+                        guard var arr = et[id], !arr.isEmpty else { continue }
+                        var lo = 0, hi = arr.count
+                        while lo < hi {
+                            let mid = lo + (hi - lo) / 2
+                            if arr[mid].t < cutoff { lo = mid + 1 } else { hi = mid }
+                        }
+                        if lo > 0 { arr.removeSubrange(0..<lo) }
+                        if arr.count > maxSamples { arr.removeFirst(arr.count - maxSamples) }
+                        et[id] = arr
+                    }
+                    self.energyTraces = et
+                }
 
                 if !fSigSamples.isEmpty {
                     var updated = self.signalTraces
