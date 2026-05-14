@@ -80,12 +80,16 @@ public final class Simulator {
         }
         for stim in network.stimuli.values { stim.reset() }
         for noise in network.synapticNoises.values { noise.reset() }
-        // Re-initialise energy states and restore default channel reversals.
+        // Re-initialise energy states from the channels' current E_rev values
+        // so enabling the model never alters the user's reversal potentials.
         energyStates.removeAll(keepingCapacity: true)
         for n in network.neurons where n.energyParams.enabled {
-            let es = EnergyState(params: n.energyParams)
+            guard let somaComp = n.compartments.first(where: { $0.id == n.somaCompartmentID }) else { continue }
+            let es = EnergyState(inferredFrom: somaComp, params: n.energyParams)
             energyStates[n.id] = es
-            applyNernstReversals(neuron: n, eNa: es.eNa, eK: es.eK)
+            // No applyNernstReversals here: concentrations were inferred FROM
+            // the current reversals, so Nernst gives back the same values —
+            // the channel E_rev are already correct.
         }
     }
 
@@ -188,9 +192,9 @@ public final class Simulator {
             guard sliceEnd <= state.count else { continue }
             let somaSlice = state[vIdx..<sliceEnd]
 
-            // Lazy init (first step).
+            // Lazy init (first step) — infer concentrations from current E_rev.
             if energyStates[neuron.id] == nil {
-                energyStates[neuron.id] = EnergyState(params: params)
+                energyStates[neuron.id] = EnergyState(inferredFrom: somaComp, params: params)
             }
             let es = energyStates[neuron.id]!
 

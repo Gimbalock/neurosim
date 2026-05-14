@@ -97,6 +97,48 @@ public struct EnergyState: Sendable {
         atpConsumedTotal = 0
     }
 
+    /// Infer initial intracellular concentrations from the **current E_rev values**
+    /// of the compartment's channels, by inverting the Nernst equation.
+    ///
+    /// This ensures that enabling the energy model never changes the firing
+    /// behaviour: at t = 0 the computed E_Na / E_K are identical to whatever
+    /// the user had set manually in the inspector.
+    ///
+    ///     C_in = C_out · exp(-z · E_mV · 1e-3 · F / (R·T))
+    ///
+    /// Extracellular concentrations (C_out) are kept at the param defaults.
+    /// Metabolites (ATP/ADP/Pi) are kept at param defaults.
+    public init(inferredFrom comp: Compartment, params: EnergyParams) {
+        naO = params.naO0;  kO  = params.kO0
+        atp = params.atp0;  adp = params.adp0; pi = params.pi0
+        atpConsumedTotal = 0
+
+        // Locate reversal potentials from the first matching channel.
+        var eNa: Double? = nil
+        var eK:  Double? = nil
+        for ch in comp.channels {
+            switch ch.species?.symbol {
+            case "Na" where eNa == nil: eNa = ch.reversal
+            case "K"  where eK  == nil: eK  = ch.reversal
+            default: break
+            }
+        }
+
+        // Invert Nernst: C_in = C_out · exp(-z · E_V · F / (R·T))
+        // z = +1 for both Na⁺ and K⁺.
+        let rt = Nernst.R * params.temperatureK
+        if let e = eNa {
+            naI = max(params.naO0 * exp(-e * 1e-3 * Nernst.F / rt), 0.1)
+        } else {
+            naI = params.naI0
+        }
+        if let e = eK {
+            kI  = max(params.kO0  * exp(-e * 1e-3 * Nernst.F / rt), 0.1)
+        } else {
+            kI  = params.kI0
+        }
+    }
+
     /// Direct memberwise init used by EnergyEngine.
     public init(naI: Double, kI: Double, naO: Double, kO: Double,
                 atp: Double, adp: Double, pi: Double,
