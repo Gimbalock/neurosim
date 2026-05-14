@@ -157,7 +157,7 @@ struct BifurcationView: View {
             .chartLegend(position: .topLeading, alignment: .leading)
             .chartOverlay { proxy in
                 GeometryReader { geo in
-                    let f = geo[proxy.plotAreaFrame]
+                    let f = proxy.plotFrame.map { geo[$0] } ?? .zero
                     Rectangle().fill(Color.clear).contentShape(Rectangle())
                         .onContinuousHover { phase in
                             switch phase {

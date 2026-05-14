@@ -457,7 +457,7 @@ struct MutualInfoView: View {
             }
             .chartOverlay { proxy in
                 GeometryReader { geo in
-                    let f = geo[proxy.plotAreaFrame]
+                    let f = proxy.plotFrame.map { geo[$0] } ?? .zero
                     Rectangle().fill(Color.clear).contentShape(Rectangle())
                         .onContinuousHover { phase in
                             switch phase {
@@ -558,7 +558,7 @@ struct MutualInfoView: View {
             }
             .chartOverlay { proxy in
                 GeometryReader { geo in
-                    let f = geo[proxy.plotAreaFrame]
+                    let f = proxy.plotFrame.map { geo[$0] } ?? .zero
                     Rectangle().fill(Color.clear).contentShape(Rectangle())
                         .onContinuousHover { phase in
                             switch phase {

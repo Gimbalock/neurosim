@@ -89,7 +89,7 @@ struct PhaseView: View {
         .chartLegend(position: .topLeading, spacing: 8)
         .chartOverlay { proxy in
             GeometryReader { geo in
-                let f = geo[proxy.plotAreaFrame]
+                let f = proxy.plotFrame.map { geo[$0] } ?? .zero
                 // Hover tracking
                 Rectangle().fill(Color.clear).contentShape(Rectangle())
                     .onContinuousHover { phase in

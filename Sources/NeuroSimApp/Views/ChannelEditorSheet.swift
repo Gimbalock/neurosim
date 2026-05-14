@@ -589,7 +589,7 @@ private struct InteractivePreviewChart: View {
                         .gesture(
                             DragGesture(minimumDistance: 2)
                                 .onChanged { drag in
-                                    let frame = geo[proxy.plotAreaFrame]
+                                    let frame = proxy.plotFrame.map { geo[$0] } ?? .zero
                                     let loc = CGPoint(x: drag.location.x - frame.minX,
                                                       y: drag.location.y - frame.minY)
                                     guard let dv: Double = proxy.value(atX: loc.x),

@@ -258,7 +258,7 @@ struct EnergyView: View {
     @ViewBuilder
     private func cursorOverlay(proxy: ChartProxy, chart: CursorChart) -> some View {
         GeometryReader { geo in
-            let f = geo[proxy.plotAreaFrame]
+            let f = proxy.plotFrame.map { geo[$0] } ?? .zero
             Rectangle().fill(Color.clear).contentShape(Rectangle())
                 .onContinuousHover { phase in
                     switch phase {
