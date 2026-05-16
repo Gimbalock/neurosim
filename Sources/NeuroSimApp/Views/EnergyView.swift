@@ -2,42 +2,109 @@
 //  EnergyView.swift
 //  NeuroSimApp
 //
-//  Redesigned metabolic energy view:
+//  Metabolic energy dashboard — v2:
 //
-//   ┌─── control bar ─────────────────────────────────────────────┐
-//   ├─── Section A: Bar gauges (current snapshot) ─────────────────┤
-//   │   Vertical bar charts (mV panel + mM panel) with annotation  │
-//   ├──────────────────────────────────────────────────────────────┤
-//   │  ┌── Section B: Network ATP panel ──┐ ┌─ Section C: Cost ──┐ │
-//   │  │ ATP consumed per neuron          │ │ ATP/spike estimate  │ │
-//   │  └──────────────────────────────────┘ └────────────────────┘ │
-//   ├──────────────────────────────────────────────────────────────┤
-//   │  Section D: Nernst line charts (E_Na, E_K vs time) compact   │
-//   └──────────────────────────────────────────────────────────────┘
-//
+//   ┌─── control bar ──────────────────────────────────────────────────────┐
+//   ├─── Section A: MiniGauge grid (7 × individual Y scales) ──────────────┤
+//   │   E_Na  E_K  [Na]ᵢ  [K]ᵢ  [ATP]  [ADP]  [Pi]                       │
+//   │   Each bar has its own domain → small changes are always visible.    │
+//   ├──────────────────────────────────────────────────────────────────────┤
+//   │  ┌── Section B: Network ATP ──┐  ┌── Section C: Coût/PA ──┐         │
+//   ├──────────────────────────────────────────────────────────────────────┤
+//   │  Section D: Pompe Na/K — demande · débit réel · déficit (timeline)  │
+//   └──────────────────────────────────────────────────────────────────────┘
 
 import SwiftUI
 import Charts
 import NeuroSimCore
 
-// MARK: - Bar gauge data helpers
+// MARK: - MiniGauge helpers
 
-private struct BarItem: Identifiable {
+private struct GaugeSpec {
     let id: String
     let label: String
+    let unit: String
     let value: Double
+    let yMin: Double
+    let yMax: Double
+    let refValue: Double?  // dashed reference line
     let color: Color
 }
+
+/// One vertical bar chart for a single quantity with its own Y domain.
+private struct MiniGauge: View {
+    let spec: GaugeSpec
+    private let gaugeWidth: CGFloat = 62
+    private let gaugeHeight: CGFloat = 120
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Chart {
+                BarMark(
+                    x: .value("", spec.label),
+                    yStart: .value("", spec.yMin),
+                    yEnd: .value("", clamped)
+                )
+                .foregroundStyle(spec.color.gradient)
+                .annotation(position: annotationPos, alignment: .center, spacing: 2) {
+                    Text(formatted)
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(spec.color)
+                }
+
+                if let ref = spec.refValue {
+                    RuleMark(y: .value("réf", ref))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        .foregroundStyle(spec.color.opacity(0.5))
+                }
+            }
+            .chartYScale(domain: spec.yMin...spec.yMax)
+            .chartXAxis(.hidden)
+            .chartYAxis {
+                AxisMarks(values: [spec.yMin, spec.yMax]) {
+                    AxisGridLine().foregroundStyle(Color.secondary.opacity(0.3))
+                    AxisValueLabel()
+                        .font(.system(size: 7))
+                }
+            }
+            .frame(width: gaugeWidth, height: gaugeHeight)
+
+            // Label below
+            VStack(spacing: 1) {
+                Text(spec.label)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(spec.color)
+                Text(spec.unit)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var clamped: Double { max(spec.yMin, min(spec.yMax, spec.value)) }
+
+    /// Place annotation above bar unless bar is near the top, then below.
+    private var annotationPos: AnnotationPosition {
+        let range = spec.yMax - spec.yMin
+        guard range > 0 else { return .top }
+        let frac = (clamped - spec.yMin) / range
+        return frac > 0.85 ? .bottom : .top
+    }
+
+    private var formatted: String {
+        let v = spec.value
+        if abs(v) < 1 { return String(format: "%.3f", v) }
+        if abs(v) < 10 { return String(format: "%.2f", v) }
+        return String(format: "%.1f", v)
+    }
+}
+
+// MARK: - EnergyView
 
 struct EnergyView: View {
     @EnvironmentObject var vm: SimulationViewModel
 
-    // Neuron selection
     @State private var selectedNeuronID: UUID? = nil
-
-    // Cursor state (shared across nernst chart)
-    @State private var cursorT: Double?    = nil
-    @State private var cursorAbs: CGPoint? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -127,141 +194,96 @@ struct EnergyView: View {
                              neuron: HHNeuron) -> some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Section A: Bar gauges
+
+                // ── Section A: MiniGauge grid ─────────────────────────────────
                 sectionA(pts: pts)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 10)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
 
                 Divider().padding(.vertical, 8)
 
-                // Section B + C side by side
+                // ── Section B + C side by side ────────────────────────────────
                 HStack(alignment: .top, spacing: 12) {
                     sectionB(pts: pts)
                     Divider()
                     sectionC(pts: pts, neuron: neuron)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
 
                 Divider().padding(.vertical, 8)
 
-                // Section D: Nernst compact chart
+                // ── Section D: Pump demand vs rate vs deficit ─────────────────
                 sectionD(pts: pts)
-                    .frame(height: 160)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 14)
             }
         }
     }
 
-    // MARK: - Section A: Bar gauges
+    // MARK: - Section A: MiniGauge grid
 
     @ViewBuilder
     private func sectionA(pts: [SimulationViewModel.EnergyPlotPoint]) -> some View {
         let last = pts.last!
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Instantané — snapshot courant")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
 
-            HStack(alignment: .top, spacing: 16) {
-                // mV chart: E_Na, E_K
-                let mvItems: [BarItem] = [
-                    BarItem(id: "E_Na", label: "E_Na", value: last.eNa, color: .blue),
-                    BarItem(id: "E_K",  label: "E_K",  value: last.eK,  color: .orange)
-                ]
-                milliVoltBarChart(items: mvItems)
-                    .frame(width: 140, height: 180)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 10) {
+                    MiniGauge(spec: GaugeSpec(
+                        id: "eNa", label: "E_Na", unit: "mV",
+                        value: last.eNa,
+                        yMin: 50, yMax: 80, refValue: 67,
+                        color: .blue))
 
-                // mM chart: [Na]_i, [K]_i (clamped display), [ATP], [ADP], [Pi]
-                let mmItems: [BarItem] = [
-                    BarItem(id: "naI", label: "[Na]ᵢ", value: last.naI, color: .blue),
-                    BarItem(id: "kI",  label: "[K]ᵢ",  value: min(last.kI, 160), color: .orange),
-                    BarItem(id: "atp", label: "[ATP]",  value: last.atp, color: .green),
-                    BarItem(id: "adp", label: "[ADP]",  value: last.adp, color: .yellow),
-                    BarItem(id: "pi",  label: "[Pi]",   value: last.pi,  color: .red)
-                ]
-                millimolarBarChart(items: mmItems, last: last)
-                    .frame(maxWidth: .infinity)
+                    MiniGauge(spec: GaugeSpec(
+                        id: "eK", label: "E_K", unit: "mV",
+                        value: last.eK,
+                        yMin: -110, yMax: -80, refValue: -98,
+                        color: .orange))
+
+                    Divider().frame(height: 140)
+
+                    MiniGauge(spec: GaugeSpec(
+                        id: "naI", label: "[Na]ᵢ", unit: "mM",
+                        value: last.naI,
+                        yMin: 10, yMax: 30, refValue: 15,
+                        color: .blue))
+
+                    MiniGauge(spec: GaugeSpec(
+                        id: "kI", label: "[K]ᵢ", unit: "mM",
+                        value: last.kI,
+                        yMin: 100, yMax: 145, refValue: 140,
+                        color: .orange))
+
+                    Divider().frame(height: 140)
+
+                    MiniGauge(spec: GaugeSpec(
+                        id: "atp", label: "[ATP]", unit: "mM",
+                        value: last.atp,
+                        yMin: 0, yMax: 3, refValue: 2,
+                        color: .green))
+
+                    MiniGauge(spec: GaugeSpec(
+                        id: "adp", label: "[ADP]", unit: "mM",
+                        value: last.adp,
+                        yMin: 0, yMax: 0.5, refValue: 0.2,
+                        color: .yellow))
+
+                    MiniGauge(spec: GaugeSpec(
+                        id: "pi", label: "[Pi]", unit: "mM",
+                        value: last.pi,
+                        yMin: 0, yMax: 5, refValue: 2.5,
+                        color: .purple))
+                }
+                .padding(.vertical, 4)
             }
         }
     }
 
-    @ViewBuilder
-    private func milliVoltBarChart(items: [BarItem]) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Potentiels (mV)").font(.system(size: 9)).foregroundStyle(.secondary)
-            Chart {
-                mvBarContent(items: items)
-            }
-            .chartYAxisLabel("mV", alignment: .center)
-            .chartXAxis { AxisMarks(values: .automatic) }
-        }
-    }
-
-    @ChartContentBuilder
-    private func mvBarContent(items: [BarItem]) -> some ChartContent {
-        ForEach(items) { item in
-            BarMark(
-                x: .value("Quantité", item.label),
-                y: .value("Valeur", item.value)
-            )
-            .foregroundStyle(item.color)
-            .annotation(position: .top, alignment: .center) {
-                Text(String(format: "%.1f", item.value))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.primary)
-            }
-        }
-        // Reference lines
-        RuleMark(y: .value("réf E_Na", 67.0))
-            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            .foregroundStyle(Color.blue.opacity(0.5))
-            .annotation(position: .trailing) {
-                Text("67").font(.system(size: 8)).foregroundStyle(.blue.opacity(0.7))
-            }
-        RuleMark(y: .value("réf E_K", -98.0))
-            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            .foregroundStyle(Color.orange.opacity(0.5))
-            .annotation(position: .trailing) {
-                Text("-98").font(.system(size: 8)).foregroundStyle(.orange.opacity(0.7))
-            }
-    }
-
-    @ViewBuilder
-    private func millimolarBarChart(items: [BarItem], last: SimulationViewModel.EnergyPlotPoint) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Concentrations (mM)").font(.system(size: 9)).foregroundStyle(.secondary)
-            Chart {
-                mmBarContent(items: items)
-            }
-            .chartYAxisLabel("mM", alignment: .center)
-        }
-    }
-
-    @ChartContentBuilder
-    private func mmBarContent(items: [BarItem]) -> some ChartContent {
-        ForEach(items) { item in
-            BarMark(
-                x: .value("Quantité", item.label),
-                y: .value("Valeur", item.value)
-            )
-            .foregroundStyle(item.color)
-            .annotation(position: .top, alignment: .center) {
-                Text(String(format: "%.2f", item.value))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.primary)
-            }
-        }
-        // Reference lines for physiological targets
-        RuleMark(y: .value("réf [Na]ᵢ", 15.0))
-            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            .foregroundStyle(Color.blue.opacity(0.4))
-        RuleMark(y: .value("réf ATP", 2.0))
-            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            .foregroundStyle(Color.green.opacity(0.5))
-    }
-
-    // MARK: - Section B: Network ATP panel
+    // MARK: - Section B: Network ATP
 
     @ViewBuilder
     private func sectionB(pts: [SimulationViewModel.EnergyPlotPoint]) -> some View {
@@ -273,15 +295,12 @@ struct EnergyView: View {
             let energyNeurons = vm.network.neurons.filter { $0.energyParams.enabled }
             if energyNeurons.isEmpty {
                 Text("Aucun neurone avec énergie activée")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(.caption).foregroundStyle(.tertiary)
             } else {
-                var total = 0.0
                 ForEach(energyNeurons) { neuron in
                     if let nPts = vm.energyTraces[neuron.id],
                        let first = nPts.first, let last = nPts.last {
                         let consumed = last.atpConsumed - first.atpConsumed
-                        let _ = { total += consumed }()
                         HStack(spacing: 6) {
                             Text(neuron.name)
                                 .font(.system(size: 11))
@@ -298,7 +317,6 @@ struct EnergyView: View {
 
                 Divider()
 
-                // Total network
                 let networkTotal: Double = energyNeurons.reduce(0.0) { acc, neuron in
                     guard let nPts = vm.energyTraces[neuron.id],
                           let first = nPts.first, let last = nPts.last
@@ -306,8 +324,7 @@ struct EnergyView: View {
                     return acc + (last.atpConsumed - first.atpConsumed)
                 }
                 HStack {
-                    Text("Total réseau")
-                        .font(.system(size: 11, weight: .semibold))
+                    Text("Total réseau").font(.system(size: 11, weight: .semibold))
                     Spacer()
                     Text(String(format: "%.5f mM", networkTotal))
                         .font(.system(size: 11, design: .monospaced))
@@ -320,7 +337,8 @@ struct EnergyView: View {
     // MARK: - Section C: Cost per spike
 
     @ViewBuilder
-    private func sectionC(pts: [SimulationViewModel.EnergyPlotPoint], neuron: HHNeuron) -> some View {
+    private func sectionC(pts: [SimulationViewModel.EnergyPlotPoint],
+                           neuron: HHNeuron) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Coût énergétique")
                 .font(.system(size: 11, weight: .semibold))
@@ -329,15 +347,12 @@ struct EnergyView: View {
             let spikeCount = countSpikes(neuronID: neuron.id)
             let first = pts.first!
             let last  = pts.last!
-            let totalATP = last.atpConsumed - first.atpConsumed   // mM
+            let totalATP = last.atpConsumed - first.atpConsumed
 
             if spikeCount > 0 {
-                let costPerSpike = totalATP / Double(spikeCount)  // mM/spike
-
-                // Soma volume in litres
+                let costPerSpike = totalATP / Double(spikeCount)
                 let somaVol = neuron.compartments
                     .first(where: { $0.id == neuron.somaCompartmentID })?.volume ?? 1e-12
-                // molecules = costMM × 1e-3 mol/mM × vol [L] × 6.022e23
                 let molecules = costPerSpike * 1e-3 * somaVol * 6.022e23
                 let log10mol  = molecules > 0 ? log10(molecules) : 0
                 let mantissa  = molecules / pow(10, floor(log10mol))
@@ -345,14 +360,12 @@ struct EnergyView: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     costRow("Potentiels d'action", value: "\(spikeCount)")
-                    costRow("ATP/PA",     value: String(format: "%.5f mM", costPerSpike))
-                    costRow("Molécules/PA", value: String(format: "%.1f × 10^%d", mantissa, exponent))
+                    costRow("ATP / PA",   value: String(format: "%.5f mM", costPerSpike))
+                    costRow("Molécules / PA", value: String(format: "%.1f × 10^%d", mantissa, exponent))
                     costRow("Vol. soma",  value: String(format: "%.1f µm³", somaVol * 1e15))
                 }
             } else {
-                Text("Pas de PA détecté")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                Text("Pas de PA détecté").font(.caption).foregroundStyle(.tertiary)
                 costRow("ATP total", value: String(format: "%.5f mM", totalATP))
             }
         }
@@ -367,108 +380,57 @@ struct EnergyView: View {
         }
     }
 
-    // MARK: - Section D: Nernst compact chart
+    // MARK: - Section D: Pump demand vs rate vs deficit
 
     @ViewBuilder
     private func sectionD(pts: [SimulationViewModel.EnergyPlotPoint]) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Potentiels de Nernst")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 2)
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Pompe Na/K — demande · débit réel · déficit")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("Si les mitochondries sont insuffisantes, le débit réel (vert) devient inférieur à la demande (orange) → déficit (rouge).")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+
             Chart {
-                nernstLines(pts: pts)
+                pumpChartContent(pts: pts)
             }
             .chartForegroundStyleScale([
-                "E_Na": Color.blue,
-                "E_K":  Color.orange
+                "Demande":  Color.orange,
+                "Débit":    Color.green,
+                "Déficit":  Color.red
             ])
-            .chartXAxisLabel("Temps (ms)")
-            .chartYAxisLabel("Potentiel (mV)")
+            .chartXAxisLabel("Temps (ms)", alignment: .center)
+            .chartYAxisLabel("mM / ms", alignment: .center)
             .chartLegend(position: .topLeading, alignment: .leading)
-            .chartOverlay { proxy in nernstCursorOverlay(proxy: proxy) }
+            .frame(height: 160)
         }
     }
 
     @ChartContentBuilder
-    private func nernstLines(pts: [SimulationViewModel.EnergyPlotPoint]) -> some ChartContent {
-        ForEach(pts.indices, id: \.self) { i in
-            let p = pts[i]
-            LineMark(x: .value("t", p.t), y: .value("E_Na", p.eNa))
-                .foregroundStyle(by: .value("Série", "E_Na"))
+    private func pumpChartContent(pts: [SimulationViewModel.EnergyPlotPoint]) -> some ChartContent {
+        // Thin out to at most 400 points for performance
+        let stride = max(1, pts.count / 400)
+        let sampled = stride > 1 ? pts.enumerated().compactMap { i, p in i % stride == 0 ? p : nil } : pts
+
+        ForEach(sampled.indices, id: \.self) { i in
+            let p = sampled[i]
+            // Demand line
+            LineMark(x: .value("t", p.t), y: .value("Demande", p.pumpDemand))
+                .foregroundStyle(by: .value("Série", "Demande"))
+                .lineStyle(.init(lineWidth: 1.5, dash: [4, 3]))
+            // Actual rate
+            LineMark(x: .value("t", p.t), y: .value("Débit", p.pumpRate))
+                .foregroundStyle(by: .value("Série", "Débit"))
                 .lineStyle(.init(lineWidth: 1.5))
-            LineMark(x: .value("t", p.t), y: .value("E_K",  p.eK))
-                .foregroundStyle(by: .value("Série", "E_K"))
-                .lineStyle(.init(lineWidth: 1.5))
+            // Deficit = demand − rate (≥ 0)
+            let deficit = max(p.pumpDemand - p.pumpRate, 0)
+            LineMark(x: .value("t", p.t), y: .value("Déficit", deficit))
+                .foregroundStyle(by: .value("Série", "Déficit"))
+                .lineStyle(.init(lineWidth: 1))
         }
-    }
-
-    // MARK: - Nernst cursor overlay
-
-    @ViewBuilder
-    private func nernstCursorOverlay(proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            let f = proxy.plotFrame.map { geo[$0] } ?? .zero
-            Rectangle().fill(Color.clear).contentShape(Rectangle())
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let loc):
-                        let rx = loc.x - f.minX
-                        guard rx >= 0, rx <= f.width,
-                              loc.y >= f.minY, loc.y <= f.maxY else {
-                            cursorT = nil; cursorAbs = nil; return
-                        }
-                        cursorAbs = loc
-                        cursorT   = proxy.value(atX: rx, as: Double.self)
-                    case .ended:
-                        cursorT = nil; cursorAbs = nil
-                    }
-                }
-            if let loc = cursorAbs {
-                Path { p in
-                    p.move(to: CGPoint(x: loc.x, y: f.minY))
-                    p.addLine(to: CGPoint(x: loc.x, y: f.maxY))
-                }
-                .stroke(Color.white.opacity(0.45),
-                        style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                .allowsHitTesting(false)
-            }
-            if let loc = cursorAbs, let t = cursorT,
-               let nid = selectedNeuronID,
-               let pts = vm.energyTraces[nid], !pts.isEmpty {
-                let lx = loc.x + 10 > f.maxX - 140 ? loc.x - 145 : loc.x + 10
-                let label = nernstLabel(t: t, pts: pts)
-                Text(label)
-                    .font(.system(size: 10, design: .monospaced))
-                    .padding(.horizontal, 6).padding(.vertical, 4)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
-                    .position(x: lx + 65, y: max(loc.y, f.minY + 28))
-            }
-        }
-    }
-
-    private func nernstLabel(t: Double, pts: [SimulationViewModel.EnergyPlotPoint]) -> String {
-        var lo = 0, hi = pts.count - 1
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if pts[mid].t < t { lo = mid + 1 } else { hi = mid }
-        }
-        let p = pts[lo]
-        return String(format: "t = %.1f ms\nE_Na = %.1f  E_K = %.1f mV", p.t, p.eNa, p.eK)
-    }
-
-    // MARK: - Spike counting
-
-    /// Count upward crossings of 0 mV threshold in the voltage trace for the given neuron.
-    private func countSpikes(neuronID: UUID) -> Int {
-        guard let pts = vm.traces[neuronID], pts.count > 1 else { return 0 }
-        var count = 0
-        for i in 1..<pts.count {
-            if pts[i - 1].v < 0 && pts[i].v >= 0 {
-                count += 1
-            }
-        }
-        return count
     }
 
     // MARK: - Enable prompt
@@ -482,8 +444,7 @@ struct EnergyView: View {
             Text("Modèle énergétique désactivé pour **\(neuron.name)**")
                 .multilineTextAlignment(.center)
             Text("Activez le modèle dans la barre de contrôle pour suivre les concentrations ioniques, l'ATP/ADP et les potentiels de Nernst dynamiques.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
             Button {
@@ -521,6 +482,16 @@ struct EnergyView: View {
                 Text(unit).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Count upward crossings of 0 mV threshold in the voltage trace.
+    private func countSpikes(neuronID: UUID) -> Int {
+        guard let pts = vm.traces[neuronID], pts.count > 1 else { return 0 }
+        var count = 0
+        for i in 1..<pts.count {
+            if pts[i - 1].v < 0 && pts[i].v >= 0 { count += 1 }
+        }
+        return count
     }
 
     private func autoSelect() {
