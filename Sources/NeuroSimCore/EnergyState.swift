@@ -87,6 +87,12 @@ public struct EnergyState: Sendable {
     /// Cumulative ATP consumed by the Na/K pump since simulation start (mM).
     public var atpConsumedTotal: Double
 
+    /// Instantaneous ATP consumption by the pump in the last step (mM/ms).
+    public var pumpRateLast: Double = 0
+    /// Pump demand at unlimited ATP — pumpJmax × Hill_Na × Hill_K (mM/ms).
+    /// The difference (pumpDemandLast - pumpRateLast) is the ATP deficit per ms.
+    public var pumpDemandLast: Double = 0
+
     // MARK: - Initialisers
 
     /// Resting state consistent with EnergyParams defaults.
@@ -95,6 +101,8 @@ public struct EnergyState: Sendable {
         naO = params.naO0;  kO  = params.kO0
         atp = params.atp0;  adp = params.adp0; pi = params.pi0
         atpConsumedTotal = 0
+        pumpRateLast = 0
+        pumpDemandLast = 0
     }
 
     /// Infer initial intracellular concentrations from the **current E_rev values**
@@ -137,15 +145,20 @@ public struct EnergyState: Sendable {
         } else {
             kI  = params.kI0
         }
+        pumpRateLast = 0
+        pumpDemandLast = 0
     }
 
     /// Direct memberwise init used by EnergyEngine.
     public init(naI: Double, kI: Double, naO: Double, kO: Double,
                 atp: Double, adp: Double, pi: Double,
-                atpConsumedTotal: Double) {
+                atpConsumedTotal: Double,
+                pumpRateLast: Double = 0, pumpDemandLast: Double = 0) {
         self.naI = naI; self.kI = kI; self.naO = naO; self.kO = kO
         self.atp = atp; self.adp = adp; self.pi  = pi
         self.atpConsumedTotal = atpConsumedTotal
+        self.pumpRateLast = pumpRateLast
+        self.pumpDemandLast = pumpDemandLast
     }
 
     // MARK: - Derived quantities
@@ -170,4 +183,7 @@ public struct EnergyState: Sendable {
     public var atpAdpRatio: Double {
         adp > 1e-9 ? atp / adp : .infinity
     }
+
+    /// ATP deficit: how much the pump wanted but couldn't get due to low ATP (mM/ms).
+    public var pumpDeficitLast: Double { max(pumpDemandLast - pumpRateLast, 0) }
 }

@@ -219,6 +219,9 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
             case "kI":          return "\(nName)  [K]_i(t)"
             case "eNa":         return "\(nName)  E_Na(t)"
             case "eK":          return "\(nName)  E_K(t)"
+            case "atpRate":     return "\(nName)  Conso ATP(t)"
+            case "pumpDemand":  return "\(nName)  Demande pompe(t)"
+            case "pumpDeficit": return "\(nName)  Déficit ATP(t)"
             default:            return "\(nName)  \(q)(t)"
             }
         }
@@ -236,8 +239,9 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case .ionConcentration:          return "mM"
         case let .energyQuantity(_, q):
             switch q {
-            case "eNa", "eK": return "mV"
-            default:          return "mM"
+            case "eNa", "eK":                        return "mV"
+            case "atpRate", "pumpDemand", "pumpDeficit": return "mM/ms"
+            default:                                  return "mM"
             }
         }
     }
@@ -251,10 +255,11 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case .ionConcentration: return nil
         case let .energyQuantity(_, q):
             switch q {
-            case "atp", "adp", "pi": return 0...3
-            case "eNa":              return 50...80
-            case "eK":               return -110 ... -80
-            default:                 return nil
+            case "atp", "adp", "pi":               return 0...3
+            case "eNa":                             return 50...80
+            case "eK":                              return -110 ... -80
+            case "atpRate", "pumpDemand", "pumpDeficit": return nil
+            default:                                return nil
             }
         default:               return nil    // auto-scale currents
         }
@@ -348,6 +353,9 @@ public enum TracedSignal: Hashable, Identifiable, Codable {
         case "kI":          return es.kI
         case "eNa":         return es.eNa
         case "eK":          return es.eK
+        case "atpRate":     return es.pumpRateLast
+        case "pumpDemand":  return es.pumpDemandLast
+        case "pumpDeficit": return es.pumpDeficitLast
         default:            return nil
         }
     }

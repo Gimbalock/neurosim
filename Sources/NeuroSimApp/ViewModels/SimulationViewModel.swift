@@ -74,6 +74,8 @@ final class SimulationViewModel: ObservableObject {
         let atpConsumed: Double  // cumulative (mM)
         let eNa: Double      // Nernst E_Na mV
         let eK:  Double      // Nernst E_K  mV
+        let pumpRate: Double   // mM/ms instantaneous pump ATP consumption
+        let pumpDemand: Double // mM/ms pump demand at unlimited ATP
     }
 
     @Published private(set) var energyTraces: [UUID: [EnergyPlotPoint]] = [:]
@@ -703,7 +705,8 @@ final class SimulationViewModel: ObservableObject {
                                 t: t, naI: es.naI, kI: es.kI, naO: es.naO, kO: es.kO,
                                 atp: es.atp, adp: es.adp, pi: es.pi,
                                 atpConsumed: es.atpConsumedTotal,
-                                eNa: es.eNa, eK: es.eK)
+                                eNa: es.eNa, eK: es.eK,
+                                pumpRate: es.pumpRateLast, pumpDemand: es.pumpDemandLast)
                             energySamples.append((nid, t, ep))
                         }
                     }

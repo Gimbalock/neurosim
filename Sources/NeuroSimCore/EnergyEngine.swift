@@ -124,7 +124,8 @@ public enum EnergyEngine {
         let hillNa  = hillCoop(x: max(naI, 0), km: p.pumpKmNa, n: 3)
         let hillK   = hillCoop(x: max(kO, 0),  km: p.pumpKmK,  n: 2)
         let hillATP = hill(x: max(es.atp, 0),  km: p.pumpKmATP)
-        let pumpRate = p.pumpJmax * hillNa * hillK * hillATP   // mM/ms (ATP hydrolysis)
+        let pumpDemand = p.pumpJmax * hillNa * hillK          // unlimited ATP demand (mM/ms)
+        let pumpRate   = pumpDemand * hillATP                 // ATP-limited actual rate (mM/ms)
 
         let pumpDt = pumpRate * dt
         naI -= 3.0 * pumpDt     // 3 Na pumped out of cell
@@ -156,7 +157,8 @@ public enum EnergyEngine {
         let newState = EnergyState(
             naI: naI, kI: kI, naO: naO, kO: kO,
             atp: atp, adp: adp, pi: pi,
-            atpConsumedTotal: es.atpConsumedTotal + pumpDt + basalDt)
+            atpConsumedTotal: es.atpConsumedTotal + pumpDt + basalDt,
+            pumpRateLast: pumpRate, pumpDemandLast: pumpDemand)
 
         return StepResult(
             state: newState,
