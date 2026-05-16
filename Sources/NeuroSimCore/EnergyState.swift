@@ -45,8 +45,26 @@ public struct EnergyParams: Sendable {
     // MARK: Mitochondrial ATP synthesis
     /// Maximum ATP synthesis rate (mM/ms, intracellular volume basis).
     public var mitoJmax:   Double = 0.004  // mM/ms
+    /// Reference mitoJmax corresponding to 100 % mitochondrial health.
+    /// Persisted so that changing the health slider always scales relative
+    /// to the user's calibrated "healthy" value, not the hard-coded default.
+    public var mitoJmaxRef: Double = 0.004  // mM/ms
     /// K_m for [ADP] driving synthesis.
     public var mitoKmADP:  Double = 0.05   // mM
+
+    // MARK: Mitochondrial health convenience (0 – 100 %)
+    /// Percentage of full mitochondrial capacity (100 % = healthy, 0 % = complete failure).
+    /// Setting this property updates `mitoJmax` proportionally; reading it derives the
+    /// percentage from the current `mitoJmax` relative to `mitoJmaxRef`.
+    public var mitoHealthPercent: Double {
+        get {
+            guard mitoJmaxRef > 0 else { return 0 }
+            return min(mitoJmax / mitoJmaxRef * 100.0, 100.0)
+        }
+        set {
+            mitoJmax = mitoJmaxRef * max(0.0, min(newValue, 100.0)) / 100.0
+        }
+    }
 
     // MARK: Basal ATP consumption
     /// First-order basal consumption (mM/ms) representing all non-pump costs

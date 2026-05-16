@@ -166,7 +166,11 @@ struct EnergyView: View {
                                     get: { vm.network.neurons[idx].energyParams.pumpJmax },
                                     set: { vm.network.neurons[idx].energyParams.pumpJmax = $0; vm.objectWillChange.send() }),
                                    unit: "mM/ms", width: 56)
-                        paramField("J_mito max",
+
+                        // ── Mito health slider ────────────────────────────────
+                        mitoHealthControl(idx: idx)
+
+                        paramField("J_mito",
                                    value: Binding(
                                     get: { vm.network.neurons[idx].energyParams.mitoJmax },
                                     set: { vm.network.neurons[idx].energyParams.mitoJmax = $0; vm.objectWillChange.send() }),
@@ -469,6 +473,37 @@ struct EnergyView: View {
     }
 
     // MARK: - Helpers
+
+    /// Compact health % slider + badge for the control bar.
+    @ViewBuilder
+    private func mitoHealthControl(idx: Int) -> some View {
+        let pct = vm.network.neurons[idx].energyParams.mitoHealthPercent
+        let healthBinding = Binding<Double>(
+            get: { vm.network.neurons[idx].energyParams.mitoHealthPercent },
+            set: { vm.network.neurons[idx].energyParams.mitoHealthPercent = $0
+                   vm.objectWillChange.send() })
+
+        VStack(alignment: .center, spacing: 1) {
+            HStack(spacing: 4) {
+                Text("Santé mito").font(.system(size: 9)).foregroundStyle(.secondary)
+                Text(String(format: "%.0f%%", pct))
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(healthColor(pct))
+            }
+            Slider(value: healthBinding, in: 0...100, step: 1)
+                .frame(width: 80)
+                .tint(healthColor(pct))
+        }
+    }
+
+    private func healthColor(_ pct: Double) -> Color {
+        switch pct {
+        case 75...: return .green
+        case 40..<75: return .yellow
+        case 10..<40: return .orange
+        default: return .red
+        }
+    }
 
     private func paramField(_ label: String, value: Binding<Double>,
                             unit: String, width: CGFloat) -> some View {

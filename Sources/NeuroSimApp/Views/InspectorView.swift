@@ -1102,6 +1102,22 @@ private struct EnergyParamsSection: View {
                 }
                 Group {
                     Text("Mitochondries").font(.caption).foregroundStyle(.secondary)
+
+                    // ── Health % slider ───────────────────────────────────────
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text("Santé mito")
+                                .font(.system(size: 11))
+                                .frame(width: 82, alignment: .leading)
+                            Spacer()
+                            Text(String(format: "%.0f %%", neuron.energyParams.mitoHealthPercent))
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(healthColor(neuron.energyParams.mitoHealthPercent))
+                        }
+                        Slider(value: bind(\.mitoHealthPercent), in: 0...100, step: 1)
+                            .tint(healthColor(neuron.energyParams.mitoHealthPercent))
+                    }
+                    // ── J_mito (physio value, auto-updated by slider) ─────────
                     row("J_mito",   bind(\.mitoJmax),   "mM/ms")
                     row("Km ADP",   bind(\.mitoKmADP),  "mM")
                     row("Basal",    bind(\.basalATPRate),"mM/ms")
@@ -1123,6 +1139,16 @@ private struct EnergyParamsSection: View {
                 .frame(width: 64)
                 .multilineTextAlignment(.trailing)
             Text(unit).font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Green → yellow → red as health drops from 100 % to 0 %.
+    private func healthColor(_ pct: Double) -> Color {
+        switch pct {
+        case 75...: return .green
+        case 40..<75: return .yellow
+        case 10..<40: return .orange
+        default: return .red
         }
     }
 }
