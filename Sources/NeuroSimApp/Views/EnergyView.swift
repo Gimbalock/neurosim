@@ -49,7 +49,8 @@ private struct MiniGauge: View {
                 BarMark(
                     x: .value("", spec.label),
                     yStart: .value("", barStart),
-                    yEnd:   .value("", barEnd)
+                    yEnd:   .value("", barEnd),
+                    width:  .fixed(48)
                 )
                 .foregroundStyle(spec.color.gradient)
 
