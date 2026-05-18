@@ -47,6 +47,7 @@ final class SimulationViewModel: ObservableObject {
         case atp     = "ATP"
         case naI     = "[Na]ᵢ"
         case kI      = "[K]ᵢ"
+        case caI     = "[Ca²⁺]ᵢ"
         var id: String { rawValue }
         var unit: String {
             switch self {
@@ -54,6 +55,7 @@ final class SimulationViewModel: ObservableObject {
             case .atp:     return "mM"
             case .naI:     return "mM"
             case .kI:      return "mM"
+            case .caI:     return "µM"
             }
         }
     }
@@ -96,6 +98,7 @@ final class SimulationViewModel: ObservableObject {
         let eK:  Double      // Nernst E_K  mV
         let pumpRate: Double   // mM/ms instantaneous pump ATP consumption
         let pumpDemand: Double // mM/ms pump demand at unlimited ATP
+        let caI: Double      // [Ca²⁺]ᵢ mM
     }
 
     @Published private(set) var energyTraces: [UUID: [EnergyPlotPoint]] = [:]
@@ -726,7 +729,8 @@ final class SimulationViewModel: ObservableObject {
                                 atp: es.atp, adp: es.adp, pi: es.pi,
                                 atpConsumed: es.atpConsumedTotal,
                                 eNa: es.eNa, eK: es.eK,
-                                pumpRate: es.pumpRateLast, pumpDemand: es.pumpDemandLast)
+                                pumpRate: es.pumpRateLast, pumpDemand: es.pumpDemandLast,
+                                caI: es.caI)
                             energySamples.append((nid, t, ep))
                         }
                     }

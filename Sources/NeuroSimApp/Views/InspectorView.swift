@@ -1094,11 +1094,21 @@ private struct EnergyParamsSection: View {
                     row("[ ADP ]₀",  bind(\.adp0),  "mM")
                 }
                 Group {
-                    Text("Pompe Na/K").font(.caption).foregroundStyle(.secondary)
-                    row("J_max",    bind(\.pumpJmax),  "mM/ms")
-                    row("Km [Na]ᵢ", bind(\.pumpKmNa), "mM")
-                    row("Km [K]ₒ",  bind(\.pumpKmK),  "mM")
-                    row("Km ATP",   bind(\.pumpKmATP), "mM")
+                    Text("Pompes ATP").font(.caption).foregroundStyle(.secondary)
+                    ForEach(neuron.energyParams.pumps.indices, id: \.self) { idx in
+                        pumpRow(idx: idx)
+                    }
+                    HStack(spacing: 6) {
+                        Button("+ PMCA") { addPMCA() }
+                            .font(.system(size: 10))
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        Button("+ SERCA") { addSERCA() }
+                            .font(.system(size: 10))
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                    }
+                    .padding(.top, 2)
                 }
                 Group {
                     // ── Extracellular buffering ───────────────────────────────
@@ -1157,6 +1167,73 @@ private struct EnergyParamsSection: View {
                     row("Basal",    bind(\.basalATPRate),"mM/ms")
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func pumpRow(idx: Int) -> some View {
+        let pump = neuron.energyParams.pumps[idx]
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Toggle("", isOn: Binding(
+                    get: { neuron.energyParams.pumps[idx].enabled },
+                    set: { neuron.energyParams.pumps[idx].enabled = $0; vm.objectWillChange.send() }))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.mini)
+                Text(pump.label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(pump.enabled ? .primary : .secondary)
+                Spacer()
+            }
+            if pump.enabled {
+                HStack {
+                    Text("J_max")
+                        .font(.system(size: 10))
+                        .frame(width: 50, alignment: .leading)
+                    TextField("", value: Binding(
+                        get: { neuron.energyParams.pumps[idx].jMax },
+                        set: { neuron.energyParams.pumps[idx].jMax = $0; vm.objectWillChange.send() }),
+                        format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 10, design: .monospaced))
+                        .frame(width: 64)
+                        .multilineTextAlignment(.trailing)
+                    Text("mM/ms").font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("Km \(pump.ion)")
+                        .font(.system(size: 10))
+                        .frame(width: 50, alignment: .leading)
+                    TextField("", value: Binding(
+                        get: { neuron.energyParams.pumps[idx].kmIon },
+                        set: { neuron.energyParams.pumps[idx].kmIon = $0; vm.objectWillChange.send() }),
+                        format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 10, design: .monospaced))
+                        .frame(width: 64)
+                        .multilineTextAlignment(.trailing)
+                    Text("mM").font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    private func addPMCA() {
+        // Only add if not already present
+        if !neuron.energyParams.pumps.contains(where: { $0.label == "PMCA" }) {
+            neuron.energyParams.pumps.append(.pmca)
+            vm.objectWillChange.send()
+        }
+    }
+
+    private func addSERCA() {
+        if !neuron.energyParams.pumps.contains(where: { $0.label == "SERCA" }) {
+            neuron.energyParams.pumps.append(.serca)
+            vm.objectWillChange.send()
         }
     }
 

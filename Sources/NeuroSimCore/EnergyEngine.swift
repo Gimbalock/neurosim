@@ -6,12 +6,12 @@
 //
 //  Physics summary
 //  ───────────────
-//  Each HH integration step produces ionic currents I_Na and I_K (µA/cm²).
-//  These currents physically move ions across the membrane, changing [Na]_i
-//  and [K]_i. The Na/K-ATPase pump then actively restores the gradients,
-//  consuming ATP. Mitochondria re-synthesise ATP from ADP. Depleted ATP
-//  weakens the pump → gradients collapse → Nernst potentials shift toward
-//  zero → depolarisation (ATP-failure depolarisation).
+//  Each HH integration step produces ionic currents I_Na, I_K, and I_Ca (µA/cm²).
+//  These currents physically move ions across the membrane, changing intracellular
+//  concentrations. ATP-dependent pumps in `EnergyParams.pumps` then actively restore
+//  gradients, consuming ATP. Mitochondria re-synthesise ATP from ADP. Depleted ATP
+//  weakens pumps → gradients collapse → Nernst potentials shift toward zero →
+//  depolarisation (ATP-failure depolarisation).
 //
 //  Unit bookkeeping
 //  ────────────────
@@ -25,18 +25,27 @@
 //
 //  Sign: HH I_Na < 0 (inward) → Na entering cell → [Na]_i rises → -I_Na > 0. ✓
 //        HH I_K  > 0 (outward) → K leaving cell  → [K]_i drops  → -I_K  < 0. ✓
+//        HH I_Ca < 0 (inward)  → Ca entering cell → [Ca]_i rises → -I_Ca > 0. ✓
 //
-//  Pump model (Na/K-ATPase)
-//  ────────────────────────
-//  pumpRate [mM/ms] = Jmax · Hill_Na³ · Hill_K² · Hill_ATP
+//  Pump model (generic ATPPump)
+//  ────────────────────────────
+//  pumpRate [mM/ms] = jMax · Hill_ion^n · Hill_ion2^n2 · Hill_ATP
 //
-//  Per pump cycle (1 ATP hydrolysed): 3 Na out, 2 K in.
-//  With pumpRate = ATP hydrolysis rate [mM/ms, intra-volume basis]:
-//      Δ[Na]_i = -3 · pumpRate · dt
-//      Δ[K]_i  = +2 · pumpRate · dt
-//      Δ[Na]_o = +3 · pumpRate · dt · (vol_i/vol_o) = +3 · pumpRate · dt / extRatio
-//      Δ[K]_o  = -2 · pumpRate · dt / extRatio
-//      Δ[ATP]  = -pumpRate · dt
+//  Per pump cycle (1 ATP hydrolysed):
+//    primary ion: stoichiometry ions moved in direction pumpOut
+//    secondary ion (if any): stoichiometry2 ions moved in direction pumpOut2
+//
+//  Calcium buffering
+//  ─────────────────
+//  Free [Ca²⁺]_i is a tiny fraction of total Ca flux — most is rapidly buffered.
+//  The buffer ratio κ = [Ca_total]/[Ca_free] ≈ 100 in typical neurons.
+//  So only 1/(1+κ) of the Ca flux changes [Ca²⁺]_i:
+//    Δ[Ca²⁺]_i = -I_Ca · ionConv / (1 + κ)
+//
+//  ER calcium dynamics
+//  ───────────────────
+//  SERCA pumps Ca from cytoplasm into ER lumen (pumpToER=true).
+//  Passive ER leak returns Ca slowly: J_leak = erLeakRate · [Ca]_ER
 //
 //  Mitochondrial synthesis
 //  ───────────────────────
@@ -63,7 +72,7 @@ public enum EnergyEngine {
         public let eNa: Double
         /// K⁺ Nernst potential for the new state (mV) — write to K-channel reversals.
         public let eK: Double
-        /// ATP consumed by the pump this step (mM) — positive.
+        /// ATP consumed by all pumps + basal this step (mM) — positive.
         public let pumpATPThisStep: Double
     }
 
@@ -88,10 +97,11 @@ public enum EnergyEngine {
         let volI = comp.volume  // L (intracellular)
 
         // ── 1. Ion currents from HH channels ─────────────────────────────────
-        //    Sum I_Na and I_K from channels declaring the matching species.
+        //    Sum I_Na, I_K, I_Ca from channels declaring the matching species.
         let v = slice[slice.startIndex]
         var iNa = 0.0   // µA/cm² — net Na current (positive = outward)
         var iK  = 0.0   // µA/cm² — net K current
+        var iCa = 0.0   // µA/cm² — net Ca current
 
         var gatePtr = slice.startIndex + 1
         for ch in comp.channels {
@@ -102,6 +112,8 @@ public enum EnergyEngine {
                 iNa += ch.current(voltage: v, gates: gates)
             } else if sym == "K" {
                 iK += ch.current(voltage: v, gates: gates)
+            } else if sym == "Ca" {
+                iCa += ch.current(voltage: v, gates: gates)
             }
             gatePtr = end
         }
@@ -114,11 +126,19 @@ public enum EnergyEngine {
         var naI = es.naI - iNa * ionConv
         var kI  = es.kI  - iK  * ionConv
 
+        // Ca²⁺: only free fraction changes (buffer ratio κ divides the flux)
+        var caI = es.caI - iCa * ionConv / (1.0 + p.caBufferKappa)
+        caI = max(caI, 1e-6)
+
         // Extracellular: clamped (blood/glia) or free (ischemia / no buffering).
         // When free, ions leaving the cell enter the extracellular space scaled by
         // vol_i / vol_o = 1 / extracellularRatio (conservation of moles).
         var naO = es.naO
         var kO  = es.kO
+        // caO is always clamped (extracellular Ca reservoir is vast)
+        let caO = es.caO
+        var caER = es.caER
+
         if !p.clampExtracellular {
             let extR = max(p.extracellularRatio, 0.01)
             naO += iNa * ionConv / extR   // Na leaving cell → rises outside (sign flips)
@@ -127,57 +147,168 @@ public enum EnergyEngine {
             kO   = max(kO,  0.1)
         }
 
-        // ── 3. Na/K pump ──────────────────────────────────────────────────────
-        let hillNa  = hillCoop(x: max(naI, 0), km: p.pumpKmNa, n: 3)
-        let hillK   = hillCoop(x: max(kO, 0),  km: p.pumpKmK,  n: 2)
-        let hillATP = hill(x: max(es.atp, 0),  km: p.pumpKmATP)
-        let pumpDemand = p.pumpJmax * hillNa * hillK          // unlimited ATP demand (mM/ms)
-        let pumpRate   = pumpDemand * hillATP                 // ATP-limited actual rate (mM/ms)
+        // ── 3. ATP pumps ──────────────────────────────────────────────────────
+        var atp = es.atp
+        var adp = es.adp
+        var pi  = es.pi
 
-        let pumpDt = pumpRate * dt
-        naI -= 3.0 * pumpDt     // 3 Na pumped out of cell
-        kI  += 2.0 * pumpDt     // 2 K pumped into cell
-        if !p.clampExtracellular {
+        var totalPumpATP = 0.0  // accumulated ATP cost from all pumps this dt
+
+        // Track Na/K pump stats for backward-compat with EnergyView
+        var nakPumpRate:   Double = 0
+        var nakPumpDemand: Double = 0
+
+        for pump in p.pumps where pump.enabled {
+            // Look up primary ion concentration (intracellular)
+            let ionConc: Double
+            switch pump.ion {
+            case "Na": ionConc = max(naI, 0)
+            case "K":  ionConc = max(kI,  0)
+            case "Ca": ionConc = max(caI, 0)
+            default:   continue
+            }
+
+            // Primary Hill factor
+            let hillPrimary = hillCoop(x: ionConc, km: pump.kmIon, n: pump.hillN)
+
+            // Secondary ion Hill factor (if any)
+            let hillSecondary: Double
+            if let ion2 = pump.ion2, let km2 = pump.kmIon2 {
+                // For Na/K pump: secondary is K on extracellular side (pumpOut2 = false → K pumped in)
+                let ionConc2: Double
+                switch ion2 {
+                case "K":  ionConc2 = kO   // extracellular K drives K uptake
+                case "Na": ionConc2 = naO
+                case "Ca": ionConc2 = caO
+                default:   ionConc2 = 1.0
+                }
+                hillSecondary = hillCoop(x: max(ionConc2, 0), km: km2, n: pump.hillN2)
+            } else {
+                hillSecondary = 1.0
+            }
+
+            // ATP Hill factor
+            let hillATP = hill(x: max(atp, 0), km: pump.kmATP)
+
+            let demand = pump.jMax * hillPrimary * hillSecondary
+            let rate   = demand * hillATP
+
+            let pumpDt = rate * dt
+
+            // Consume ATP
+            atp -= pumpDt
+            adp += pumpDt
+            pi  += pumpDt
+            totalPumpATP += pumpDt
+
             let extR = max(p.extracellularRatio, 0.01)
-            naO += 3.0 * pumpDt / extR  // 3 Na enter extracellular space
-            kO  -= 2.0 * pumpDt / extR  // 2 K leave extracellular space
-            naO  = max(naO, 0.1)
-            kO   = max(kO,  0.1)
-        }
-        var atp = es.atp - pumpDt      // 1 ATP per cycle
-        var adp = es.adp + pumpDt
-        var pi  = es.pi  + pumpDt
 
-        // ── 4. Mitochondrial ATP synthesis ────────────────────────────────────
+            // Update primary ion
+            let primaryDelta = pump.stoichiometry * pumpDt
+            switch pump.ion {
+            case "Na":
+                if pump.pumpOut {
+                    naI -= primaryDelta     // Na pumped out of cell
+                    if !p.clampExtracellular { naO += primaryDelta / extR }
+                } else {
+                    naI += primaryDelta
+                    if !p.clampExtracellular { naO -= primaryDelta / extR }
+                }
+            case "K":
+                if pump.pumpOut {
+                    kI -= primaryDelta
+                    if !p.clampExtracellular { kO += primaryDelta / extR }
+                } else {
+                    kI += primaryDelta
+                    if !p.clampExtracellular { kO -= primaryDelta / extR }
+                }
+            case "Ca":
+                if pump.pumpToER {
+                    // SERCA: move Ca from cytoplasm to ER
+                    caI  -= primaryDelta
+                    caER += primaryDelta
+                } else if pump.pumpOut {
+                    // PMCA: pump Ca out of cell (caO clamped, so ignore extracellular)
+                    caI -= primaryDelta
+                }
+            default: break
+            }
+
+            // Update secondary ion (if any)
+            if let ion2 = pump.ion2 {
+                let secondaryDelta = pump.stoichiometry2 * pumpDt
+                switch ion2 {
+                case "K":
+                    if !pump.pumpOut2 {
+                        // K pumped INTO cell (Na/K pump)
+                        kI  += secondaryDelta
+                        if !p.clampExtracellular { kO -= secondaryDelta / extR }
+                    } else {
+                        kI  -= secondaryDelta
+                        if !p.clampExtracellular { kO += secondaryDelta / extR }
+                    }
+                case "Na":
+                    if !pump.pumpOut2 {
+                        naI += secondaryDelta
+                        if !p.clampExtracellular { naO -= secondaryDelta / extR }
+                    } else {
+                        naI -= secondaryDelta
+                        if !p.clampExtracellular { naO += secondaryDelta / extR }
+                    }
+                default: break
+                }
+            }
+
+            // Track Na/K pump for backward compat (first Na pump with secondary K)
+            if pump.ion == "Na" && pump.ion2 == "K" && nakPumpDemand == 0 {
+                nakPumpDemand = demand
+                nakPumpRate   = rate
+            }
+        }
+
+        // Clamp extracellular Na/K
+        if !p.clampExtracellular {
+            naO = max(naO, 0.1)
+            kO  = max(kO,  0.1)
+        }
+
+        // ── 4. ER passive leak ────────────────────────────────────────────────
+        let erLeak = p.erLeakRate * caER * dt
+        caI  += erLeak
+        caER -= erLeak
+
+        // ── 5. Mitochondrial ATP synthesis ────────────────────────────────────
         let jMito = p.mitoJmax * hill(x: max(adp, 0), km: p.mitoKmADP)
         let mitoDt = jMito * dt
         atp += mitoDt
         adp -= mitoDt
         pi  -= mitoDt
 
-        // ── 5. Basal ATP consumption ──────────────────────────────────────────
+        // ── 6. Basal ATP consumption ──────────────────────────────────────────
         let basalDt = p.basalATPRate * dt
         atp -= basalDt
         adp += basalDt
         pi  += basalDt
+        totalPumpATP += basalDt
 
-        // ── 6. Clamp to physical bounds ───────────────────────────────────────
+        // ── 7. Clamp to physical bounds ───────────────────────────────────────
         naI = max(naI, 0.1);   kI  = max(kI,  0.1)
-        // naO and kO are constants — no clamp needed.
+        caI = max(caI, 1e-6);  caER = max(caER, 0.0)
         atp = max(atp, 0.0);   adp = max(adp, 0.0);   pi = max(pi, 0.0)
 
-        // ── 7. Build result ───────────────────────────────────────────────────
+        // ── 8. Build result ───────────────────────────────────────────────────
         let newState = EnergyState(
             naI: naI, kI: kI, naO: naO, kO: kO,
+            caI: caI, caER: caER, caO: caO,
             atp: atp, adp: adp, pi: pi,
-            atpConsumedTotal: es.atpConsumedTotal + pumpDt + basalDt,
-            pumpRateLast: pumpRate, pumpDemandLast: pumpDemand)
+            atpConsumedTotal: es.atpConsumedTotal + totalPumpATP,
+            pumpRateLast: nakPumpRate, pumpDemandLast: nakPumpDemand)
 
         return StepResult(
             state: newState,
             eNa: newState.eNa,
             eK:  newState.eK,
-            pumpATPThisStep: pumpDt + basalDt)
+            pumpATPThisStep: totalPumpATP)
     }
 
     // MARK: - Hill functions
@@ -188,9 +319,10 @@ public enum EnergyEngine {
         x / (km + x)
     }
 
-    /// Cooperative Hill function for integer n (n=2 or n=3).
+    /// Cooperative Hill function for integer n (n=1, 2, or 3).
     @inline(__always)
     private static func hillCoop(x: Double, km: Double, n: Int) -> Double {
+        guard n > 1 else { return x / (km + x) }
         let xn  = pow(x,  Double(n))
         let kmn = pow(km, Double(n))
         return xn / (kmn + xn)

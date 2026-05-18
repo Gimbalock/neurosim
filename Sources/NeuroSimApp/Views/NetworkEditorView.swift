@@ -831,6 +831,16 @@ private struct NeuronNodeView: View {
                 ? Color(red: 1.0, green: 0.5 + t, blue: t * 2)     // orange → white
                 : Color(red: 1.0 - (t - 0.5) * 2, green: 1.0 - (t - 0.5), blue: 1.0) // white → blue
             return (ki, "mM K", col, .clear)
+
+        case .caI:
+            let ca = (ept?.caI ?? 0.0001) * 1000.0  // convert to µM
+            // 0.1 µM (rest) → blue ... 1 µM → white ... 10+ µM → red
+            // log10 scale: log10(0.01) = -2 → 0, log10(100) = 2 → 1
+            let t = max(0, min((log10(max(ca, 0.01)) + 2.0) / 4.0, 1.0))
+            let col: Color = t < 0.5
+                ? Color(red: t*2, green: t*2, blue: 1.0)
+                : Color(red: 1.0, green: 1.0-(t-0.5)*2, blue: 1.0-(t-0.5)*2)
+            return (ca, "µM Ca", col, ca > 1.0 ? .cyan.opacity(0.6) : .clear)
         }
     }
 

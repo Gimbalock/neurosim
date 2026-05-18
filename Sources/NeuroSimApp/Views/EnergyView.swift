@@ -166,8 +166,13 @@ struct EnergyView: View {
                         Divider().frame(height: 24)
                         paramField("J_pump max",
                                    value: Binding(
-                                    get: { vm.network.neurons[idx].energyParams.pumpJmax },
-                                    set: { vm.network.neurons[idx].energyParams.pumpJmax = $0; vm.objectWillChange.send() }),
+                                    get: { vm.network.neurons[idx].energyParams.pumps.first?.jMax ?? 0.012 },
+                                    set: { v in
+                                        if !vm.network.neurons[idx].energyParams.pumps.isEmpty {
+                                            vm.network.neurons[idx].energyParams.pumps[0].jMax = v
+                                        }
+                                        vm.objectWillChange.send()
+                                    }),
                                    unit: "mM/ms", width: 56)
                         mitoHealthControl(idx: idx)
 
@@ -268,6 +273,14 @@ struct EnergyView: View {
                         value: last.adp, yMin: 0, yMax: 0.5, refValue: 0.2, color: .yellow))
                     MiniGauge(spec: GaugeSpec(id: "pi", label: "[Pi]", unit: "mM",
                         value: last.pi, yMin: 0, yMax: 5, refValue: 2.5, color: .purple))
+
+                    gaugeGroupDivider()
+
+                    // Calcium
+                    MiniGauge(spec: GaugeSpec(id: "caI", label: "[Ca²⁺]ᵢ", unit: "µM",
+                        value: last.caI * 1000,   // display in µM
+                        yMin: 0, yMax: 2.0, refValue: 0.1,
+                        color: .cyan))
                 }
                 .padding(.vertical, 6)
             }
