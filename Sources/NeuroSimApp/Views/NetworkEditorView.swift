@@ -128,13 +128,13 @@ struct NetworkEditorView: View {
                                    viewportOffset: viewportOffset)
                 }
 
-                // Reset-view button — bottom-right corner of the canvas
+                // Color-mode picker — bottom-left + reset button — bottom-right
                 VStack {
                     Spacer()
                     HStack {
+                        colorModePicker.padding(10)
                         Spacer()
-                        resetViewButton
-                            .padding(10)
+                        resetViewButton.padding(10)
                     }
                 }
             }
@@ -183,6 +183,28 @@ struct NetworkEditorView: View {
     }
 
     // MARK: - Reset-view button
+
+    // MARK: - Color mode picker
+
+    private var colorModePicker: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "paintpalette")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Picker("", selection: $vm.neuronColorMode) {
+                ForEach(SimulationViewModel.NeuronColorMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .frame(width: 110)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 7))
+    }
 
     private var resetViewButton: some View {
         Button {
@@ -619,22 +641,26 @@ private struct NeuronNodeView: View {
 
     var body: some View {
         let isSelected = vm.selection == .neuron(neuron.id)
-        let v = vm.traces[neuron.id]?.last?.v ?? -65.0
+        let v   = vm.traces[neuron.id]?.last?.v ?? -65.0
+        let ept = vm.energyTraces[neuron.id]?.last
+
+        // Value + color for the currently selected mode
+        let (displayValue, displayUnit, nodeColor, spikeShadow) = colorInfo(v: v, ept: ept)
 
         ZStack {
             Circle()
-                .fill(activityColor(v: v))
+                .fill(nodeColor)
                 .overlay(
                     Circle().stroke(isSelected ? Color.accentColor : Color.primary.opacity(0.75),
                                     lineWidth: isSelected ? 3 : 1.5)
                 )
-                .shadow(color: v > 0 ? .red.opacity(0.7) : .clear, radius: 10)
+                .shadow(color: spikeShadow, radius: 10)
                 .frame(width: radius * 2, height: radius * 2)
 
             VStack(spacing: 1) {
                 Text(neuron.name)
                     .font(.system(.caption, design: .rounded).bold())
-                Text(String(format: "%.0f", v))
+                Text(String(format: "%.1f %@", displayValue, displayUnit))
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -769,7 +795,46 @@ private struct NeuronNodeView: View {
             }
     }
 
-    private func activityColor(v: Double) -> Color {
+    /// Returns (displayValue, unit, fillColor, shadowColor) for the active color mode.
+    private func colorInfo(v: Double,
+                           ept: SimulationViewModel.EnergyPlotPoint?
+    ) -> (Double, String, Color, Color) {
+        switch vm.neuronColorMode {
+
+        case .voltage:
+            return (v, "mV", voltageColor(v), v > 0 ? .red.opacity(0.7) : .clear)
+
+        case .atp:
+            // 0 mM → red (failure)  …  2 mM → green (healthy)  …  >2.5 mM clamped
+            let atp = ept?.atp ?? 2.0
+            let t   = max(0, min(atp / 2.0, 1.0))   // 0=depleted → 1=healthy
+            let col = t < 0.5
+                ? Color(red: 1.0, green: t * 2, blue: 0)           // red → yellow
+                : Color(red: 1.0 - (t - 0.5) * 2, green: 1.0, blue: 0) // yellow → green
+            let shadow: Color = atp < 0.5 ? .orange.opacity(0.8) : .clear
+            return (atp, "mM ATP", col, shadow)
+
+        case .naI:
+            // 10 mM (normal) → blue … 30+ mM (Na loading) → red
+            let na = ept?.naI ?? 15.0
+            let t  = max(0, min((na - 10.0) / 20.0, 1.0))
+            let col: Color = t < 0.5
+                ? Color(red: t * 2, green: t * 2, blue: 1.0)       // blue → white
+                : Color(red: 1.0, green: 1.0 - (t - 0.5) * 2, blue: 1.0 - (t - 0.5) * 2) // white → red
+            return (na, "mM Na", col, .clear)
+
+        case .kI:
+            // 100 mM (K loss) → orange … 140 mM (normal) → blue
+            let ki = ept?.kI ?? 140.0
+            let t  = max(0, min((ki - 100.0) / 40.0, 1.0))  // 0=depleted → 1=normal
+            let col: Color = t < 0.5
+                ? Color(red: 1.0, green: 0.5 + t, blue: t * 2)     // orange → white
+                : Color(red: 1.0 - (t - 0.5) * 2, green: 1.0 - (t - 0.5), blue: 1.0) // white → blue
+            return (ki, "mM K", col, .clear)
+        }
+    }
+
+    private func voltageColor(_ v: Double) -> Color {
         let lo = -90.0, mid = -65.0, hi = 30.0
         if v <= mid {
             let t = max(0, (v - lo) / (mid - lo))

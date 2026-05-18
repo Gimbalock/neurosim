@@ -39,6 +39,26 @@ final class SimulationViewModel: ObservableObject {
     /// the palette and canvas stay in sync.
     @Published var activeTool: EditorTool = .select
 
+    // MARK: - Neuron canvas color mode
+
+    /// Quantity used to colour neuron circles on the canvas.
+    enum NeuronColorMode: String, CaseIterable, Identifiable {
+        case voltage = "Potentiel V"
+        case atp     = "ATP"
+        case naI     = "[Na]ᵢ"
+        case kI      = "[K]ᵢ"
+        var id: String { rawValue }
+        var unit: String {
+            switch self {
+            case .voltage: return "mV"
+            case .atp:     return "mM"
+            case .naI:     return "mM"
+            case .kI:      return "mM"
+            }
+        }
+    }
+    @Published var neuronColorMode: NeuronColorMode = .voltage
+
     enum Selection: Equatable {
         case none
         case neuron(UUID)
