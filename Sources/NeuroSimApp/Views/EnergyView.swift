@@ -170,6 +170,16 @@ struct EnergyView: View {
                                     set: { vm.network.neurons[idx].energyParams.pumpJmax = $0; vm.objectWillChange.send() }),
                                    unit: "mM/ms", width: 56)
                         mitoHealthControl(idx: idx)
+
+                        // ── Extracellular clamp badge ─────────────────────────
+                        if !vm.network.neurons[idx].energyParams.clampExtracellular {
+                            Label("Ischémie", systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 5))
+                        }
+
                         paramField("J_mito",
                                    value: Binding(
                                     get: { vm.network.neurons[idx].energyParams.mitoJmax },

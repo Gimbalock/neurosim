@@ -20,7 +20,7 @@ struct PlotView: View {
                 Text("Membrane potential V(t)")
                     .font(.headline)
                 Spacer()
-                Stepper(value: $vm.plotWindow, in: 50...2000, step: 50) {
+                Stepper(value: $vm.plotWindow, in: 50...600_000, step: 50) {
                     Text("Window: \(Int(vm.plotWindow)) ms")
                         .font(.caption)
                         .foregroundStyle(.secondary)

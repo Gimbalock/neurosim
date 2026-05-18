@@ -273,7 +273,7 @@ struct ResultsWindowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 NumericSlider(value: $vm.plotWindow,
-                              range: 50...5000,
+                              range: 50...600_000,
                               step: 50,
                               format: "%.0f",
                               unit: "ms",

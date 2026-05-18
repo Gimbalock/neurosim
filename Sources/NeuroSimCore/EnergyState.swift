@@ -77,6 +77,14 @@ public struct EnergyParams: Sendable {
     /// Increasing this slows [Na]_o and [K]_o depletion.
     public var extracellularRatio: Double = 5.0
 
+    // MARK: Extracellular clamping
+    /// When true (default), [Na]_o and [K]_o are held constant — blood/glia
+    /// maintain the extracellular reservoir (physiological in vivo condition).
+    /// When false, extracellular concentrations evolve with ionic flux, scaled
+    /// by extracellularRatio. Use this to model ischemia / no glial buffering
+    /// where concentrations can equalize and reversal potentials collapse to 0.
+    public var clampExtracellular: Bool = true
+
     // MARK: Temperature
     /// Temperature used for Nernst calculations (K).
     public var temperatureK: Double = Nernst.mammalianBodyTemperatureK

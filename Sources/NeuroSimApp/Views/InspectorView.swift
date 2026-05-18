@@ -99,7 +99,7 @@ private struct EmptyInspector: View {
                 .padding(.top, 6)
             NumericSlider(label: nil,
                           value: $vm.plotWindow,
-                          range: 50...2000,
+                          range: 50...600_000,
                           step: 25,
                           format: "%.0f",
                           unit: "ms")
@@ -1101,6 +1101,28 @@ private struct EnergyParamsSection: View {
                     row("Km ATP",   bind(\.pumpKmATP), "mM")
                 }
                 Group {
+                    // ── Extracellular buffering ───────────────────────────────
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Tampon extracellulaire")
+                                .font(.system(size: 11))
+                            Text(neuron.energyParams.clampExtracellular
+                                 ? "Sang/glie actif — [Na]ₒ [K]ₒ constants"
+                                 : "Désactivé — ischémie / sans glie")
+                                .font(.system(size: 9))
+                                .foregroundStyle(neuron.energyParams.clampExtracellular
+                                                 ? Color.secondary : Color.orange)
+                        }
+                        Spacer()
+                        Toggle("", isOn: bind(\.clampExtracellular))
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            .controlSize(.small)
+                    }
+                    row("Vol ratio", bind(\.extracellularRatio), "vol_o/vol_i")
+                }
+
+                Group {
                     Text("Mitochondries").font(.caption).foregroundStyle(.secondary)
 
                     // ── Health % slider ───────────────────────────────────────
@@ -1121,7 +1143,6 @@ private struct EnergyParamsSection: View {
                     row("J_mito",   bind(\.mitoJmax),   "mM/ms")
                     row("Km ADP",   bind(\.mitoKmADP),  "mM")
                     row("Basal",    bind(\.basalATPRate),"mM/ms")
-                    row("Vol ratio",bind(\.extracellularRatio), "vol_o/vol_i")
                 }
             }
         }

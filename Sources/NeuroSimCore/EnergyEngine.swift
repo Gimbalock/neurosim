@@ -106,19 +106,26 @@ public enum EnergyEngine {
             gatePtr = end
         }
 
-        // ── 2. Δconcentration from ionic currents (intracellular only) ───────────
-        //    [Na]_o and [K]_o are held constant — maintained by blood/glia in vivo.
-        //    Only intracellular concentrations evolve with AP activity.
-        //
+        // ── 2. Δconcentration from ionic currents ────────────────────────────────
         //    ΔC [mM] = -I[µA/cm²] · area[cm²] · dt[ms] · 1e-6 / (F[C/mol] · vol[L])
         //    Sign: inward Na (iNa < 0) → [Na]_i rises; outward K (iK > 0) → [K]_i falls.
         let ionConv = area * dt * 1e-6 / (Nernst.F * max(volI, 1e-18))
 
         var naI = es.naI - iNa * ionConv
         var kI  = es.kI  - iK  * ionConv
-        // naO and kO are physiologically clamped (blood / astrocyte buffering).
-        let naO = es.naO   // constant
-        let kO  = es.kO    // constant
+
+        // Extracellular: clamped (blood/glia) or free (ischemia / no buffering).
+        // When free, ions leaving the cell enter the extracellular space scaled by
+        // vol_i / vol_o = 1 / extracellularRatio (conservation of moles).
+        var naO = es.naO
+        var kO  = es.kO
+        if !p.clampExtracellular {
+            let extR = max(p.extracellularRatio, 0.01)
+            naO += iNa * ionConv / extR   // Na leaving cell → rises outside (sign flips)
+            kO  += iK  * ionConv / extR   // K  leaving cell → rises outside
+            naO  = max(naO, 0.1)
+            kO   = max(kO,  0.1)
+        }
 
         // ── 3. Na/K pump ──────────────────────────────────────────────────────
         let hillNa  = hillCoop(x: max(naI, 0), km: p.pumpKmNa, n: 3)
@@ -130,7 +137,13 @@ public enum EnergyEngine {
         let pumpDt = pumpRate * dt
         naI -= 3.0 * pumpDt     // 3 Na pumped out of cell
         kI  += 2.0 * pumpDt     // 2 K pumped into cell
-        // naO / kO unchanged — extracellular reservoir is infinite in vivo.
+        if !p.clampExtracellular {
+            let extR = max(p.extracellularRatio, 0.01)
+            naO += 3.0 * pumpDt / extR  // 3 Na enter extracellular space
+            kO  -= 2.0 * pumpDt / extR  // 2 K leave extracellular space
+            naO  = max(naO, 0.1)
+            kO   = max(kO,  0.1)
+        }
         var atp = es.atp - pumpDt      // 1 ATP per cycle
         var adp = es.adp + pumpDt
         var pi  = es.pi  + pumpDt
