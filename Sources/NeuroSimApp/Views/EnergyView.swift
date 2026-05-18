@@ -338,7 +338,7 @@ struct EnergyView: View {
         }
     }
 
-    // MARK: - Ligne 2 : ATP consommé / neurone
+    // MARK: - Ligne 2 : Consommation ATP / neurone
 
     @ViewBuilder
     private func rowATPNetwork() -> some View {
@@ -350,46 +350,101 @@ struct EnergyView: View {
             return NetworkBarItem(id: neuron.id, name: neuron.name,
                                   consumed: last.atpConsumed - first.atpConsumed)
         }
+        let total = items.reduce(0.0) { $0 + $1.consumed }
 
         VStack(alignment: .leading, spacing: 6) {
             sectionHeader("Consommation ATP")
             if items.isEmpty {
                 Text("Données insuffisantes").font(.caption).foregroundStyle(.tertiary)
             } else {
-                VStack(spacing: 4) {
-                    ForEach(items) { item in
-                        HStack(spacing: 8) {
-                            Text(item.name)
-                                .font(.system(size: 11, weight: .semibold))
-                                .frame(width: 55, alignment: .leading)
-                            GeometryReader { geo in
-                                let maxVal = items.map(\.consumed).max() ?? 1e-9
-                                let frac   = CGFloat(item.consumed / max(maxVal, 1e-9))
-                                RoundedRectangle(cornerRadius: 3)
-                                    .fill(Color.green.opacity(0.7))
-                                    .frame(width: geo.size.width * frac)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .frame(height: 10)
-                            Text(String(format: "%.5f mM", item.consumed))
-                                .font(.system(size: 10, design: .monospaced))
+                HStack(alignment: .top, spacing: 16) {
+
+                    // ── Graphique en barres verticales ──────────────────────
+                    Chart(items, id: \.id) { item in
+                        BarMark(
+                            x: .value("Neurone", item.name),
+                            y: .value("ATP (mM)", item.consumed),
+                            width: .fixed(36)
+                        )
+                        .foregroundStyle(atpNeuronColor(item.id).gradient)
+                        .cornerRadius(4)
+                        .annotation(position: .top, alignment: .center) {
+                            Text(String(format: "%.4f", item.consumed))
+                                .font(.system(size: 8, design: .monospaced))
                                 .foregroundStyle(.secondary)
-                                .frame(width: 115, alignment: .trailing)
                         }
                     }
-                    if items.count > 1 {
+                    .chartYAxis {
+                        AxisMarks(values: .automatic(desiredCount: 3)) {
+                            AxisGridLine().foregroundStyle(Color.secondary.opacity(0.2))
+                            AxisValueLabel()
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks {
+                            AxisValueLabel()
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                    }
+                    .frame(minWidth: 80, idealWidth: CGFloat(items.count) * 72, maxWidth: 400)
+                    .frame(height: 130)
+
+                    // ── Tableau résumé ──────────────────────────────────────
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(items) { item in
+                            let pct = total > 1e-12 ? item.consumed / total * 100 : 0
+                            HStack(spacing: 8) {
+                                // Pastille couleur
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(atpNeuronColor(item.id))
+                                    .frame(width: 10, height: 10)
+                                Text(item.name)
+                                    .font(.system(size: 11, weight: .semibold))
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 1) {
+                                    Text(String(format: "%.5f mM", item.consumed))
+                                        .font(.system(size: 10, design: .monospaced))
+                                    Text(String(format: "%.1f %%", pct))
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                         Divider()
-                        let total = items.reduce(0.0) { $0 + $1.consumed }
                         HStack {
-                            Text("Total réseau").font(.system(size: 11, weight: .semibold))
+                            Image(systemName: "sum")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                            Text("Total réseau")
+                                .font(.system(size: 11, weight: .bold))
                             Spacer()
                             Text(String(format: "%.5f mM", total))
-                                .font(.system(size: 11, design: .monospaced))
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
                         }
                     }
+                    .padding(10)
+                    .background(Color.secondary.opacity(0.06),
+                                in: RoundedRectangle(cornerRadius: 8))
+                    .frame(minWidth: 180, maxWidth: 280)
                 }
             }
         }
+    }
+
+    /// Couleur assignée par index de neurone dans le réseau.
+    private func atpNeuronColor(_ id: UUID) -> Color {
+        let palette: [Color] = [
+            Color(hue: 0.60, saturation: 0.55, brightness: 0.85),  // bleu acier
+            Color(hue: 0.08, saturation: 0.58, brightness: 0.88),  // orange
+            Color(hue: 0.38, saturation: 0.55, brightness: 0.78),  // vert sauge
+            Color(hue: 0.85, saturation: 0.50, brightness: 0.84),  // rose
+            Color(hue: 0.15, saturation: 0.58, brightness: 0.84),  // ambre
+            Color(hue: 0.52, saturation: 0.52, brightness: 0.80),  // teal
+        ]
+        let idx = vm.network.neurons.firstIndex(where: { $0.id == id }) ?? 0
+        return palette[idx % palette.count]
     }
 
     // MARK: - Ligne 3 : Chiffres clefs (liste compacte)
