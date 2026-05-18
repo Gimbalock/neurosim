@@ -99,8 +99,8 @@ private struct EmptyInspector: View {
                 .padding(.top, 6)
             NumericSlider(label: nil,
                           value: $vm.plotWindow,
-                          range: 50...600_000,
-                          step: 25,
+                          range: 50...60_000,
+                          step: 500,
                           format: "%.0f",
                           unit: "ms")
         }
