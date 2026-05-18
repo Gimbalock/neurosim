@@ -274,11 +274,13 @@ struct EnergyView: View {
                 }
 
                 // ── Ion concentrations ─────────────────────────────────────
+                // yMin = 0 so bars are always visible regardless of how far
+                // [Na]i rises or [K]i falls (e.g. during ischaemia / SD)
                 gaugeSection("Ion concentrations") {
                     MiniGauge(spec: GaugeSpec(id: "naI", label: "[Na]ᵢ", unit: "mM",
-                        value: last.naI, yMin: 10,  yMax: 30,  refValue: 15,  color: cNaI))
+                        value: last.naI, yMin: 0, yMax: 30,  refValue: 15,  color: cNaI))
                     MiniGauge(spec: GaugeSpec(id: "kI",  label: "[K]ᵢ",  unit: "mM",
-                        value: last.kI,  yMin: 100, yMax: 145, refValue: 140, color: cKI))
+                        value: last.kI,  yMin: 0, yMax: 145, refValue: 140, color: cKI))
                 }
 
                 // ── ATP ────────────────────────────────────────────────────
