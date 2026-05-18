@@ -39,11 +39,12 @@ private struct MiniGauge: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Value above
+            // Value above — fixed width centres it over the chart frame
             Text(formatted)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundStyle(spec.color)
-                .frame(height: 20)
+                .frame(width: 68, height: 20, alignment: .center)
+                .multilineTextAlignment(.center)
 
             Chart {
                 BarMark(
@@ -70,15 +71,18 @@ private struct MiniGauge: View {
             }
             .frame(width: 68, height: 110)
 
-            // Label + unit below
+            // Label + unit below — same fixed width, centred
             VStack(spacing: 1) {
                 Text(spec.label)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(spec.color)
+                    .multilineTextAlignment(.center)
                 Text(spec.unit)
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
+            .frame(width: 68, alignment: .center)
             .padding(.top, 3)
         }
     }
