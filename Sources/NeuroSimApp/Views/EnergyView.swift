@@ -63,12 +63,10 @@ private struct MiniGauge: View {
             }
             .chartYScale(domain: spec.yMin...spec.yMax)
             .chartXAxis(.hidden)
-            .chartYAxis {
-                AxisMarks(values: axisValues) {
-                    AxisGridLine().foregroundStyle(Color.secondary.opacity(0.25))
-                    AxisValueLabel().font(.system(size: 7))
-                }
-            }
+            // Hide y-axis labels: their variable width (e.g. "0.01088" vs "0")
+            // shifts the plot area left inside the fixed 68 px frame, misaligning
+            // the bar centre with the label below. Hidden axis → bar always centred.
+            .chartYAxis(.hidden)
             .frame(width: 68, height: 110)
 
             // Label + unit below — fixed width AND fixed height so all
@@ -94,11 +92,6 @@ private struct MiniGauge: View {
     private var barStart: Double { spec.invertedFromZero ? 0.0 : spec.yMin }
     /// Bar end: clamped value always.
     private var barEnd:   Double { clamped }
-
-    /// Axis marks: for inverted gauges show 0 explicitly.
-    private var axisValues: [Double] {
-        spec.invertedFromZero ? [spec.yMin, 0.0] : [spec.yMin, spec.yMax]
-    }
 
     private var formatted: String {
         let v = spec.value
