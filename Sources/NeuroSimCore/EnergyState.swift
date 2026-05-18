@@ -72,10 +72,16 @@ public struct EnergyParams: Sendable {
     public var basalATPRate: Double = 0.0004  // mM/ms
 
     // MARK: Geometry
-    /// Ratio of extracellular volume to intracellular volume (vol_o / vol_i).
-    /// Typical cortical tissue ≈ 0.2 ECS fraction → ratio ≈ 0.25.
-    /// Increasing this slows [Na]_o and [K]_o depletion.
-    public var extracellularRatio: Double = 5.0
+    /// Fraction of tissue volume occupied by the extracellular space (0–1).
+    /// Cortical tissue ≈ 0.20 (20 %).  Determines how fast [Na]_o / [K]_o
+    /// shift when clampExtracellular is false.
+    /// Internally converted to vol_o/vol_i ratio = ecsFraction / (1 − ecsFraction).
+    public var ecsFraction: Double = 0.20   // 20 % — typical cortex
+
+    /// vol_o / vol_i derived from ecsFraction.  Used by EnergyEngine.
+    public var extracellularRatio: Double {
+        get { let f = max(1e-6, min(ecsFraction, 0.9999)); return f / (1.0 - f) }
+    }
 
     // MARK: Extracellular clamping
     /// When true (default), [Na]_o and [K]_o are held constant — blood/glia

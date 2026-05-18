@@ -245,11 +245,11 @@ struct EnergyView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 12) {
-                    // Nernst group
+                    // Nernst group — domains include 0 (collapse endpoint)
                     MiniGauge(spec: GaugeSpec(id: "eNa", label: "E_Na", unit: "mV",
-                        value: last.eNa, yMin: 50, yMax: 80, refValue: 67, color: .blue))
+                        value: last.eNa, yMin: 0, yMax: 80, refValue: 67, color: .blue))
                     MiniGauge(spec: GaugeSpec(id: "eK", label: "E_K", unit: "mV",
-                        value: last.eK, yMin: -110, yMax: -80, refValue: -98, color: .orange))
+                        value: last.eK, yMin: -110, yMax: 0, refValue: -98, color: .orange))
 
                     gaugeGroupDivider()
 
@@ -305,43 +305,37 @@ struct EnergyView: View {
                     Text("Données insuffisantes — lancez la simulation")
                         .font(.caption).foregroundStyle(.tertiary)
                 } else {
-                    Chart(items) { item in
-                        BarMark(
-                            x: .value("Neurone", item.name),
-                            y: .value("ATP (mM)", item.consumed)
-                        )
-                        .foregroundStyle(by: .value("Neurone", item.name))
-                        .annotation(position: .top, spacing: 4) {
-                            Text(String(format: "%.5f mM", item.consumed))
-                                .font(.system(size: 9, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .chartXAxis {
-                        AxisMarks { value in
-                            AxisValueLabel {
-                                if let name = value.as(String.self) {
-                                    Text(name)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .lineLimit(1)
+                    VStack(spacing: 4) {
+                        ForEach(items) { item in
+                            HStack(spacing: 8) {
+                                Text(item.name)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .frame(width: 60, alignment: .leading)
+                                GeometryReader { geo in
+                                    let maxVal = items.map(\.consumed).max() ?? 1e-9
+                                    let frac   = CGFloat(item.consumed / max(maxVal, 1e-9))
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.green.opacity(0.7))
+                                        .frame(width: geo.size.width * frac)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                 }
+                                .frame(height: 10)
+                                Text(String(format: "%.5f mM", item.consumed))
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 110, alignment: .trailing)
                             }
                         }
+                        Divider()
+                        let total = items.reduce(0.0) { $0 + $1.consumed }
+                        HStack {
+                            Text("Total réseau")
+                                .font(.system(size: 11, weight: .semibold))
+                            Spacer()
+                            Text(String(format: "%.5f mM", total))
+                                .font(.system(size: 11, design: .monospaced))
+                        }
                     }
-                    .chartYAxisLabel("ATP consommé (mM)", alignment: .center)
-                    .chartLegend(.hidden)
-                    .frame(height: max(100, CGFloat(items.count) * 44 + 40))
-
-                    // Total réseau
-                    let total = items.reduce(0.0) { $0 + $1.consumed }
-                    HStack {
-                        Text("Total réseau")
-                            .font(.system(size: 12, weight: .semibold))
-                        Spacer()
-                        Text(String(format: "%.5f mM", total))
-                            .font(.system(size: 12, design: .monospaced))
-                    }
-                    .padding(.top, 4)
                 }
             }
         }

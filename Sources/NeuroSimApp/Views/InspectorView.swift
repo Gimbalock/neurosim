@@ -1119,7 +1119,19 @@ private struct EnergyParamsSection: View {
                             .labelsHidden()
                             .controlSize(.small)
                     }
-                    row("Vol ratio", bind(\.extracellularRatio), "vol_o/vol_i")
+                    // Fraction ECS slider (0–50 %)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text("Fraction ECS")
+                                .font(.system(size: 11))
+                                .frame(width: 82, alignment: .leading)
+                            Spacer()
+                            Text(String(format: "%.0f %%",
+                                        neuron.energyParams.ecsFraction * 100))
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                        Slider(value: bind(\.ecsFraction), in: 0.05...0.50, step: 0.01)
+                    }
                 }
 
                 Group {
