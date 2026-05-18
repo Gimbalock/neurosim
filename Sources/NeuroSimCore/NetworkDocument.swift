@@ -588,6 +588,30 @@ extension ChannelDoc {
             return ChannelDoc(kind: "bk", gMax: bk.gMax, reversal: bk.reversal,
                               gateInfOverrides: bk.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
                               gateTauOverrides: bk.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let ih as HChannel:
+            return ChannelDoc(kind: "ih", gMax: ih.gMax, reversal: ih.reversal,
+                              gateInfOverrides: ih.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: ih.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let can as CANChannel:
+            return ChannelDoc(kind: "ican", gMax: can.gMax, reversal: can.reversal,
+                              gateInfOverrides: can.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: can.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let nap as PersistentSodiumChannel:
+            return ChannelDoc(kind: "persistentSodium", gMax: nap.gMax, reversal: nap.reversal,
+                              gateInfOverrides: nap.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: nap.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let mc as MCurrentChannel:
+            return ChannelDoc(kind: "mCurrent", gMax: mc.gMax, reversal: mc.reversal,
+                              gateInfOverrides: mc.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: mc.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let ia as ATypeChannel:
+            return ChannelDoc(kind: "aType", gMax: ia.gMax, reversal: ia.reversal,
+                              gateInfOverrides: ia.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: ia.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let cal as LTypeCalciumChannel:
+            return ChannelDoc(kind: "lTypeCalcium", gMax: cal.gMax, reversal: cal.reversal,
+                              gateInfOverrides: cal.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: cal.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
         default:
             return ChannelDoc(kind: "leak", gMax: ch.gMax, reversal: ch.reversal)
         }
@@ -637,6 +661,36 @@ extension ChannelDoc {
             let ch = BKChannel(gMax: gMax, reversal: reversal)
             if infs.count == 1 { ch.gateInfOverrides = infs }
             if taus.count == 1 { ch.gateTauOverrides = taus }
+            return ch
+        case "ih":
+            let ch = HChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 1 { ch.gateInfOverrides = infs }
+            if taus.count == 1 { ch.gateTauOverrides = taus }
+            return ch
+        case "ican":
+            let ch = CANChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 1 { ch.gateInfOverrides = infs }
+            if taus.count == 1 { ch.gateTauOverrides = taus }
+            return ch
+        case "persistentSodium":
+            let ch = PersistentSodiumChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 1 { ch.gateInfOverrides = infs }
+            if taus.count == 1 { ch.gateTauOverrides = taus }
+            return ch
+        case "mCurrent":
+            let ch = MCurrentChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 1 { ch.gateInfOverrides = infs }
+            if taus.count == 1 { ch.gateTauOverrides = taus }
+            return ch
+        case "aType":
+            let ch = ATypeChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 2 { ch.gateInfOverrides = infs }
+            if taus.count == 2 { ch.gateTauOverrides = taus }
+            return ch
+        case "lTypeCalcium":
+            let ch = LTypeCalciumChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 2 { ch.gateInfOverrides = infs }
+            if taus.count == 2 { ch.gateTauOverrides = taus }
             return ch
         default: // "leak" or unknown
             return LeakChannel(gMax: gMax, reversal: reversal)

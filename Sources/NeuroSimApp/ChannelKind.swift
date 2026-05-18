@@ -18,6 +18,12 @@ enum ChannelKind: String, CaseIterable, Identifiable, Hashable {
     case calciumT    = "Ca²⁺ T-type"
     case sk          = "K_SK (Ca²⁺)"
     case bk          = "K_BK (Ca²⁺ + V)"
+    case ih          = "I_h (HCN)"
+    case ican        = "I_CAN (Ca²⁺)"
+    case persistentNa = "Na_P (persistant)"
+    case mCurrent    = "K_M (M-current)"
+    case aType       = "K_A (A-type)"
+    case calciumL    = "Ca²⁺ L-type"
 
     var id: String { rawValue }
 
@@ -30,6 +36,12 @@ enum ChannelKind: String, CaseIterable, Identifiable, Hashable {
         case .calciumT:  return "waveform.path.ecg"
         case .sk:        return "circle.grid.2x1.fill"
         case .bk:        return "circle.grid.2x2.fill"
+        case .ih:        return "arrow.up.arrow.down.circle"
+        case .ican:      return "flame.fill"
+        case .persistentNa: return "bolt.circle.fill"
+        case .mCurrent:  return "dial.low.fill"
+        case .aType:     return "waveform"
+        case .calciumL:  return "waveform.path.ecg.rectangle"
         }
     }
 
@@ -42,6 +54,12 @@ enum ChannelKind: String, CaseIterable, Identifiable, Hashable {
         case .calciumT:  return TTypeCalciumChannel()
         case .sk:        return SKChannel()
         case .bk:        return BKChannel()
+        case .ih:        return HChannel()
+        case .ican:      return CANChannel()
+        case .persistentNa: return PersistentSodiumChannel()
+        case .mCurrent:  return MCurrentChannel()
+        case .aType:     return ATypeChannel()
+        case .calciumL:  return LTypeCalciumChannel()
         }
     }
 }
