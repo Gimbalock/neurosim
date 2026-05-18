@@ -2,24 +2,23 @@
 //  EnergyView.swift
 //  NeuroSimApp
 //
-//  Metabolic energy dashboard — v3:
+//  Metabolic energy dashboard — v4:
 //
-//   ┌─── control bar ──────────────────────────────────────────────────────┐
-//   ├─── Section A: MiniGauge grid (7 × individual Y scales) ──────────────┤
-//   │   Valeur en gros au-dessus · barre · label/unité en dessous          │
-//   ├──────────────────────────────────────────────────────────────────────┤
-//   │  ┌── Section B: ATP consommé / neurone (bar chart) ──────────────────┤
-//   ├──────────────────────────────────────────────────────────────────────┤
-//   │  Section C: Coût énergétique — grand panel                           │
-//   ├──────────────────────────────────────────────────────────────────────┤
-//   │  Section D: Pompe Na/K — demande · débit réel · déficit (timeline)   │
-//   └──────────────────────────────────────────────────────────────────────┘
+//   ┌─── control bar ──────────────────────────────────────────────────────────┐
+//   ├─── Ligne 1 (scroll horizontal) ──────────────────────────────────────────┤
+//   │  E_Na  E_K↓  [Na]ᵢ  [K]ᵢ  [ATP]  [ADP]  [Pi]  [Ca²⁺]ᵢ  │ Demande Débit Déficit
+//   │  E_K : barre part de 0 vers le bas — plus courte = moins négatif = danger│
+//   ├──────────────────────────────────────────────────────────────────────────┤
+//   │  Ligne 2 : ATP consommé / neurone (une barre par neurone)                │
+//   ├──────────────────────────────────────────────────────────────────────────┤
+//   │  Ligne 3 : Chiffres clefs (liste compacte)                               │
+//   └──────────────────────────────────────────────────────────────────────────┘
 
 import SwiftUI
 import Charts
 import NeuroSimCore
 
-// MARK: - MiniGauge
+// MARK: - GaugeSpec / MiniGauge
 
 private struct GaugeSpec {
     let id: String
@@ -30,27 +29,27 @@ private struct GaugeSpec {
     let yMax: Double
     let refValue: Double?
     let color: Color
+    /// When true the bar goes from 0 downward (for E_K: 0 at top, negative below).
+    var invertedFromZero: Bool = false
 }
 
-/// Vertical bar gauge with its own Y domain.
-/// Current value is displayed ABOVE the chart to avoid any in-chart overlap.
+/// Vertical bar gauge — value displayed above the chart, no in-chart annotation.
 private struct MiniGauge: View {
     let spec: GaugeSpec
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── Current value — large, outside the chart ──────────────────
+            // Value above
             Text(formatted)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundStyle(spec.color)
                 .frame(height: 20)
 
-            // ── Bar chart ─────────────────────────────────────────────────
             Chart {
                 BarMark(
                     x: .value("", spec.label),
-                    yStart: .value("", spec.yMin),
-                    yEnd: .value("", clamped)
+                    yStart: .value("", barStart),
+                    yEnd:   .value("", barEnd)
                 )
                 .foregroundStyle(spec.color.gradient)
 
@@ -63,15 +62,14 @@ private struct MiniGauge: View {
             .chartYScale(domain: spec.yMin...spec.yMax)
             .chartXAxis(.hidden)
             .chartYAxis {
-                AxisMarks(values: [spec.yMin, spec.yMax]) {
+                AxisMarks(values: axisValues) {
                     AxisGridLine().foregroundStyle(Color.secondary.opacity(0.25))
-                    AxisValueLabel()
-                        .font(.system(size: 7))
+                    AxisValueLabel().font(.system(size: 7))
                 }
             }
             .frame(width: 68, height: 110)
 
-            // ── Label + unit below ────────────────────────────────────────
+            // Label + unit below
             VStack(spacing: 1) {
                 Text(spec.label)
                     .font(.system(size: 11, weight: .semibold))
@@ -86,15 +84,26 @@ private struct MiniGauge: View {
 
     private var clamped: Double { max(spec.yMin, min(spec.yMax, spec.value)) }
 
+    /// Bar start: 0 for inverted (E_K), yMin otherwise.
+    private var barStart: Double { spec.invertedFromZero ? 0.0 : spec.yMin }
+    /// Bar end: clamped value always.
+    private var barEnd:   Double { clamped }
+
+    /// Axis marks: for inverted gauges show 0 explicitly.
+    private var axisValues: [Double] {
+        spec.invertedFromZero ? [spec.yMin, 0.0] : [spec.yMin, spec.yMax]
+    }
+
     private var formatted: String {
         let v = spec.value
-        if abs(v) < 1   { return String(format: "%.3f", v) }
-        if abs(v) < 10  { return String(format: "%.2f", v) }
+        if abs(v) < 0.01 { return String(format: "%.4f", v) }
+        if abs(v) < 1    { return String(format: "%.3f", v) }
+        if abs(v) < 10   { return String(format: "%.2f", v) }
         return String(format: "%.1f", v)
     }
 }
 
-// MARK: - Network bar item (for Section B)
+// MARK: - NetworkBarItem
 
 private struct NetworkBarItem: Identifiable {
     let id: UUID
@@ -106,7 +115,6 @@ private struct NetworkBarItem: Identifiable {
 
 struct EnergyView: View {
     @EnvironmentObject var vm: SimulationViewModel
-
     @State private var selectedNeuronID: UUID? = nil
 
     var body: some View {
@@ -145,62 +153,57 @@ struct EnergyView: View {
                             Text(n.name).tag(Optional(n.id))
                         }
                     }
-                    .labelsHidden()
-                    .frame(width: 120)
+                    .labelsHidden().frame(width: 120)
                 }
-
                 Divider().frame(height: 24)
 
                 if let nid = selectedNeuronID,
                    let idx = vm.network.neurons.firstIndex(where: { $0.id == nid }) {
                     Toggle("Modèle énergie", isOn: Binding(
                         get: { vm.network.neurons[idx].energyParams.enabled },
-                        set: { v in
-                            vm.network.neurons[idx].energyParams.enabled = v
-                            vm.objectWillChange.send()
-                        }))
-                    .toggleStyle(.switch)
-                    .font(.system(size: 12))
+                        set: { v in vm.network.neurons[idx].energyParams.enabled = v
+                               vm.objectWillChange.send() }))
+                    .toggleStyle(.switch).font(.system(size: 12))
 
                     if vm.network.neurons[idx].energyParams.enabled {
                         Divider().frame(height: 24)
-                        paramField("J_pump max",
-                                   value: Binding(
-                                    get: { vm.network.neurons[idx].energyParams.pumps.first?.jMax ?? 0.012 },
-                                    set: { v in
-                                        if !vm.network.neurons[idx].energyParams.pumps.isEmpty {
-                                            vm.network.neurons[idx].energyParams.pumps[0].jMax = v
-                                        }
-                                        vm.objectWillChange.send()
-                                    }),
-                                   unit: "mM/ms", width: 56)
+                        // Na/K pump jMax from first pump
+                        if let nakIdx = vm.network.neurons[idx].energyParams.pumps
+                            .firstIndex(where: { $0.ion == "Na" }) {
+                            paramField("J_pump max",
+                                       value: Binding(
+                                        get: { vm.network.neurons[idx].energyParams.pumps[nakIdx].jMax },
+                                        set: { vm.network.neurons[idx].energyParams.pumps[nakIdx].jMax = $0
+                                               vm.objectWillChange.send() }),
+                                       unit: "mM/ms", width: 56)
+                        }
                         mitoHealthControl(idx: idx)
+                        paramField("J_mito",
+                                   value: Binding(
+                                    get: { vm.network.neurons[idx].energyParams.mitoJmax },
+                                    set: { vm.network.neurons[idx].energyParams.mitoJmax = $0
+                                           vm.objectWillChange.send() }),
+                                   unit: "mM/ms", width: 56)
+                        paramField("[ATP]₀",
+                                   value: Binding(
+                                    get: { vm.network.neurons[idx].energyParams.atp0 },
+                                    set: { vm.network.neurons[idx].energyParams.atp0 = $0
+                                           vm.objectWillChange.send() }),
+                                   unit: "mM", width: 44)
 
-                        // ── Extracellular clamp badge ─────────────────────────
                         if !vm.network.neurons[idx].energyParams.clampExtracellular {
                             Label("Ischémie", systemImage: "exclamationmark.triangle.fill")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.orange)
                                 .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 5))
+                                .background(.orange.opacity(0.15),
+                                            in: RoundedRectangle(cornerRadius: 5))
                         }
-
-                        paramField("J_mito",
-                                   value: Binding(
-                                    get: { vm.network.neurons[idx].energyParams.mitoJmax },
-                                    set: { vm.network.neurons[idx].energyParams.mitoJmax = $0; vm.objectWillChange.send() }),
-                                   unit: "mM/ms", width: 56)
-                        paramField("[ATP]₀",
-                                   value: Binding(
-                                    get: { vm.network.neurons[idx].energyParams.atp0 },
-                                    set: { vm.network.neurons[idx].energyParams.atp0 = $0; vm.objectWillChange.send() }),
-                                   unit: "mM", width: 44)
                     }
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 12).padding(.vertical, 8)
         }
         .frame(height: 44)
     }
@@ -211,139 +214,151 @@ struct EnergyView: View {
     private func mainContent(pts: [SimulationViewModel.EnergyPlotPoint],
                              neuron: HHNeuron) -> some View {
         ScrollView {
-            VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
 
-                // ── A: MiniGauge snapshot ─────────────────────────────────
-                sectionA(pts: pts)
+                // ── Ligne 1 : gauges + pompe ──────────────────────────────
+                rowGauges(pts: pts)
                     .padding(.horizontal, 14)
                     .padding(.top, 12)
 
                 Divider().padding(.vertical, 8)
 
-                // ── B: Network ATP bar chart ──────────────────────────────
-                sectionB()
+                // ── Ligne 2 : ATP consommé / neurone ─────────────────────
+                rowATPNetwork()
                     .padding(.horizontal, 14)
 
                 Divider().padding(.vertical, 8)
 
-                // ── C: Cost summary — full width, large text ──────────────
-                sectionC(pts: pts, neuron: neuron)
-                    .padding(.horizontal, 14)
-
-                Divider().padding(.vertical, 8)
-
-                // ── D: Pump demand vs rate vs deficit ─────────────────────
-                sectionD(pts: pts)
+                // ── Ligne 3 : chiffres clefs ──────────────────────────────
+                rowKeyFigures(pts: pts, neuron: neuron)
                     .padding(.horizontal, 14)
                     .padding(.bottom, 14)
             }
         }
     }
 
-    // MARK: - Section A: MiniGauge snapshot
+    // MARK: - Ligne 1 : Gauges + pompe instantanée
 
     @ViewBuilder
-    private func sectionA(pts: [SimulationViewModel.EnergyPlotPoint]) -> some View {
+    private func rowGauges(pts: [SimulationViewModel.EnergyPlotPoint]) -> some View {
         let last = pts.last!
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Instantané — snapshot courant")
+        let pumpDemand  = last.pumpDemand
+        let pumpRate    = last.pumpRate
+        let pumpDeficit = max(pumpDemand - pumpRate, 0)
+        let pumpMax     = max(pumpDemand * 1.2, 0.001)  // dynamic Y ceiling
 
+        VStack(alignment: .leading, spacing: 6) {
+            sectionHeader("Instantané — snapshot courant")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 12) {
-                    // Nernst group — domains include 0 (collapse endpoint)
+
+                    // ── Nernst ────────────────────────────────────────────
                     MiniGauge(spec: GaugeSpec(id: "eNa", label: "E_Na", unit: "mV",
                         value: last.eNa, yMin: 0, yMax: 80, refValue: 67, color: .blue))
+
+                    // E_K : bar from 0 downward — shorter = less negative = danger
                     MiniGauge(spec: GaugeSpec(id: "eK", label: "E_K", unit: "mV",
-                        value: last.eK, yMin: -110, yMax: 0, refValue: -98, color: .orange))
+                        value: last.eK, yMin: -110, yMax: 0, refValue: -98, color: .orange,
+                        invertedFromZero: true))
 
-                    gaugeGroupDivider()
+                    gaugeDiv()
 
-                    // Ion concentrations
+                    // ── Concentrations ioniques ───────────────────────────
                     MiniGauge(spec: GaugeSpec(id: "naI", label: "[Na]ᵢ", unit: "mM",
                         value: last.naI, yMin: 10, yMax: 30, refValue: 15, color: .blue))
-                    MiniGauge(spec: GaugeSpec(id: "kI", label: "[K]ᵢ", unit: "mM",
-                        value: last.kI, yMin: 100, yMax: 145, refValue: 140, color: .orange))
+                    MiniGauge(spec: GaugeSpec(id: "kI",  label: "[K]ᵢ",  unit: "mM",
+                        value: last.kI,  yMin: 100, yMax: 145, refValue: 140, color: .orange))
 
-                    gaugeGroupDivider()
+                    gaugeDiv()
 
-                    // Metabolites
+                    // ── Métabolites ───────────────────────────────────────
                     MiniGauge(spec: GaugeSpec(id: "atp", label: "[ATP]", unit: "mM",
-                        value: last.atp, yMin: 0, yMax: 3, refValue: 2, color: .green))
+                        value: last.atp, yMin: 0, yMax: 3,   refValue: 2,   color: .green))
                     MiniGauge(spec: GaugeSpec(id: "adp", label: "[ADP]", unit: "mM",
                         value: last.adp, yMin: 0, yMax: 0.5, refValue: 0.2, color: .yellow))
-                    MiniGauge(spec: GaugeSpec(id: "pi", label: "[Pi]", unit: "mM",
-                        value: last.pi, yMin: 0, yMax: 5, refValue: 2.5, color: .purple))
+                    MiniGauge(spec: GaugeSpec(id: "pi",  label: "[Pi]",  unit: "mM",
+                        value: last.pi,  yMin: 0, yMax: 5,   refValue: 2.5, color: .purple))
 
-                    gaugeGroupDivider()
+                    gaugeDiv()
 
-                    // Calcium
+                    // ── Calcium ───────────────────────────────────────────
                     MiniGauge(spec: GaugeSpec(id: "caI", label: "[Ca²⁺]ᵢ", unit: "µM",
-                        value: last.caI * 1000,   // display in µM
-                        yMin: 0, yMax: 2.0, refValue: 0.1,
-                        color: .cyan))
+                        value: last.caI * 1000,
+                        yMin: 0, yMax: 2.0, refValue: 0.1, color: .cyan))
+
+                    gaugeDiv()
+
+                    // ── Pompe Na/K — snapshot instantané ─────────────────
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Pompe Na/K")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        HStack(alignment: .top, spacing: 8) {
+                            MiniGauge(spec: GaugeSpec(id: "pDem", label: "Demande",
+                                unit: "mM/ms", value: pumpDemand,
+                                yMin: 0, yMax: pumpMax, refValue: nil, color: .orange))
+                            MiniGauge(spec: GaugeSpec(id: "pRate", label: "Débit",
+                                unit: "mM/ms", value: pumpRate,
+                                yMin: 0, yMax: pumpMax, refValue: nil, color: .green))
+                            MiniGauge(spec: GaugeSpec(id: "pDef", label: "Déficit",
+                                unit: "mM/ms", value: pumpDeficit,
+                                yMin: 0, yMax: pumpMax, refValue: nil, color: .red))
+                        }
+                    }
                 }
                 .padding(.vertical, 6)
             }
         }
     }
 
-    @ViewBuilder private func gaugeGroupDivider() -> some View {
-        Divider().frame(width: 1, height: 160)
-            .padding(.horizontal, 2)
+    @ViewBuilder private func gaugeDiv() -> some View {
+        Divider().frame(width: 1, height: 150).padding(.horizontal, 2)
     }
 
-    // MARK: - Section B: Network ATP bar chart
+    // MARK: - Ligne 2 : ATP consommé / neurone
 
     @ViewBuilder
-    private func sectionB() -> some View {
+    private func rowATPNetwork() -> some View {
         let energyNeurons = vm.network.neurons.filter { $0.energyParams.enabled }
+        let items: [NetworkBarItem] = energyNeurons.compactMap { neuron in
+            guard let nPts = vm.energyTraces[neuron.id],
+                  let first = nPts.first, let last = nPts.last
+            else { return nil }
+            return NetworkBarItem(id: neuron.id, name: neuron.name,
+                                  consumed: last.atpConsumed - first.atpConsumed)
+        }
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             sectionHeader("ATP consommé — par neurone")
-
-            if energyNeurons.isEmpty {
-                Text("Aucun neurone avec énergie activée")
-                    .font(.caption).foregroundStyle(.tertiary)
+            if items.isEmpty {
+                Text("Données insuffisantes").font(.caption).foregroundStyle(.tertiary)
             } else {
-                // Build items outside chart builder
-                let items: [NetworkBarItem] = energyNeurons.compactMap { neuron in
-                    guard let nPts = vm.energyTraces[neuron.id],
-                          let first = nPts.first, let last = nPts.last
-                    else { return nil }
-                    return NetworkBarItem(id: neuron.id, name: neuron.name,
-                                         consumed: last.atpConsumed - first.atpConsumed)
-                }
-
-                if items.isEmpty {
-                    Text("Données insuffisantes — lancez la simulation")
-                        .font(.caption).foregroundStyle(.tertiary)
-                } else {
-                    VStack(spacing: 4) {
-                        ForEach(items) { item in
-                            HStack(spacing: 8) {
-                                Text(item.name)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .frame(width: 60, alignment: .leading)
-                                GeometryReader { geo in
-                                    let maxVal = items.map(\.consumed).max() ?? 1e-9
-                                    let frac   = CGFloat(item.consumed / max(maxVal, 1e-9))
-                                    RoundedRectangle(cornerRadius: 3)
-                                        .fill(Color.green.opacity(0.7))
-                                        .frame(width: geo.size.width * frac)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .frame(height: 10)
-                                Text(String(format: "%.5f mM", item.consumed))
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 110, alignment: .trailing)
+                VStack(spacing: 4) {
+                    ForEach(items) { item in
+                        HStack(spacing: 8) {
+                            Text(item.name)
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 55, alignment: .leading)
+                            GeometryReader { geo in
+                                let maxVal = items.map(\.consumed).max() ?? 1e-9
+                                let frac   = CGFloat(item.consumed / max(maxVal, 1e-9))
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.green.opacity(0.7))
+                                    .frame(width: geo.size.width * frac)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            .frame(height: 10)
+                            Text(String(format: "%.5f mM", item.consumed))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 115, alignment: .trailing)
                         }
+                    }
+                    if items.count > 1 {
                         Divider()
                         let total = items.reduce(0.0) { $0 + $1.consumed }
                         HStack {
-                            Text("Total réseau")
-                                .font(.system(size: 11, weight: .semibold))
+                            Text("Total réseau").font(.system(size: 11, weight: .semibold))
                             Spacer()
                             Text(String(format: "%.5f mM", total))
                                 .font(.system(size: 11, design: .monospaced))
@@ -354,183 +369,75 @@ struct EnergyView: View {
         }
     }
 
-    // MARK: - Section C: Cost per spike — large panel
+    // MARK: - Ligne 3 : Chiffres clefs (liste compacte)
 
     @ViewBuilder
-    private func sectionC(pts: [SimulationViewModel.EnergyPlotPoint],
-                           neuron: HHNeuron) -> some View {
-        let spikeCount = countSpikes(neuronID: neuron.id)
-        let first = pts.first!
-        let last  = pts.last!
-        let totalATP = last.atpConsumed - first.atpConsumed
-        let somaVol  = neuron.compartments
+    private func rowKeyFigures(pts: [SimulationViewModel.EnergyPlotPoint],
+                               neuron: HHNeuron) -> some View {
+        let spikeCount  = countSpikes(neuronID: neuron.id)
+        let first       = pts.first!
+        let last        = pts.last!
+        let totalATP    = last.atpConsumed - first.atpConsumed
+        let somaVol     = neuron.compartments
             .first(where: { $0.id == neuron.somaCompartmentID })?.volume ?? 1e-12
 
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeader("Coût énergétique — résumé")
+        VStack(alignment: .leading, spacing: 6) {
+            sectionHeader("Chiffres clefs")
 
-            if spikeCount > 0 {
-                let costPerSpike = totalATP / Double(spikeCount)
-                let molecules    = costPerSpike * 1e-3 * somaVol * 6.022e23
-                let log10mol     = molecules > 0 ? log10(molecules) : 0
-                let mantissa     = molecules / pow(10, floor(log10mol))
-                let exponent     = Int(floor(log10mol))
+            let costPerSpike: Double = spikeCount > 0 ? totalATP / Double(spikeCount) : 0
+            let molecules: Double = costPerSpike * 1e-3 * somaVol * 6.022e23
 
-                // Top row: spike count + ATP/spike
-                HStack(spacing: 20) {
-                    bigCostCard(
-                        icon: "waveform.path.ecg",
-                        title: "Potentiels d'action",
-                        value: "\(spikeCount)",
-                        unit: "PA",
-                        color: .blue)
+            // Two-column grid
+            let rows: [(String, String)] = [
+                ("Potentiels d'action",  spikeCount > 0 ? "\(spikeCount) PA" : "—"),
+                ("ATP total consommé",   String(format: "%.5f mM", totalATP)),
+                ("ATP / PA",             spikeCount > 0
+                    ? String(format: "%.5f mM", costPerSpike) : "—"),
+                ("Molécules ATP / PA",   spikeCount > 0
+                    ? moleculeString(molecules) : "—"),
+                ("Volume soma",          String(format: "%.0f µm³", somaVol * 1e15)),
+                ("Santé mito",           String(format: "%.0f %%",
+                    neuron.energyParams.mitoHealthPercent)),
+            ]
 
-                    bigCostCard(
-                        icon: "bolt.fill",
-                        title: "ATP par PA",
-                        value: String(format: "%.5f", costPerSpike),
-                        unit: "mM / PA",
-                        color: .green)
-
-                    bigCostCard(
-                        icon: "atom",
-                        title: "Molécules ATP / PA",
-                        value: String(format: "%.1f × 10^%d", mantissa, exponent),
-                        unit: "molécules",
-                        color: .orange)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                      alignment: .leading, spacing: 6) {
+                ForEach(rows, id: \.0) { label, value in
+                    HStack(spacing: 0) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(label)
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                            Text(value)
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(8)
+                    .background(Color.secondary.opacity(0.07),
+                                in: RoundedRectangle(cornerRadius: 7))
                 }
-
-                // Second row: volume + total ATP
-                HStack(spacing: 20) {
-                    bigCostCard(
-                        icon: "cube",
-                        title: "Volume soma",
-                        value: String(format: "%.1f", somaVol * 1e15),
-                        unit: "µm³",
-                        color: .purple)
-
-                    bigCostCard(
-                        icon: "chart.bar.fill",
-                        title: "ATP total consommé",
-                        value: String(format: "%.5f", totalATP),
-                        unit: "mM",
-                        color: .teal)
-                }
-            } else {
-                HStack(spacing: 20) {
-                    bigCostCard(
-                        icon: "chart.bar.fill",
-                        title: "ATP total consommé",
-                        value: String(format: "%.5f", totalATP),
-                        unit: "mM",
-                        color: .teal)
-
-                    bigCostCard(
-                        icon: "cube",
-                        title: "Volume soma",
-                        value: String(format: "%.1f", somaVol * 1e15),
-                        unit: "µm³",
-                        color: .purple)
-                }
-                Text("Aucun potentiel d'action détecté — stimulez le neurone pour obtenir le coût/PA.")
-                    .font(.caption).foregroundStyle(.tertiary)
-                    .padding(.top, 4)
             }
         }
     }
 
-    @ViewBuilder
-    private func bigCostCard(icon: String, title: String, value: String,
-                              unit: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: icon)
-                .font(.system(size: 11))
-                .foregroundStyle(color)
-            Text(value)
-                .font(.system(size: 18, weight: .bold, design: .monospaced))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            Text(unit)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8)
-            .stroke(color.opacity(0.2), lineWidth: 1))
-    }
-
-    // MARK: - Section D: Pump demand vs rate vs deficit
-
-    @ViewBuilder
-    private func sectionD(pts: [SimulationViewModel.EnergyPlotPoint]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("Pompe Na/K — demande · débit réel · déficit")
-            Text("Si les mitochondries sont insuffisantes, le débit réel (vert) tombe sous la demande (orange) → déficit (rouge).")
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-
-            Chart {
-                pumpChartContent(pts: pts)
-            }
-            .chartForegroundStyleScale([
-                "Demande": Color.orange,
-                "Débit":   Color.green,
-                "Déficit": Color.red
-            ])
-            .chartXAxisLabel("Temps (ms)", alignment: .center)
-            .chartYAxisLabel("mM / ms", alignment: .center)
-            .chartLegend(position: .topLeading, alignment: .leading)
-            .frame(height: 160)
-        }
-    }
-
-    @ChartContentBuilder
-    private func pumpChartContent(pts: [SimulationViewModel.EnergyPlotPoint]) -> some ChartContent {
-        let stride = max(1, pts.count / 400)
-        let sampled = stride > 1
-            ? pts.enumerated().compactMap { i, p in i % stride == 0 ? p : nil }
-            : pts
-
-        ForEach(sampled.indices, id: \.self) { i in
-            let p = sampled[i]
-            LineMark(x: .value("t", p.t), y: .value("Demande", p.pumpDemand))
-                .foregroundStyle(by: .value("Série", "Demande"))
-                .lineStyle(.init(lineWidth: 1.5, dash: [4, 3]))
-            LineMark(x: .value("t", p.t), y: .value("Débit", p.pumpRate))
-                .foregroundStyle(by: .value("Série", "Débit"))
-                .lineStyle(.init(lineWidth: 1.5))
-            let deficit = max(p.pumpDemand - p.pumpRate, 0.0)
-            LineMark(x: .value("t", p.t), y: .value("Déficit", deficit))
-                .foregroundStyle(by: .value("Série", "Déficit"))
-                .lineStyle(.init(lineWidth: 1))
-        }
-    }
-
-    // MARK: - Enable prompt
+    // MARK: - Enable prompt / placeholder
 
     @ViewBuilder
     private func enablePrompt(neuron: HHNeuron) -> some View {
         VStack(spacing: 12) {
-            Image(systemName: "bolt.heart")
-                .font(.system(size: 32))
-                .foregroundStyle(.secondary)
+            Image(systemName: "bolt.heart").font(.system(size: 32)).foregroundStyle(.secondary)
             Text("Modèle énergétique désactivé pour **\(neuron.name)**")
                 .multilineTextAlignment(.center)
             Text("Activez le modèle dans la barre de contrôle pour suivre les concentrations ioniques, l'ATP/ADP et les potentiels de Nernst dynamiques.")
                 .font(.caption).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
+                .multilineTextAlignment(.center).frame(maxWidth: 360)
             Button {
                 if let idx = vm.network.neurons.firstIndex(where: { $0.id == neuron.id }) {
                     vm.network.neurons[idx].energyParams.enabled = true
                     vm.objectWillChange.send()
                 }
-            } label: {
-                Label("Activer le modèle énergie", systemImage: "bolt.fill")
-            }
+            } label: { Label("Activer le modèle énergie", systemImage: "bolt.fill") }
             .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -538,18 +445,13 @@ struct EnergyView: View {
 
     @ViewBuilder
     private func placeholder(_ msg: String) -> some View {
-        ZStack {
-            Color.clear
-            Text(msg).foregroundStyle(.tertiary).font(.caption)
-        }
+        ZStack { Color.clear; Text(msg).foregroundStyle(.tertiary).font(.caption) }
     }
 
-    // MARK: - Shared helpers
+    // MARK: - Helpers
 
     private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.secondary)
+        Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
     }
 
     @ViewBuilder
@@ -567,8 +469,7 @@ struct EnergyView: View {
                     .foregroundStyle(healthColor(pct))
             }
             Slider(value: binding, in: 0...100, step: 1)
-                .frame(width: 80)
-                .tint(healthColor(pct))
+                .frame(width: 80).tint(healthColor(pct))
         }
     }
 
@@ -587,8 +488,7 @@ struct EnergyView: View {
             Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
             HStack(spacing: 2) {
                 TextField("", value: value, format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: width)
+                    .textFieldStyle(.roundedBorder).frame(width: width)
                     .multilineTextAlignment(.trailing)
                 Text(unit).font(.system(size: 10)).foregroundStyle(.secondary)
             }
@@ -598,10 +498,15 @@ struct EnergyView: View {
     private func countSpikes(neuronID: UUID) -> Int {
         guard let pts = vm.traces[neuronID], pts.count > 1 else { return 0 }
         var count = 0
-        for i in 1..<pts.count {
-            if pts[i - 1].v < 0 && pts[i].v >= 0 { count += 1 }
-        }
+        for i in 1..<pts.count { if pts[i-1].v < 0 && pts[i].v >= 0 { count += 1 } }
         return count
+    }
+
+    private func moleculeString(_ n: Double) -> String {
+        guard n > 0 else { return "—" }
+        let exp = floor(log10(n))
+        let man = n / pow(10, exp)
+        return String(format: "%.1f × 10^%d", man, Int(exp))
     }
 
     private func autoSelect() {
