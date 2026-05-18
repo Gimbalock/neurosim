@@ -35,6 +35,20 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        ZStack {
+            mainLayout
+
+            // Welcome overlay — shown whenever the network has no neurons
+            if vm.network.neurons.isEmpty {
+                WelcomeView()
+                    .environmentObject(vm)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: vm.network.neurons.isEmpty)
+    }
+
+    private var mainLayout: some View {
         VStack(spacing: 0) {
             NavigationSplitView {
                 ToolPaletteView()
@@ -145,6 +159,72 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+}
+
+// MARK: - WelcomeView
+
+private struct WelcomeView: View {
+    @EnvironmentObject var vm: SimulationViewModel
+
+    var body: some View {
+        ZStack {
+            // Frosted background
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+
+            VStack(spacing: 32) {
+                // Logo / titre
+                VStack(spacing: 8) {
+                    Image(systemName: "brain.filled.head.profile")
+                        .font(.system(size: 64))
+                        .foregroundStyle(.tint)
+                    Text("NeuroSim")
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
+                    Text("Simulateur de réseaux de neurones Hodgkin-Huxley")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Boutons d'action
+                VStack(spacing: 12) {
+                    Button {
+                        vm.openNetwork()
+                    } label: {
+                        Label("Ouvrir un réseau…", systemImage: "folder")
+                            .frame(width: 260)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut("o", modifiers: .command)
+
+                    Button {
+                        vm.importNetwork()
+                    } label: {
+                        Label("Importer…", systemImage: "square.and.arrow.down")
+                            .frame(width: 260)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+
+                    Button {
+                        vm.newNetwork()
+                    } label: {
+                        Label("Nouveau réseau vide", systemImage: "plus.circle")
+                            .frame(width: 260)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .foregroundStyle(.secondary)
+                }
+
+                Text("⌘O pour ouvrir · ⌘N pour nouveau")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(48)
         }
     }
 }

@@ -7,10 +7,11 @@
 
 import SwiftUI
 import AppKit
+import NeuroSimCore
 
 @main
 struct NeuroSimApp: App {
-    @StateObject private var viewModel = SimulationViewModel.demoNetwork()
+    @StateObject private var viewModel = SimulationViewModel(network: Network())
 
     init() {
         // Without a signed .app bundle, `swift run`-launched executables
