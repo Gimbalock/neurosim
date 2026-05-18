@@ -889,6 +889,56 @@ final class SimulationViewModel: ObservableObject {
         rebuildSimulator()
     }
 
+    // MARK: - Presets
+
+    /// Neurone oscillateur PD du ganglion stomatogastrique.
+    ///
+    /// Mécanisme : I_h dépolarise lentement depuis la phase hyperpolarisée
+    /// → I_T (T-type Ca, bas-seuil) initie un burst → I_Na/I_K génèrent les
+    /// PAs → Ca²⁺ accumulé active I_SK → terminaison du burst + hyperpol.
+    /// → cycle ~1 Hz.
+    ///
+    /// Canaux :
+    ///   I_Na 80, I_K 15, I_T 2.0, I_h 0.08, I_A 3.0, I_SK 8.0, I_leak 0.03
+    /// Ca tracking : τ = 300 ms, [Ca]_rest = 100 nM
+    ///
+    /// Points d'ajustement principaux :
+    ///   - g_h    : fréquence d'oscillation (↑ → + rapide)
+    ///   - g_SK   : durée et amplitude de la phase hyperpolarisée (↑ → bursts + courts)
+    ///   - g_T    : amplitude du spike calcique (↑ → bursts + intenses)
+    ///   - tauCa  : durée de la phase de récupération (via InspectorView)
+    func loadPresetPD() {
+        pause()
+        var net = Network()
+
+        // ── Canaux ──────────────────────────────────────────────────────
+        let channels: [IonChannel] = [
+            SodiumChannel(gMax: 80.0,  reversal:  67.0),
+            PotassiumChannel(gMax: 15.0, reversal: -98.0),
+            TTypeCalciumChannel(gMax: 2.0, reversal: 132.0),
+            HChannel(gMax: 0.08, reversal: -43.0),
+            ATypeChannel(gMax: 3.0, reversal: -98.0),
+            SKChannel(gMax: 8.0,  reversal: -98.0),
+            LeakChannel(gMax: 0.03, reversal: -60.0),
+        ]
+
+        // ── Neurone avec tracking Ca²⁺ ──────────────────────────────────
+        let neuron = HHNeuron(name: "PD oscillateur", channels: channels)
+        // ConcentrationDynamic : Ca accumulé pendant le burst → active SK
+        neuron.compartments[0].concentrationDynamics = [
+            ConcentrationDynamic(ionSymbol: "Ca",
+                                 restingConc: 0.0001,   // 100 nM
+                                 tauDecay: 300.0)        // 300 ms
+        ]
+        neuron.positionX = 300
+        neuron.positionY = 250
+
+        net.addNeuron(neuron)
+        network   = net
+        documentURL = nil
+        rebuildSimulator()
+    }
+
     func saveNetwork() {
         if let url = documentURL {
             writeDocument(to: url)

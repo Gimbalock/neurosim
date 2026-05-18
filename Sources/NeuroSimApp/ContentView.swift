@@ -209,6 +209,36 @@ private struct WelcomeView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.large)
 
+                    Divider().frame(width: 260)
+
+                    // ── Presets ──────────────────────────────────────────
+                    VStack(spacing: 6) {
+                        Text("Presets")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Button {
+                            vm.loadPresetPD()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "waveform.path.ecg")
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("Neurone PD (STG)")
+                                        .font(.system(size: 13, weight: .semibold))
+                                    Text("Oscillateur I_h + I_T + I_SK · ~1 Hz")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .frame(width: 260)
+                            .padding(.horizontal, 4)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    }
+
+                    Divider().frame(width: 260)
+
                     Button {
                         vm.newNetwork()
                     } label: {

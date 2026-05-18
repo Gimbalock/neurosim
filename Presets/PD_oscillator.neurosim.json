@@ -1,0 +1,82 @@
+{
+  "neurons": [
+    {
+      "id": "7A1B2C3D-4E5F-6001-BCDE-F01234567801",
+      "name": "PD oscillateur",
+      "positionX": 300,
+      "positionY": 250,
+      "somaID": "7A1B2C3D-4E5F-6001-BCDE-F01234567802",
+      "compartments": [
+        {
+          "id": "7A1B2C3D-4E5F-6001-BCDE-F01234567802",
+          "name": "soma",
+          "capacitance": 1.0,
+          "diameter": 20,
+          "length": 20,
+          "displayAngle": 0,
+          "channels": [
+            {
+              "kind": "sodium",
+              "gMax": 80.0,
+              "reversal": 67.0,
+              "gateInfOverrides": [null, null],
+              "gateTauOverrides": [null, null]
+            },
+            {
+              "kind": "potassium",
+              "gMax": 15.0,
+              "reversal": -98.0,
+              "gateInfOverrides": [null],
+              "gateTauOverrides": [null]
+            },
+            {
+              "kind": "tTypeCalcium",
+              "gMax": 2.0,
+              "reversal": 132.0,
+              "gateInfOverrides": [null, null],
+              "gateTauOverrides": [null, null]
+            },
+            {
+              "kind": "ih",
+              "gMax": 0.08,
+              "reversal": -43.0,
+              "gateInfOverrides": [null],
+              "gateTauOverrides": [null]
+            },
+            {
+              "kind": "aType",
+              "gMax": 3.0,
+              "reversal": -98.0,
+              "gateInfOverrides": [null, null],
+              "gateTauOverrides": [null, null]
+            },
+            {
+              "kind": "sk",
+              "gMax": 8.0,
+              "reversal": -98.0,
+              "gateInfOverrides": [null],
+              "gateTauOverrides": [null]
+            },
+            {
+              "kind": "leak",
+              "gMax": 0.03,
+              "reversal": -60.0,
+              "gateInfOverrides": [],
+              "gateTauOverrides": []
+            }
+          ],
+          "concentrationDynamics": [
+            {
+              "ionSymbol": "Ca",
+              "restingConc": 0.0001,
+              "tauDecay": 300.0
+            }
+          ]
+        }
+      ],
+      "axialCouplings": []
+    }
+  ],
+  "synapses": [],
+  "stimuli": []
+}
