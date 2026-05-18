@@ -71,7 +71,8 @@ private struct MiniGauge: View {
             }
             .frame(width: 68, height: 110)
 
-            // Label + unit below — same fixed width, centred
+            // Label + unit below — fixed width AND fixed height so all
+            // MiniGauges are identical in total height → labels align.
             VStack(spacing: 1) {
                 Text(spec.label)
                     .font(.system(size: 11, weight: .semibold))
@@ -82,7 +83,7 @@ private struct MiniGauge: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            .frame(width: 68, alignment: .center)
+            .frame(width: 68, height: 32, alignment: .top)
             .padding(.top, 3)
         }
     }
