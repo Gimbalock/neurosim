@@ -246,18 +246,23 @@ struct EnergyView: View {
         let pumpDeficit = max(pumpDemand - pumpRate, 0)
         let pumpMax     = max(pumpDemand * 1.2, 0.001)
 
-        // ── Palette apaisée, cohérente par espèce ionique ─────────────────
-        let cENa  = Color.indigo
-        let cEK   = Color.brown
-        let cNaI  = Color.teal
-        let cKI   = Color(hue: 0.09, saturation: 0.45, brightness: 0.80)
-        let cATP  = Color.mint
-        let cADP  = Color(hue: 0.12, saturation: 0.48, brightness: 0.80)
-        let cPi   = Color.purple.opacity(0.80)
-        let cCa   = Color.cyan.opacity(0.82)
-        let cDem  = Color(hue: 0.07, saturation: 0.48, brightness: 0.80)
-        let cRate = Color.green.opacity(0.72)
-        let cDef  = Color.pink.opacity(0.82)
+        // ── Palette par groupe : même famille de teinte pour chaque section ──
+        // Reversal potential — violet/indigo
+        let cENa  = Color(hue: 0.70, saturation: 0.50, brightness: 0.85)  // indigo clair
+        let cEK   = Color(hue: 0.75, saturation: 0.42, brightness: 0.72)  // violet sombre
+        // Ion concentrations — teal/cyan
+        let cNaI  = Color(hue: 0.50, saturation: 0.55, brightness: 0.80)  // teal vif
+        let cKI   = Color(hue: 0.55, saturation: 0.45, brightness: 0.68)  // teal sombre
+        // ATP métabolites — vert/menthe
+        let cATP  = Color(hue: 0.42, saturation: 0.52, brightness: 0.82)  // menthe
+        let cADP  = Color(hue: 0.37, saturation: 0.55, brightness: 0.68)  // sauge
+        let cPi   = Color(hue: 0.32, saturation: 0.48, brightness: 0.58)  // olive
+        // Calcium — ambre/or
+        let cCa   = Color(hue: 0.11, saturation: 0.60, brightness: 0.88)  // ambre doré
+        // ATP dynamics (pompes) — corail/rose
+        let cDem  = Color(hue: 0.05, saturation: 0.55, brightness: 0.85)  // corail
+        let cRate = Color(hue: 0.01, saturation: 0.50, brightness: 0.70)  // rouge sombre
+        let cDef  = Color(hue: 0.96, saturation: 0.55, brightness: 0.78)  // rose/framboise
 
         ScrollView(.horizontal, showsIndicators: false) {
             // Bottom alignment : le bas des charts est aligné entre toutes les sections
@@ -299,8 +304,8 @@ struct EnergyView: View {
                         yMin: 0, yMax: 2.0, refValue: 0.1, color: cCa))
                 }
 
-                // ── Pompe Na/K ─────────────────────────────────────────────
-                gaugeSection("Pompe Na/K") {
+                // ── ATP dynamics ───────────────────────────────────────────
+                gaugeSection("ATP dynamics") {
                     MiniGauge(spec: GaugeSpec(id: "pDem",  label: "Demande", unit: "mM/ms",
                         value: pumpDemand,  yMin: 0, yMax: pumpMax, refValue: nil, color: cDem))
                     MiniGauge(spec: GaugeSpec(id: "pRate", label: "Débit",   unit: "mM/ms",
@@ -347,7 +352,7 @@ struct EnergyView: View {
         }
 
         VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("ATP dynamics")
+            sectionHeader("Consommation ATP")
             if items.isEmpty {
                 Text("Données insuffisantes").font(.caption).foregroundStyle(.tertiary)
             } else {
