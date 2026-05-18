@@ -237,82 +237,99 @@ struct EnergyView: View {
         }
     }
 
-    // MARK: - Ligne 1 : Gauges + pompe instantanée
+    // MARK: - Ligne 1 : Gauges groupées par section
 
     @ViewBuilder
     private func rowGauges(pts: [SimulationViewModel.EnergyPlotPoint]) -> some View {
-        let last = pts.last!
+        let last        = pts.last!
         let pumpDemand  = last.pumpDemand
         let pumpRate    = last.pumpRate
         let pumpDeficit = max(pumpDemand - pumpRate, 0)
-        let pumpMax     = max(pumpDemand * 1.2, 0.001)  // dynamic Y ceiling
+        let pumpMax     = max(pumpDemand * 1.2, 0.001)
 
-        VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("Instantané — snapshot courant")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 12) {
+        // ── Palette apaisée, cohérente par espèce ionique ─────────────────
+        let cENa  = Color.indigo
+        let cEK   = Color.brown
+        let cNaI  = Color.teal
+        let cKI   = Color(hue: 0.09, saturation: 0.45, brightness: 0.80)
+        let cATP  = Color.mint
+        let cADP  = Color(hue: 0.12, saturation: 0.48, brightness: 0.80)
+        let cPi   = Color.purple.opacity(0.80)
+        let cCa   = Color.cyan.opacity(0.82)
+        let cDem  = Color(hue: 0.07, saturation: 0.48, brightness: 0.80)
+        let cRate = Color.green.opacity(0.72)
+        let cDef  = Color.pink.opacity(0.82)
 
-                    // ── Nernst ────────────────────────────────────────────
+        ScrollView(.horizontal, showsIndicators: false) {
+            // Bottom alignment : le bas des charts est aligné entre toutes les sections
+            HStack(alignment: .bottom, spacing: 10) {
+
+                // ── Reversal potential ─────────────────────────────────────
+                gaugeSection("Reversal potential") {
                     MiniGauge(spec: GaugeSpec(id: "eNa", label: "E_Na", unit: "mV",
-                        value: last.eNa, yMin: 0, yMax: 80, refValue: 67, color: .blue))
-
-                    // E_K : bar from 0 downward — shorter = less negative = danger
-                    MiniGauge(spec: GaugeSpec(id: "eK", label: "E_K", unit: "mV",
-                        value: last.eK, yMin: -110, yMax: 0, refValue: -98, color: .orange,
+                        value: last.eNa, yMin: 0, yMax: 80, refValue: 67, color: cENa))
+                    MiniGauge(spec: GaugeSpec(id: "eK",  label: "E_K",  unit: "mV",
+                        value: last.eK,  yMin: -110, yMax: 0, refValue: -98, color: cEK,
                         invertedFromZero: true))
+                }
 
-                    gaugeDiv()
-
-                    // ── Concentrations ioniques ───────────────────────────
+                // ── Ion concentrations ─────────────────────────────────────
+                gaugeSection("Ion concentrations") {
                     MiniGauge(spec: GaugeSpec(id: "naI", label: "[Na]ᵢ", unit: "mM",
-                        value: last.naI, yMin: 10, yMax: 30, refValue: 15, color: .blue))
+                        value: last.naI, yMin: 10,  yMax: 30,  refValue: 15,  color: cNaI))
                     MiniGauge(spec: GaugeSpec(id: "kI",  label: "[K]ᵢ",  unit: "mM",
-                        value: last.kI,  yMin: 100, yMax: 145, refValue: 140, color: .orange))
+                        value: last.kI,  yMin: 100, yMax: 145, refValue: 140, color: cKI))
+                }
 
-                    gaugeDiv()
-
-                    // ── Métabolites ───────────────────────────────────────
+                // ── ATP ────────────────────────────────────────────────────
+                gaugeSection("ATP") {
                     MiniGauge(spec: GaugeSpec(id: "atp", label: "[ATP]", unit: "mM",
-                        value: last.atp, yMin: 0, yMax: 3,   refValue: 2,   color: .green))
+                        value: last.atp, yMin: 0, yMax: 3,   refValue: 2,   color: cATP))
                     MiniGauge(spec: GaugeSpec(id: "adp", label: "[ADP]", unit: "mM",
-                        value: last.adp, yMin: 0, yMax: 0.5, refValue: 0.2, color: .yellow))
+                        value: last.adp, yMin: 0, yMax: 0.5, refValue: 0.2, color: cADP))
                     MiniGauge(spec: GaugeSpec(id: "pi",  label: "[Pi]",  unit: "mM",
-                        value: last.pi,  yMin: 0, yMax: 5,   refValue: 2.5, color: .purple))
+                        value: last.pi,  yMin: 0, yMax: 5,   refValue: 2.5, color: cPi))
+                }
 
-                    gaugeDiv()
-
-                    // ── Calcium ───────────────────────────────────────────
+                // ── Calcium ────────────────────────────────────────────────
+                gaugeSection("Calcium") {
                     MiniGauge(spec: GaugeSpec(id: "caI", label: "[Ca²⁺]ᵢ", unit: "µM",
                         value: last.caI * 1000,
-                        yMin: 0, yMax: 2.0, refValue: 0.1, color: .cyan))
-
-                    gaugeDiv()
-
-                    // ── Pompe Na/K — snapshot instantané ─────────────────
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Pompe Na/K")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        HStack(alignment: .top, spacing: 8) {
-                            MiniGauge(spec: GaugeSpec(id: "pDem", label: "Demande",
-                                unit: "mM/ms", value: pumpDemand,
-                                yMin: 0, yMax: pumpMax, refValue: nil, color: .orange))
-                            MiniGauge(spec: GaugeSpec(id: "pRate", label: "Débit",
-                                unit: "mM/ms", value: pumpRate,
-                                yMin: 0, yMax: pumpMax, refValue: nil, color: .green))
-                            MiniGauge(spec: GaugeSpec(id: "pDef", label: "Déficit",
-                                unit: "mM/ms", value: pumpDeficit,
-                                yMin: 0, yMax: pumpMax, refValue: nil, color: .red))
-                        }
-                    }
+                        yMin: 0, yMax: 2.0, refValue: 0.1, color: cCa))
                 }
-                .padding(.vertical, 6)
+
+                // ── Pompe Na/K ─────────────────────────────────────────────
+                gaugeSection("Pompe Na/K") {
+                    MiniGauge(spec: GaugeSpec(id: "pDem",  label: "Demande", unit: "mM/ms",
+                        value: pumpDemand,  yMin: 0, yMax: pumpMax, refValue: nil, color: cDem))
+                    MiniGauge(spec: GaugeSpec(id: "pRate", label: "Débit",   unit: "mM/ms",
+                        value: pumpRate,    yMin: 0, yMax: pumpMax, refValue: nil, color: cRate))
+                    MiniGauge(spec: GaugeSpec(id: "pDef",  label: "Déficit", unit: "mM/ms",
+                        value: pumpDeficit, yMin: 0, yMax: pumpMax, refValue: nil, color: cDef))
+                }
             }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 8)
         }
     }
 
-    @ViewBuilder private func gaugeDiv() -> some View {
-        Divider().frame(width: 1, height: 150).padding(.horizontal, 2)
+    /// Groupe visuel : titre + fond teinté + alignement bas des barres.
+    @ViewBuilder
+    private func gaugeSection<Content: View>(_ title: String,
+                                              @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 4)
+            HStack(alignment: .bottom, spacing: 8) {
+                content()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Color.secondary.opacity(0.05),
+                        in: RoundedRectangle(cornerRadius: 8))
+        }
     }
 
     // MARK: - Ligne 2 : ATP consommé / neurone
@@ -329,7 +346,7 @@ struct EnergyView: View {
         }
 
         VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("ATP consommé — par neurone")
+            sectionHeader("ATP dynamics")
             if items.isEmpty {
                 Text("Données insuffisantes").font(.caption).foregroundStyle(.tertiary)
             } else {
