@@ -29,9 +29,10 @@ private enum AnalysisTab: String, CaseIterable {
     case raster      = "Raster"
     case isi         = "ISI"
     case phase       = "Phase"
-    case density     = "Densité"
+    case density     = "Optimisation"
     case clamp       = "Clamp"
     case bifurcation = "Bifurcation"
+    case pdSweep     = "PD Sweep"
     case mutualInfo  = "Info Mut."
     case energy      = "Énergie"
 }
@@ -96,6 +97,7 @@ struct ResultsWindowView: View {
             case .density:      TrajectoryDensityView()
             case .clamp:        VoltageClampView()
             case .bifurcation:  BifurcationView()
+            case .pdSweep:      PDSweepView()
             case .mutualInfo:   MutualInfoView()
             case .energy:       EnergyView()
             }
@@ -443,6 +445,7 @@ private struct SignalChartCard: View {
                 .onAppear { autoscale() }
                 .onChange(of: groupID) { _, _ in autoscale() }
                 .onChange(of: vm.autoscaleGeneration) { _, _ in autoscale() }
+                .onChange(of: vm.isRunning) { _, running in if !running { autoscale() } }
         }
         .padding(12)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))

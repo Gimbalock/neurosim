@@ -39,6 +39,10 @@ final class SimulationViewModel: ObservableObject {
     /// the palette and canvas stay in sync.
     @Published var activeTool: EditorTool = .select
 
+    // MARK: - Network builder sheet
+    @Published var showNetworkBuilder = false
+    @Published var networkBuilderInitialTab: Int = 0
+
     // MARK: - Neuron canvas color mode
 
     /// Quantity used to colour neuron circles on the canvas.
@@ -226,6 +230,11 @@ final class SimulationViewModel: ObservableObject {
     /// Non-nil when the simulation was halted due to numerical divergence.
     @Published private(set) var divergenceError: String? = nil
     @Published var realtimeFactor: Double = 1.0  // 1.0 = real-time; >1 = accelerated
+
+    /// Resting voltage (mV) used when initialising/resetting the simulator.
+    /// Defaults to −65 mV (standard HH). Set to −80 mV for T-type-based
+    /// pacemakers that need the inactivation gate h_T to be pre-deinactivated.
+    var preferredRestingVoltage: Double = -65.0
 
     private var simulator: Simulator
     private var simTimer: Timer?
@@ -435,6 +444,7 @@ final class SimulationViewModel: ObservableObject {
         let label = name ?? "dend\(n.compartments.count)"
         let comp = Compartment(name: label, channels: channels)
         let attachTo = parentID ?? n.somaCompartmentID
+        objectWillChange.send()
         n.compartments.append(comp)
         n.axialCouplings.append(
             AxialCoupling(between: attachTo, and: comp.id, conductance: 0.5)
@@ -453,6 +463,7 @@ final class SimulationViewModel: ObservableObject {
         guard compID != n.somaCompartmentID else { return }
         guard n.compartments.count > 1 else { return }
 
+        objectWillChange.send()          // notify SwiftUI before mutating class properties
         n.compartments.removeAll { $0.id == compID }
         n.axialCouplings.removeAll { $0.involves(compID) }
         network.setStimulus(nil, onCompartment: compID)
@@ -631,7 +642,7 @@ final class SimulationViewModel: ObservableObject {
     func play() {
         guard !isRunning else { return }
         divergenceError = nil
-        simulator.reset()
+        simulator.reset(restingVoltage: preferredRestingVoltage)
         simulationTime = 0
         seedTraces()
 
@@ -655,7 +666,7 @@ final class SimulationViewModel: ObservableObject {
     func reset() {
         pause()
         divergenceError = nil
-        simulator.reset()
+        simulator.reset(restingVoltage: preferredRestingVoltage)
         simulationTime = 0
         seedTraces()
     }
@@ -877,6 +888,11 @@ final class SimulationViewModel: ObservableObject {
     /// URL of the file currently open on disk, nil when unsaved.
     @Published private(set) var documentURL: URL?
 
+    /// Controls visibility of the WelcomeView overlay.
+    /// Set to false as soon as the user picks any action (new / open / import).
+    /// Not reset when the network becomes empty (e.g. after deleting all neurons).
+    @Published var showWelcomeScreen: Bool = true
+
     /// Display name shown in the window title bar.
     var documentName: String {
         documentURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
@@ -884,59 +900,192 @@ final class SimulationViewModel: ObservableObject {
 
     func newNetwork() {
         pause()
+        preferredRestingVoltage = -65.0
         network = Network()
+        documentURL = nil
+        showWelcomeScreen = false
+        rebuildSimulator()
+    }
+
+    /// Replace the current network with a fully-built one (used by topology builder).
+    func replaceNetwork(_ net: Network) {
+        pause()
+        network = net
         documentURL = nil
         rebuildSimulator()
     }
 
     // MARK: - Presets
 
-    /// Neurone oscillateur PD du ganglion stomatogastrique.
+    /// Neurone oscillateur PD du ganglion stomatogastrique — modèle 2 compartiments.
     ///
-    /// Mécanisme : I_h dépolarise lentement depuis la phase hyperpolarisée
-    /// → I_T (T-type Ca, bas-seuil) initie un burst → I_Na/I_K génèrent les
-    /// PAs → Ca²⁺ accumulé active I_SK → terminaison du burst + hyperpol.
-    /// → cycle ~1 Hz.
+    /// Architecture :
+    ///   • Soma   : oscillateur lent (I_h + I_CaT + I_SK + I_A + I_leak).
+    ///              Pas de Na/K rapides → pas de PA dans le soma.
+    ///              Le soma oscille librement (~1 Hz) grâce au cycle :
+    ///                I_h dépolarise → I_CaT ouvre (spike Ca bas-seuil)
+    ///                → Ca²⁺ monte → I_SK s'active → hyperpolarisation
+    ///                → I_h se ré-active → cycle suivant.
     ///
-    /// Canaux :
-    ///   I_Na 80, I_K 15, I_T 2.0, I_h 0.08, I_A 3.0, I_SK 8.0, I_leak 0.03
-    /// Ca tracking : τ = 300 ms, [Ca]_rest = 100 nM
+    ///   • AIS    : générateur de PA (Na dense + K repolarisateur + Leak).
+    ///              Le courant axial du soma dépolarise l'AIS jusqu'au
+    ///              seuil Na (~−55 mV) → PA HH classiques à haute fréquence
+    ///              (10–50 Hz pendant le burst).
     ///
-    /// Points d'ajustement principaux :
-    ///   - g_h    : fréquence d'oscillation (↑ → + rapide)
-    ///   - g_SK   : durée et amplitude de la phase hyperpolarisée (↑ → bursts + courts)
-    ///   - g_T    : amplitude du spike calcique (↑ → bursts + intenses)
-    ///   - tauCa  : durée de la phase de récupération (via InspectorView)
+    ///   • Couplage axial g = 0.05 mS/cm² :
+    ///              Pendant le burst (V_soma ≈ −45 mV) :
+    ///                I_axial→AIS ≈ 0.05 × 20 = 1 µA/cm² → déclenche PA.
+    ///              Pendant un PA (V_AIS ≈ +30 mV) :
+    ///                I_retour→soma ≈ 0.05 × 75 = 3.75 µA/cm²
+    ///                → déflexion ≈ 4 mV (PA très atténué vu du soma).
+    ///
+    /// Points d'ajustement :
+    ///   - g_h      : fréquence d'oscillation du soma (↑ → + rapide)
+    ///   - g_CaT    : amplitude du burst calcique (↑ → bursts + intenses)
+    ///   - g_SK/Kd  : durée du burst et profondeur de l'AHP
+    ///   - g_axial  : atténuation des PA vus du soma (↓ → + atténués)
+    ///   - gMax_Na_AIS : excitabilité de l'AIS (↑ → PA + précoces)
     func loadPresetPD() {
         pause()
-        var net = Network()
+        let net = Network()
 
-        // ── Canaux ──────────────────────────────────────────────────────
-        let channels: [IonChannel] = [
-            SodiumChannel(gMax: 80.0,  reversal:  67.0),
-            PotassiumChannel(gMax: 15.0, reversal: -98.0),
-            TTypeCalciumChannel(gMax: 2.0, reversal: 132.0),
-            HChannel(gMax: 0.08, reversal: -43.0),
-            ATypeChannel(gMax: 3.0, reversal: -98.0),
-            SKChannel(gMax: 8.0,  reversal: -98.0),
-            LeakChannel(gMax: 0.03, reversal: -60.0),
-        ]
+        // ── SK channel ────────────────────────────────────────────────────
+        // Area soma = π·d²·1e-8 = 1.257e-3 cm², Vol = 3.14e-9 L.
+        // d[Ca]/dt = I_CaS × area / (2·F·vol) → 0.207 µM/ms @ I=100 µA/cm²
+        // [Ca]_ss_burst = 0.207 × 150 = 31 µM.
+        // Kd=20 µM → SK fires when [Ca]=20 µM → t=155 ms → ~8 APs @ 50 Hz.
+        // (Kd=15 µM → t=99 ms → ~5 APs; Kd=25 µM → t=244 ms → ~12 APs.)
+        // Avec half_CaS=−30 mV le point fixe à −52 mV est éliminé (I_K=17>I_CaS=13)
+        // → Kd=20 µM est sûr (pas de fixed point via SK).
+        let skCh = SKChannel(gMax: 1.5, reversal: -98.0)
+        skCh.halfActivation  = 0.020    // 20 µM → burst ~155 ms → ~8–10 PA, AHP profond ✓
+        skCh.hillCoefficient = 4
+        skCh.tauActivation   = 50.0
+        skCh.restingCalcium  = 0.0001
 
-        // ── Neurone avec tracking Ca²⁺ ──────────────────────────────────
-        let neuron = HHNeuron(name: "PD oscillateur", channels: channels)
-        // ConcentrationDynamic : Ca accumulé pendant le burst → active SK
-        neuron.compartments[0].concentrationDynamics = [
-            ConcentrationDynamic(ionSymbol: "Ca",
-                                 restingConc: 0.0001,   // 100 nM
-                                 tauDecay: 300.0)        // 300 ms
-        ]
+        // ── SOMA : oscillateur T-type (pas de Na/K rapides) ───────────────
+        //
+        // Pourquoi pas de Na/K dans le soma ?
+        //   Na/K créent un point fixe à −55 mV où hInf_T ≈ 0.001 → h_T
+        //   définitivement inactivé → plus de LTS possible après le 1er burst.
+        //
+        // Mécanisme d'oscillation :
+        //   1) Ih dépolarise lentement depuis l'AHP vers seuil T-type (~−60 mV)
+        //   2) LTS T-type : V monte à ~−30 mV, Ca s'accumule (~20 µM)
+        //   3) SK active → AHP → V descend à −85 mV
+        //   4) À −85 mV : hInf_T = 0.73, tauH = 310 ms
+        //      tauDecay_Ca = 150 ms → SK actif 220 ms → h_T récupère à 37 %
+        //   5) Ensuite Ih dépolarise à nouveau → LTS de même amplitude → ✓
+        //
+        // Clé du bug précédent : tauDecay=30 ms → SK off en 90 ms → V remonte
+        // à −65 mV → hInf_T(−65) = 0.018 → h_T ne récupère jamais → extinction.
+        // Fix : tauDecay = 150 ms → SK maintient −85 mV pendant 220 ms.
+        // ── SOMA : oscillateur STG-style ──────────────────────────────────
+        //
+        // Architecture basée sur les neurones PD du ganglion stomatogastrique
+        // (Liu et al. 1998, Prinz et al. 2004).
+        //
+        // Canal CaS (I_CaS) — clé de l'oscillation longue :
+        //   Contrairement au T-type (transitoire, h→0 en 28 ms à +25 mV), le CaS
+        //   n'a PAS de gate d'inactivation. Il reste ouvert tout au long du plateau
+        //   dépolarisant et fournit un flux Ca²⁺ CONTINU et GRADUEL.
+        //   → [Ca²⁺] monte lentement pendant le burst entier (~200–400 ms).
+        //   → SK ne s'active significativement qu'après 10–15 PA.
+        //   → Avant CaS, le CaT seul s'inactivait en 28 ms → SK immédiat → 2 PA.
+        //
+        // Compartiment LARGE (d=200 µm, L=100 µm) :
+        //   d[Ca]/dt ∝ 1/d → 10× plus lent qu'avec d=20 µm.
+        //   Sans ça, même un petit courant CaS saturerait [Ca²⁺] en quelques ms.
+        //
+        // Canal K dans le soma :
+        //   Nécessaire pour repolariser après chaque spike Ca (sinon V → +132 mV).
+        //   Crée des oscillations Ca-K (~30–60 Hz) pendant le burst.
+        //   AIS tire 1 PA Na pour chaque oscillation Ca-K → 10–15 PA/burst.
+        //
+        // SK : Kd relevé à 6 µM → seul activé au pic tardif de [Ca²⁺].
+        //   À 1 µM/spike et 50 Hz : Ca_eq = 8 µM → Kd=6 µM atteint en ~10 spikes.
+
+        // CaS channel — override sigmoïd exposé à l'optimiseur et au PD Sweep.
+        // L'override permet au sweep de faire varier v½ sans modifier le code canal.
+        let casCh = CaSChannel(gMax: 1.0, reversal: 132.0)
+        casCh.gateInfOverrides[0] = .sigmoid(lo: 0, hi: 1, vHalf: -30.0, k: 8.5, domain: nil)
+
+        let soma = Compartment(
+            name: "soma",
+            capacitance: 1.0,
+            diameter: 200.0,
+            length: 100.0,
+            channels: [
+                TTypeCalciumChannel(gMax: 1.0,  reversal: 132.0),  // trigger LTS
+                casCh,                                              // plateau Ca ← clé
+                PotassiumChannel(gMax: 5.0,     reversal: -98.0),  // repolarise Ca-K (IK lent)
+                HChannel(gMax: 1.5,             reversal: -43.0),  // plus fort → inter-burst ~500 ms
+                ATypeChannel(gMax: 0.5,         reversal: -98.0),
+                skCh,
+                LeakChannel(gMax: 0.03,         reversal: -60.0),
+            ],
+            concentrationDynamics: [
+                ConcentrationDynamic(ionSymbol: "Ca",
+                                     restingConc: 0.0001,
+                                     tauDecay: 150.0)
+            ]
+        )
+
+        // ── AIS : générateur de PA Na standard ───────────────────────────
+        //
+        // Déclenché par le courant axial lors de chaque oscillation Ca-K du soma.
+        // gK=15 (réduit vs 36) : potentiel de repos plus proche de −65 mV
+        //   → moins de résistance au courant axial → seuil Na atteint plus facilement.
+        // g_axial=0.25 : avec g_total_AIS≈0.5, shift = 0.25×(V_soma+75)/0.5.
+        //   V_soma=−10 mV → shift = 0.25×65/0.5 = 32.5 mV → V_AIS=−42 mV → PA ✓
+        let ais = Compartment(
+            name: "AIS",
+            capacitance: 1.0,
+            diameter: 5.0,
+            length: 10.0,
+            channels: [
+                SodiumChannel(gMax: 80.0,      reversal:  67.0),
+                PotassiumChannel(gMax: 15.0,   reversal: -98.0),
+                LeakChannel(gMax: 0.1,         reversal: -65.0),
+            ]
+        )
+
+        // ── Couplage axial soma ↔ AIS ──────────────────────────────────────
+        // g = 0.25 mS/cm² : courant axial suffit à pousser l'AIS au seuil Na
+        // pendant les oscillations Ca-K du soma (~−10 mV).
+        // PA retour (V_AIS=+50 mV) → bump soma ≈ 0.25×(50−(−10))/(g_total_soma)
+        // ≈ petite bosse atténuée visible sur le plateau Ca-K ✓
+        let coupling = AxialCoupling(between: soma.id, and: ais.id, conductance: 0.25)
+
+        // ── Neurone 2 compartiments ────────────────────────────────────────
+        let neuron = HHNeuron(
+            name: "PD soma+AIS",
+            compartments: [soma, ais],
+            couplings: [coupling],
+            soma: soma.id
+        )
         neuron.positionX = 300
         neuron.positionY = 250
 
         net.addNeuron(neuron)
-        network   = net
+        network     = net
         documentURL = nil
+        // hInf_T(−80) = 0.44 → LTS immédiat dès le départ.
+        // hInf_T(−65) = 0.018 → canal inactivé → pas d'oscillation sans ça.
+        preferredRestingVoltage = -80.0
+        showWelcomeScreen = false
         rebuildSimulator()
+
+        // ── Traces par défaut ──────────────────────────────────────────────
+        // Soma V(t)  : oscillation lente LTS + bosses PA (~4 mV)
+        // AIS  V(t)  : PA complets (~110 mV) à fréquence intra-burst
+        // [Ca]i soma : pic pendant LTS → active SK → inter-burst
+        clearSignalTraces()
+        addSignalTrace(.voltage(neuronID: neuron.id, compartmentID: soma.id))
+        addSignalTrace(.voltage(neuronID: neuron.id, compartmentID: ais.id))
+        addSignalTrace(.ionConcentration(neuronID: neuron.id,
+                                         compartmentID: soma.id,
+                                         ionSymbol: "Ca"))
     }
 
     func saveNetwork() {
@@ -965,10 +1114,21 @@ final class SimulationViewModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
-        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
-        panel.beginSheetModal(for: window) { [weak self] result in
-            guard result == .OK, let url = panel.url, let self else { return }
-            Task { @MainActor in self.loadDocument(from: url) }
+        // Dismiss welcome immediately so the panel can appear even if the
+        // overlay was intercepting the key-window state.
+        showWelcomeScreen = false
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+                  ?? NSApp.windows.first(where: \.isVisible)
+        if let window {
+            panel.beginSheetModal(for: window) { [weak self] result in
+                guard result == .OK, let url = panel.url, let self else { return }
+                Task { @MainActor in self.loadDocument(from: url) }
+            }
+        } else {
+            panel.begin { [weak self] result in
+                guard result == .OK, let url = panel.url, let self else { return }
+                Task { @MainActor in self.loadDocument(from: url) }
+            }
         }
     }
 
@@ -980,8 +1140,11 @@ final class SimulationViewModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.prompt = "Importer"
         panel.message = "Ajouter un neurone ou un réseau au réseau actuel"
-        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
-        panel.beginSheetModal(for: window) { [weak self] result in
+        // Dismiss welcome immediately (same rationale as openNetwork).
+        showWelcomeScreen = false
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+                  ?? NSApp.windows.first(where: \.isVisible)
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] result in
             guard result == .OK, let url = panel.url, let self else { return }
             guard let data = try? Data(contentsOf: url),
                   let doc = try? JSONDecoder().decode(NetworkDocument.self, from: data) else { return }
@@ -1001,6 +1164,11 @@ final class SimulationViewModel: ObservableObject {
                 }
                 self.rebuildSimulator()
             }
+        }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            panel.begin(completionHandler: handler)
         }
     }
 
@@ -1028,6 +1196,7 @@ final class SimulationViewModel: ObservableObject {
               let doc = try? JSONDecoder().decode(NetworkDocument.self, from: data)
         else { return }
         pause()
+        preferredRestingVoltage = -65.0   // reset to standard HH default on file open
         network = doc.toNetwork()
         documentURL = url
         optimSettings = doc.optimSettings

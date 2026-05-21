@@ -92,70 +92,48 @@ final class OptimizationRunner: ObservableObject {
 
     // MARK: Public API
 
-    func start(vm:         SimulationViewModel,
-               params:     [OptimParam],
-               neuronID:   UUID,
-               refPoints:  [(v: Double, dvdt: Double)],
-               config:     OptimConfig,
-               nBinsV:     Int = 100,
-               nBinsDvdt:  Int = 80) {
+    /// Generalised entry point — caller passes any `OptimObjective`.
+    /// The objective defines what to measure; parameter selection is unchanged.
+    func start(vm:        SimulationViewModel,
+               params:    [OptimParam],
+               neuronID:  UUID,
+               config:    OptimConfig,
+               objective: OptimObjective) {
         guard !isRunning else { return }
 
         let active = params.filter(\.isActive)
         guard !active.isEmpty else { status = "Aucun paramètre sélectionné"; return }
-        guard !refPoints.isEmpty else { status = "Pas de trace de référence"; return }
 
-        guard let refGrid = buildEvalGrid(refPoints, nV: nBinsV, nD: nBinsDvdt) else {
-            status = "Référence insuffisante"; return
-        }
+        let bounds = active.map { (lo: $0.minBound, hi: $0.maxBound) }
+        let sim    = Simulator(network: vm.network, dt: 0.025)
+        sim.method = .rushLarsen
 
-        let bounds  = active.map { (lo: $0.minBound, hi: $0.maxBound) }
+        // Build the objective-specific scorer once (pre-computes e.g. reference grid).
+        let scorer = objective.makeScorer(neuronID: neuronID, duration: config.simDuration)
 
-        let sim     = Simulator(network: vm.network, dt: 0.025)
-        sim.method  = .rushLarsen
-
-        // Evaluation closure — also stores the last trajectory into _lastEvalPts
         let evalFn: ([Double]) -> Double = { [weak vm] candidate in
             guard let vm else { return .infinity }
             for (i, param) in active.enumerated() {
                 applyOptimParam(param, value: candidate[i],
                                 neuronID: neuronID, network: vm.network)
             }
-            sim.reset()
-            var pts: [(v: Double, dvdt: Double)] = []
-            let every = max(1, Int(config.simDuration / sim.dt / 12_000))
-            var step  = 0; var prevV: Double? = nil; var prevT = 0.0
-            sim.run(duration: config.simDuration) { sample in
-                step += 1; guard step % every == 0 else { return }
-                guard let v = sample.voltages[neuronID] else { return }
-                defer { prevV = v; prevT = sample.time }
-                guard let pv = prevV else { return }
-                let dt = sample.time - prevT
-                guard dt > 0, dt < 2.0 else { return }
-                let dv = (v - pv) / dt
-                guard abs(dv) < 5000 else { return }
-                pts.append((v: pv, dvdt: dv))
-            }
-            guard !pts.isEmpty else { return .infinity }
-            let cg = buildEvalGridInRange(pts,
-                                          vLo: refGrid.vMin, vHi: refGrid.vMax,
-                                          dLo: refGrid.dvdtMin, dHi: refGrid.dvdtMax,
-                                          nV: nBinsV, nD: nBinsDvdt)
-            self._lastEvalPts = pts   // captured on main actor — always safe
-            return ssdNormalized(refGrid, cg)
+            let (score, pts) = scorer(sim)
+            self._lastEvalPts = pts   // non-empty only for density-match mode
+            return score
         }
 
         // Reset all published state
-        isRunning      = true
-        iteration      = 0
-        bestError      = .infinity
-        bestParams     = []
-        errorHistory   = []
-        lastBestPoints = []
-        paramSnapshots = []
-        activeParamInfo = active.map { ActiveParamInfo(label: $0.label, lo: $0.minBound, hi: $0.maxBound) }
-        status         = "Démarrage…"
-        _evalFn        = evalFn
+        isRunning       = true
+        iteration       = 0
+        bestError       = .infinity
+        bestParams      = []
+        errorHistory    = []
+        lastBestPoints  = []
+        paramSnapshots  = []
+        activeParamInfo = active.map { ActiveParamInfo(label: $0.label,
+                                                       lo: $0.minBound, hi: $0.maxBound) }
+        status          = "Démarrage…"
+        _evalFn         = evalFn
 
         runTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -165,7 +143,6 @@ final class OptimizationRunner: ObservableObject {
             case .cmaes:
                 await self.runCMAES(evalFn: evalFn, bounds: bounds, config: config)
             }
-            // Apply best params permanently to the live network
             if !self.bestParams.isEmpty {
                 for (i, param) in active.enumerated() {
                     applyOptimParam(param, value: self.bestParams[i],
@@ -178,6 +155,21 @@ final class OptimizationRunner: ObservableObject {
             self.status    = String(format: "Terminé  E = %.3e  (%d iter.)",
                                     self.bestError, self.iteration)
         }
+    }
+
+    /// Convenience wrapper: density-match objective.
+    /// Keeps existing `TrajectoryDensityView` call sites working without change.
+    func start(vm:        SimulationViewModel,
+               params:    [OptimParam],
+               neuronID:  UUID,
+               refPoints: [(v: Double, dvdt: Double)],
+               config:    OptimConfig,
+               nBinsV:    Int = 100,
+               nBinsDvdt: Int = 80) {
+        guard !refPoints.isEmpty else { status = "Pas de trace de référence"; return }
+        start(vm: vm, params: params, neuronID: neuronID, config: config,
+              objective: .densityMatch(refPoints: refPoints,
+                                       nBinsV: nBinsV, nBinsDvdt: nBinsDvdt))
     }
 
     func stop() {

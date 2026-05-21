@@ -59,9 +59,26 @@ struct TrajectoryDensityView: View {
     @StateObject private var runner = OptimizationRunner()
     @State private var optimConfig  = OptimConfig()
 
-    // Grid resolution
-    private let nBinsV    = 100
-    private let nBinsDvdt = 80
+    // Objective mode
+    private enum ObjectiveMode: String, CaseIterable {
+        case density = "Densité"
+        case burst   = "Burst"
+    }
+    @State private var objectiveMode: ObjectiveMode = .density
+    // Burst-counting objective config
+    @State private var burstAISID:          UUID?   = nil    // nil → soma
+    @State private var burstRestingV:       Double  = -80.0
+    @State private var burstTargetBPS:      Double  = 1.0
+    @State private var burstTargetAPs:      Double  = 12.5
+    @State private var burstTargetPeriodMs: Double  = 1000.0
+
+    // Grid resolution (higher → finer detail)
+    private let nBinsV    = 180
+    private let nBinsDvdt = 140
+
+    // Density threshold — bins below this fraction of maxCount are hidden
+    @State private var leftThreshold:  Double = 0.005   // 0.5 %
+    @State private var rightThreshold: Double = 0.005
 
     // MARK: - Available neurons
 
@@ -98,40 +115,84 @@ struct TrajectoryDensityView: View {
         return pts
     }
 
-    // MARK: - Grid builder (display — clipped by dvdtMax)
+    // MARK: - Grid builder (display — clipped by dvdtMax + threshold zoom)
 
+    /// Two-pass grid builder:
+    ///  1. Full grid → find the extent of bins above `minFraction × maxCount`
+    ///  2. Rebuild with those tighter bounds so axes zoom into the dense region.
     private func buildDisplayGrid(pts: [(v: Double, dvdt: Double)],
-                                  dvdtMax: Double) -> DensityGrid? {
+                                  dvdtMax: Double,
+                                  minFraction: Double = 0) -> DensityGrid? {
         let clipped = pts.filter { abs($0.dvdt) <= dvdtMax }
-        return buildGrid(from: clipped)
-    }
+        guard !clipped.isEmpty else { return nil }
 
-    private func buildGrid(from pts: [(v: Double, dvdt: Double)]) -> DensityGrid? {
-        guard !pts.isEmpty else { return nil }
-        let vs    = pts.map { $0.v }
-        let dvdts = pts.map { $0.dvdt }
-        guard let vMin = vs.min(), let vMax = vs.max(), vMax > vMin,
-              let dMin = dvdts.min(), let dMax = dvdts.max(), dMax > dMin else { return nil }
-        let vPad = (vMax - vMin) * 0.04; let dPad = (dMax - dMin) * 0.04
-        let vLo = vMin - vPad; let vHi = vMax + vPad
-        let dLo = dMin - dPad; let dHi = dMax + dPad
-        return buildGridInRange(pts: pts, vLo: vLo, vHi: vHi, dLo: dLo, dHi: dHi)
+        // Pass 1 — full range grid
+        guard let full = buildGridInRange(pts: clipped) else { return nil }
+
+        // If no threshold, return immediately
+        guard minFraction > 0 else { return full }
+
+        // Find axis extent of bins that survive the threshold
+        let minCount = max(1, Int(Double(full.maxCount) * minFraction))
+        var colMin = full.nV - 1;   var colMax = 0
+        var rowMin = full.nDvdt - 1; var rowMax = 0
+        var anyAbove = false
+        for row in 0..<full.nDvdt {
+            for col in 0..<full.nV {
+                guard full.counts[row * full.nV + col] >= minCount else { continue }
+                if col < colMin { colMin = col }; if col > colMax { colMax = col }
+                if row < rowMin { rowMin = row }; if row > rowMax { rowMax = row }
+                anyAbove = true
+            }
+        }
+        guard anyAbove else { return full }
+
+        // Convert bin indices → data coordinates with 5 % padding
+        let vSpan  = full.vMax    - full.vMin
+        let dSpan  = full.dvdtMax - full.dvdtMin
+        let vBinW  = vSpan  / Double(full.nV)
+        let dBinH  = dSpan  / Double(full.nDvdt)
+
+        var vLo = full.vMin    + Double(colMin) * vBinW
+        var vHi = full.vMin    + Double(colMax + 1) * vBinW
+        var dLo = full.dvdtMin + Double(rowMin) * dBinH
+        var dHi = full.dvdtMin + Double(rowMax + 1) * dBinH
+
+        // 5 % padding so the outermost surviving bins aren't flush against the axes
+        let vPad = (vHi - vLo) * 0.05; let dPad = (dHi - dLo) * 0.05
+        vLo -= vPad; vHi += vPad; dLo -= dPad; dHi += dPad
+
+        // Pass 2 — rebuild at cropped range
+        return buildGridInRange(pts: clipped, vLo: vLo, vHi: vHi, dLo: dLo, dHi: dHi)
     }
 
     private func buildGridInRange(pts: [(v: Double, dvdt: Double)],
-                                  vLo: Double, vHi: Double,
-                                  dLo: Double, dHi: Double) -> DensityGrid? {
-        guard vHi > vLo, dHi > dLo else { return nil }
+                                  vLo: Double? = nil, vHi: Double? = nil,
+                                  dLo: Double? = nil, dHi: Double? = nil) -> DensityGrid? {
+        guard !pts.isEmpty else { return nil }
+        let vs    = pts.map(\.v);    let dvdts = pts.map(\.dvdt)
+        guard let vMin = vLo ?? vs.min(),    let vMax = vHi ?? vs.max(),    vMax > vMin,
+              let dMin = dLo ?? dvdts.min(), let dMax = dHi ?? dvdts.max(), dMax > dMin
+        else { return nil }
+        // Add padding only when computing from data (not when caller already passed bounds)
+        let vLo2: Double; let vHi2: Double; let dLo2: Double; let dHi2: Double
+        if vLo == nil {
+            let p = (vMax - vMin) * 0.04; vLo2 = vMin - p; vHi2 = vMax + p
+        } else { vLo2 = vMin; vHi2 = vMax }
+        if dLo == nil {
+            let p = (dMax - dMin) * 0.04; dLo2 = dMin - p; dHi2 = dMax + p
+        } else { dLo2 = dMin; dHi2 = dMax }
+
         let nV = nBinsV; let nD = nBinsDvdt
         var counts = [Int](repeating: 0, count: nV * nD)
         for p in pts {
-            guard p.v >= vLo, p.v <= vHi, p.dvdt >= dLo, p.dvdt <= dHi else { continue }
-            let ci = min(Int((p.v    - vLo) / (vHi - vLo) * Double(nV)), nV - 1)
-            let ri = min(Int((p.dvdt - dLo) / (dHi - dLo) * Double(nD)), nD - 1)
+            guard p.v >= vLo2, p.v <= vHi2, p.dvdt >= dLo2, p.dvdt <= dHi2 else { continue }
+            let ci = min(Int((p.v    - vLo2) / (vHi2 - vLo2) * Double(nV)), nV - 1)
+            let ri = min(Int((p.dvdt - dLo2) / (dHi2 - dLo2) * Double(nD)), nD - 1)
             counts[ri * nV + ci] += 1
         }
         return DensityGrid(counts: counts, nV: nV, nDvdt: nD,
-                           vMin: vLo, vMax: vHi, dvdtMin: dLo, dvdtMax: dHi,
+                           vMin: vLo2, vMax: vHi2, dvdtMin: dLo2, dvdtMax: dHi2,
                            maxCount: max(1, counts.max() ?? 1))
     }
 
@@ -257,13 +318,23 @@ struct TrajectoryDensityView: View {
             leftToolbar
             Divider().opacity(0.25)
             Group {
-                if useImportLeft, let imp = importedTrace,
-                   let grid = buildDisplayGrid(pts: imp.points, dvdtMax: leftDvdtMax) {
-                    DensityCanvas(grid: grid)
-                } else if let id = resolvedLeft,
-                          let grid = buildDisplayGrid(pts: pointsFromNeuron(id),
-                                                      dvdtMax: leftDvdtMax) {
-                    DensityCanvas(grid: grid)
+                let leftGrid: DensityGrid? = {
+                    if useImportLeft, let imp = importedTrace {
+                        return buildDisplayGrid(pts: imp.points, dvdtMax: leftDvdtMax, minFraction: leftThreshold)
+                    }
+                    if let id = resolvedLeft {
+                        return buildDisplayGrid(pts: pointsFromNeuron(id), dvdtMax: leftDvdtMax, minFraction: leftThreshold)
+                    }
+                    return nil
+                }()
+                if let grid = leftGrid {
+                    ZStack(alignment: .bottomLeading) {
+                        DensityCanvas(grid: grid, minFraction: leftThreshold)
+                        thresholdControl(value: $leftThreshold)
+                            .padding(6)
+                            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 5))
+                            .padding(8)
+                    }
                 } else {
                     panelEmpty(hint: useImportLeft ? "Importer un fichier" : "Lance la simulation")
                 }
@@ -319,8 +390,14 @@ struct TrajectoryDensityView: View {
                     if let id = resolvedRight { return pointsFromNeuron(id) }
                     return []
                 }()
-                if let grid = buildDisplayGrid(pts: pts, dvdtMax: rightDvdtMax) {
-                    DensityCanvas(grid: grid)
+                if let grid = buildDisplayGrid(pts: pts, dvdtMax: rightDvdtMax, minFraction: rightThreshold) {
+                    ZStack(alignment: .bottomLeading) {
+                        DensityCanvas(grid: grid, minFraction: rightThreshold)
+                        thresholdControl(value: $rightThreshold)
+                            .padding(6)
+                            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 5))
+                            .padding(8)
+                    }
                 } else {
                     panelEmpty(hint: runner.isRunning ? "Calcul en cours…" : "Lance la simulation")
                 }
@@ -352,6 +429,23 @@ struct TrajectoryDensityView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.black)
+    }
+
+    // MARK: - Density threshold control
+
+    private func thresholdControl(value: Binding<Double>) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "line.3.horizontal.decrease")
+                .font(.system(size: 8))
+                .foregroundStyle(.white.opacity(0.4))
+            Slider(value: value, in: 0.0...0.10, step: 0.001)
+                .frame(width: 64)
+                .tint(.white.opacity(0.5))
+            Text(String(format: "%.1f%%", value.wrappedValue * 100))
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.5))
+                .frame(width: 30, alignment: .trailing)
+        }
     }
 
     // MARK: - dV/dt range slider
@@ -448,40 +542,16 @@ struct TrajectoryDensityView: View {
         .background(.black)
     }
 
-    // MARK: - Parameter evolution chart
-
-    private struct ParamPoint: Identifiable {
-        let id = UUID()
-        let paramIdx:  Int
-        let label:     String
-        let iteration: Int
-        let normValue: Double
-    }
-
-    private var paramChartPoints: [ParamPoint] {
-        let info = runner.activeParamInfo
-        guard !info.isEmpty else { return [] }
-        return runner.paramSnapshots.flatMap { snap in
-            snap.values.indices.compactMap { i -> ParamPoint? in
-                guard i < info.count else { return nil }
-                let range = info[i].hi - info[i].lo
-                guard range > 0 else { return nil }
-                let norm = ((snap.values[i] - info[i].lo) / range).clamped(to: 0...1)
-                return ParamPoint(paramIdx: i, label: info[i].label,
-                                  iteration: snap.iteration, normValue: norm)
-            }
-        }
-    }
+    // MARK: - Radar parameter view
 
     private var paramEvolutionView: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text("Évolution des paramètres (normalisé)")
+                Text("Paramètres normalisés")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.white.opacity(0.45))
                 Spacer()
-                if runner.paramSnapshots.last != nil,
-                   !runner.activeParamInfo.isEmpty {
+                if !runner.activeParamInfo.isEmpty {
                     Text("\(runner.activeParamInfo.count) param(s)")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.3))
@@ -491,44 +561,19 @@ struct TrajectoryDensityView: View {
             .padding(.top, 8)
             .padding(.bottom, 4)
 
-            let pts = paramChartPoints
-            if pts.isEmpty {
+            if runner.activeParamInfo.count < 3 || runner.paramSnapshots.isEmpty {
                 Spacer()
-                Text("L'évolution des paramètres s'affichera ici")
+                Text(runner.activeParamInfo.count < 3
+                     ? "Activez ≥ 3 paramètres\npour afficher le radar"
+                     : "Le radar s'affichera ici")
                     .font(.system(size: 10))
                     .foregroundStyle(.white.opacity(0.2))
                     .multilineTextAlignment(.center)
                 Spacer()
             } else {
-                Chart(pts) { pt in
-                    LineMark(
-                        x: .value("Iter", pt.iteration),
-                        y: .value("Valeur", pt.normValue)
-                    )
-                    .foregroundStyle(by: .value("Param", pt.label))
-                    .lineStyle(StrokeStyle(lineWidth: 1.5))
-                }
-                .chartForegroundStyleScale(
-                    range: (0..<min(runner.activeParamInfo.count, kTracePalette.count))
-                        .map { kTracePalette[$0] }
-                )
-                .chartXAxis {
-                    AxisMarks(values: .automatic) {
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4)).foregroundStyle(.white.opacity(0.15))
-                        AxisValueLabel().foregroundStyle(.white.opacity(0.45))
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(values: .stride(by: 0.25)) {
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4)).foregroundStyle(.white.opacity(0.15))
-                        AxisValueLabel().foregroundStyle(.white.opacity(0.45))
-                    }
-                }
-                .chartYScale(domain: 0...1)
-                .chartXAxisLabel("Itération", alignment: .center)
-                .chartLegend(.hidden)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                RadarParamChart(info: runner.activeParamInfo,
+                                snapshots: runner.paramSnapshots)
+                    .padding(8)
             }
         }
         .background(.black)
@@ -592,6 +637,54 @@ struct TrajectoryDensityView: View {
 
             // ── Optimizer config ─────────────────────────────────────────────
             VStack(alignment: .leading, spacing: 8) {
+
+                // Objective mode picker
+                HStack(spacing: 6) {
+                    Text("Objectif")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white.opacity(0.4))
+                    Picker("", selection: $objectiveMode) {
+                        ForEach(ObjectiveMode.allCases, id: \.self) { m in
+                            Text(m.rawValue).tag(m)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .disabled(runner.isRunning)
+                }
+
+                // Burst-specific controls (only shown when objectiveMode == .burst)
+                if objectiveMode == .burst {
+                    // AIS compartment picker
+                    if let nid = resolvedRight,
+                       let neuron = vm.network.neurons.first(where: { $0.id == nid }),
+                       neuron.compartments.count > 1 {
+                        HStack(spacing: 4) {
+                            Text("Comptage AP")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white.opacity(0.4))
+                            Picker("", selection: $burstAISID) {
+                                Text("Soma").tag(Optional<UUID>.none)
+                                ForEach(neuron.compartments) { comp in
+                                    Text(comp.name).tag(Optional(comp.id))
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity)
+                            .disabled(runner.isRunning)
+                        }
+                    }
+                    // Resting voltage
+                    burstConfigSlider("V repos", value: $burstRestingV,
+                                      range: -90 ... -55, format: "%.0f mV")
+                    // Targets
+                    burstConfigSlider("Bursts/s", value: $burstTargetBPS,
+                                      range: 0.2 ... 5.0, format: "%.1f")
+                    burstConfigSlider("AP/burst", value: $burstTargetAPs,
+                                      range: 2 ... 30,    format: "%.0f")
+                    burstConfigSlider("Période",  value: $burstTargetPeriodMs,
+                                      range: 200 ... 3000, format: "%.0f ms")
+                }
 
                 // Algorithm picker
                 HStack(spacing: 6) {
@@ -661,15 +754,32 @@ struct TrajectoryDensityView: View {
                             runner.stop()
                         } else {
                             guard let id = resolvedRight else { return }
-                            runner.start(
-                                vm:         vm,
-                                params:     optimParams,
-                                neuronID:   id,
-                                refPoints:  leftPoints,
-                                config:     optimConfig,
-                                nBinsV:     nBinsV,
-                                nBinsDvdt:  nBinsDvdt
-                            )
+                            switch objectiveMode {
+                            case .density:
+                                runner.start(
+                                    vm:        vm,
+                                    params:    optimParams,
+                                    neuronID:  id,
+                                    refPoints: leftPoints,
+                                    config:    optimConfig,
+                                    nBinsV:    nBinsV,
+                                    nBinsDvdt: nBinsDvdt
+                                )
+                            case .burst:
+                                runner.start(
+                                    vm:       vm,
+                                    params:   optimParams,
+                                    neuronID: id,
+                                    config:   optimConfig,
+                                    objective: .burstCounting(
+                                        aisCompartmentID:  burstAISID,
+                                        restingVoltage:    burstRestingV,
+                                        targetBPS:         burstTargetBPS,
+                                        targetAPsPerBurst: burstTargetAPs,
+                                        targetPeriodMs:    burstTargetPeriodMs
+                                    )
+                                )
+                            }
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -693,6 +803,25 @@ struct TrajectoryDensityView: View {
         .background(.black)
     }
 
+    @ViewBuilder
+    private func burstConfigSlider(_ label: String, value: Binding<Double>,
+                                   range: ClosedRange<Double>, format: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundStyle(.white.opacity(0.4))
+                .frame(width: 52, alignment: .leading)
+            Slider(value: value, in: range)
+                .frame(maxWidth: .infinity)
+                .tint(.white.opacity(0.35))
+                .disabled(runner.isRunning)
+            Text(String(format: format, value.wrappedValue))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.55))
+                .frame(width: 52, alignment: .trailing)
+        }
+    }
+
     private func quickSelectButton(_ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
@@ -712,7 +841,9 @@ struct TrajectoryDensityView: View {
     private func importFile() {
         let panel = NSOpenPanel()
         panel.title = "Importer une trace expérimentale"
-        panel.allowedContentTypes = [.commaSeparatedText, .plainText, .text]
+        panel.allowedContentTypes = [.commaSeparatedText, .plainText, .text,
+                                     .data, .item]   // broad net for any extension
+        panel.allowsOtherFileTypes = true             // never grey out a file
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return }
@@ -891,6 +1022,7 @@ fileprivate struct CompactNumField: View {
 
 fileprivate struct DensityCanvas: View {
     let grid: DensityGrid
+    var minFraction: Double = 0.005   // bins below this × maxCount are hidden
 
     private let mL: CGFloat = 50   // marginLeft
     private let mB: CGFloat = 32   // marginBottom
@@ -913,11 +1045,14 @@ fileprivate struct DensityCanvas: View {
                 let cW = pW / CGFloat(grid.nV)
                 let cH = pH / CGFloat(grid.nDvdt)
                 let logD = log(100.0)
+                // Minimum absolute count to display (filters out rare transients)
+                let minCount = max(1, Int(Double(grid.maxCount) * minFraction))
 
                 for row in 0..<grid.nDvdt {
                     for col in 0..<grid.nV {
                         let n = grid.counts[row * grid.nV + col]
-                        guard n > 0 else { continue }
+                        guard n >= minCount else { continue }
+                        // Normalise relative to counts above threshold for full colour range
                         let t = log(1.0 + Double(n) / Double(grid.maxCount) * 99.0) / logD
                         let x = mL + CGFloat(col) * cW
                         let y = mT + pH - CGFloat(row + 1) * cH
@@ -1040,5 +1175,147 @@ fileprivate struct DensityCanvas: View {
         let mag  = pow(10, floor(log10(max(raw, 1e-10))))
         let norm = raw / mag
         return (norm < 2 ? 2 : norm < 5 ? 5 : 10) * mag
+    }
+}
+
+// MARK: - RadarParamChart
+
+/// Spider/radar chart showing normalised parameter values.
+/// • Faint grey polygon  = initial state (first snapshot)
+/// • Accent polygon      = current best  (last snapshot)
+/// • Rings at 0.25 / 0.5 / 0.75 / 1.0
+fileprivate struct RadarParamChart: View {
+
+    let info:      [ActiveParamInfo]
+    let snapshots: [(iteration: Int, values: [Double])]
+
+    // Accent colour identical to the rest of the dark UI
+    private let fillColor  = Color.accentColor
+    private let initColor  = Color.white
+
+    var body: some View {
+        GeometryReader { geo in
+            let n      = info.count
+            let sz     = geo.size
+            let cx     = sz.width  / 2
+            let cy     = sz.height / 2
+            // Leave room for labels (≈28 pt on each side)
+            let radius = min(cx, cy) - 30
+
+            ZStack {
+                // ── Canvas: grid + polygons ───────────────────────────────
+                Canvas { ctx, _ in
+                    guard n >= 3 else { return }
+
+                    // Grid rings
+                    for ring in [0.25, 0.5, 0.75, 1.0] {
+                        let r = radius * ring
+                        let rect = CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
+                        ctx.stroke(Path(ellipseIn: rect),
+                                   with: .color(.white.opacity(ring == 1.0 ? 0.18 : 0.09)),
+                                   lineWidth: ring == 1.0 ? 0.8 : 0.5)
+                    }
+
+                    // Ring labels (0.25 … 1.0) on the top axis
+                    for (ring, label) in [(0.25,"0.25"),(0.5,"0.5"),(0.75,"0.75"),(1.0,"1")] {
+                        let r   = radius * ring
+                        let pt  = CGPoint(x: cx + 3, y: cy - r - 1)
+                        ctx.draw(Text(label)
+                                    .font(.system(size: 7))
+                                    .foregroundStyle(.white.opacity(0.25)),
+                                 at: pt, anchor: .bottomLeading)
+                    }
+
+                    // Axis spokes
+                    for i in 0..<n {
+                        let a   = axisAngle(i, n)
+                        let tip = CGPoint(x: cx + radius * cos(a), y: cy + radius * sin(a))
+                        var p   = Path(); p.move(to: CGPoint(x: cx, y: cy)); p.addLine(to: tip)
+                        ctx.stroke(p, with: .color(.white.opacity(0.15)), lineWidth: 0.5)
+                    }
+
+                    // Initial state polygon (first snapshot)
+                    if let first = snapshots.first {
+                        let nv = normValues(first.values)
+                        let p  = polygon(nv, cx: cx, cy: cy, radius: radius, n: n)
+                        ctx.fill(p,   with: .color(initColor.opacity(0.05)))
+                        ctx.stroke(p, with: .color(initColor.opacity(0.25)), lineWidth: 1)
+                    }
+
+                    // Current best polygon (last snapshot)
+                    if let last = snapshots.last {
+                        let nv = normValues(last.values)
+                        let p  = polygon(nv, cx: cx, cy: cy, radius: radius, n: n)
+                        ctx.fill(p,   with: .color(fillColor.opacity(0.22)))
+                        ctx.stroke(p, with: .color(fillColor.opacity(0.85)), lineWidth: 1.8)
+
+                        // Vertex dots
+                        for (i, v) in nv.enumerated() {
+                            let a  = axisAngle(i, n)
+                            let r  = radius * v
+                            let pt = CGPoint(x: cx + r * cos(a), y: cy + r * sin(a))
+                            let dot = CGRect(x: pt.x - 3, y: pt.y - 3, width: 6, height: 6)
+                            ctx.fill(Path(ellipseIn: dot), with: .color(fillColor))
+                        }
+                    }
+                }
+                .frame(width: sz.width, height: sz.height)
+
+                // ── Axis labels (SwiftUI Text for proper font rendering) ───
+                ForEach(0..<n, id: \.self) { i in
+                    let a    = axisAngle(i, n)
+                    let labR = radius + 18
+                    let lx   = cx + labR * cos(a)
+                    let ly   = cy + labR * sin(a)
+
+                    Text(shortLabel(info[i].label))
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .fixedSize()
+                        .position(x: lx, y: ly)
+                }
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// Angle of axis i (top = −π/2 so first axis points up).
+    private func axisAngle(_ i: Int, _ n: Int) -> Double {
+        Double(i) * 2 * .pi / Double(n) - .pi / 2
+    }
+
+    /// Normalise raw parameter values to [0, 1].
+    private func normValues(_ raw: [Double]) -> [Double] {
+        info.indices.map { i in
+            guard i < raw.count else { return 0 }
+            let range = info[i].hi - info[i].lo
+            guard range > 0 else { return 0 }
+            return ((raw[i] - info[i].lo) / range).clamped(to: 0...1)
+        }
+    }
+
+    /// Build a closed radar polygon path.
+    private func polygon(_ nv: [Double], cx: Double, cy: Double,
+                          radius: Double, n: Int) -> Path {
+        var path = Path()
+        for i in 0..<n {
+            let a  = axisAngle(i, n)
+            let r  = radius * (i < nv.count ? nv[i] : 0)
+            let pt = CGPoint(x: cx + r * cos(a), y: cy + r * sin(a))
+            i == 0 ? path.move(to: pt) : path.addLine(to: pt)
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    /// Short label: keep the part after "·" if present, else truncate to 8 chars.
+    private func shortLabel(_ label: String) -> String {
+        if let idx = label.firstIndex(of: "·") {
+            return String(label[label.index(after: idx)...])
+        }
+        return label.count > 8 ? String(label.prefix(8)) : label
     }
 }

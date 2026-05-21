@@ -403,6 +403,9 @@ private func withGateInf(_ ch: IonChannel, gi: Int,
     case let c as SodiumChannel:       applyGateInfSigmoid(c, gi: gi, transform: inf)
     case let c as PotassiumChannel:    applyGateInfSigmoid(c, gi: gi, transform: inf)
     case let c as TTypeCalciumChannel: applyGateInfSigmoid(c, gi: gi, transform: inf)
+    case let c as CaSChannel:          applyGateInfSigmoid(c, gi: gi, transform: inf)
+    case let c as ATypeChannel:        applyGateInfSigmoid(c, gi: gi, transform: inf)
+    case let c as HChannel:            applyGateInfSigmoid(c, gi: gi, transform: inf)
     default: break
     }
 }
@@ -414,6 +417,9 @@ private func withGateTau(_ ch: IonChannel, gi: Int,
     case let c as SodiumChannel:       applyGateTauGaussian(c, gi: gi, transform: tau)
     case let c as PotassiumChannel:    applyGateTauGaussian(c, gi: gi, transform: tau)
     case let c as TTypeCalciumChannel: applyGateTauGaussian(c, gi: gi, transform: tau)
+    case let c as CaSChannel:          applyGateTauGaussian(c, gi: gi, transform: tau)
+    case let c as ATypeChannel:        applyGateTauGaussian(c, gi: gi, transform: tau)
+    case let c as HChannel:            applyGateTauGaussian(c, gi: gi, transform: tau)
     default: break
     }
 }
