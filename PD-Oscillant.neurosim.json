@@ -1,0 +1,246 @@
+{
+  "graphConfig" : {
+    "entries" : [
+      {
+        "colorB" : 1,
+        "colorG" : 0.5686274766921997,
+        "colorR" : 0,
+        "groupID" : "74132456-AE9F-43A7-8617-A0102F4FFFF9",
+        "signal" : {
+          "compartmentID" : "4A5B8CDC-F79A-4411-82C2-FE488035D85D",
+          "kind" : "voltage",
+          "neuronID" : "14232F60-D6C5-4817-BE54-7D4DD370E8AD"
+        }
+      }
+    ],
+    "plotWindow" : 2000
+  },
+  "neurons" : [
+    {
+      "axialCouplings" : [
+
+      ],
+      "compartments" : [
+        {
+          "capacitance" : 1,
+          "channels" : [
+            {
+              "gMax" : 24.9197197993809,
+              "gateInfOverrides" : [
+                null,
+                null
+              ],
+              "gateTauOverrides" : [
+                null,
+                null
+              ],
+              "kind" : "sodium",
+              "reversal" : 67
+            },
+            {
+              "gMax" : 2.246179697152484,
+              "gateInfOverrides" : [
+                null
+              ],
+              "gateTauOverrides" : [
+                null
+              ],
+              "kind" : "potassium",
+              "reversal" : -98
+            },
+            {
+              "gMax" : 20,
+              "gateInfOverrides" : [
+                null,
+                null
+              ],
+              "gateTauOverrides" : [
+                null,
+                null
+              ],
+              "kind" : "tTypeCalcium",
+              "reversal" : 132
+            },
+            {
+              "gMax" : 2,
+              "gateInfOverrides" : [
+                null
+              ],
+              "gateTauOverrides" : [
+                null
+              ],
+              "kind" : "ih",
+              "reversal" : -20
+            },
+            {
+              "gMax" : 1.5541576122644172,
+              "gateInfOverrides" : [
+                null,
+                null
+              ],
+              "gateTauOverrides" : [
+                null,
+                null
+              ],
+              "kind" : "aType",
+              "reversal" : -98
+            },
+            {
+              "gMax" : 37.935782532166016,
+              "gateInfOverrides" : [
+                null
+              ],
+              "gateTauOverrides" : [
+                null
+              ],
+              "kind" : "sk",
+              "reversal" : -98
+            },
+            {
+              "gMax" : 0.5488248012324699,
+              "gateInfOverrides" : [
+
+              ],
+              "gateTauOverrides" : [
+
+              ],
+              "kind" : "leak",
+              "reversal" : -78
+            }
+          ],
+          "concentrationDynamics" : [
+            {
+              "ionSymbol" : "Ca",
+              "restingConc" : 0.0001,
+              "tauDecay" : 120
+            }
+          ],
+          "diameter" : 20,
+          "displayAngle" : 0,
+          "id" : "4A5B8CDC-F79A-4411-82C2-FE488035D85D",
+          "length" : 20,
+          "name" : "soma"
+        }
+      ],
+      "id" : "14232F60-D6C5-4817-BE54-7D4DD370E8AD",
+      "name" : "PD oscillateur",
+      "positionX" : 238.32421875,
+      "positionY" : 209.33203125,
+      "somaID" : "4A5B8CDC-F79A-4411-82C2-FE488035D85D"
+    }
+  ],
+  "optimSettings" : {
+    "algorithm" : "Differential Evolution",
+    "cmaeSigma0" : 0.25,
+    "deCR" : 0.9,
+    "deF" : 0.8,
+    "dePopFactor" : 6,
+    "maxIterations" : 150,
+    "params" : [
+      {
+        "chi" : 0,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : true,
+        "maxBound" : 400,
+        "minBound" : 0,
+        "targetKind" : "channelGMax"
+      },
+      {
+        "chi" : 1,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : true,
+        "maxBound" : 75,
+        "minBound" : 0,
+        "targetKind" : "channelGMax"
+      },
+      {
+        "chi" : 2,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : true,
+        "maxBound" : 30,
+        "minBound" : 0,
+        "targetKind" : "channelGMax"
+      },
+      {
+        "chi" : 3,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : true,
+        "maxBound" : 4,
+        "minBound" : 0,
+        "targetKind" : "channelGMax"
+      },
+      {
+        "chi" : 4,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : true,
+        "maxBound" : 2.5,
+        "minBound" : 0,
+        "targetKind" : "channelGMax"
+      },
+      {
+        "chi" : 5,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : true,
+        "maxBound" : 100,
+        "minBound" : 0,
+        "targetKind" : "channelGMax"
+      },
+      {
+        "chi" : 5,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : false,
+        "maxBound" : 0.01,
+        "minBound" : 1e-06,
+        "targetKind" : "skHalfActivation"
+      },
+      {
+        "chi" : 5,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : false,
+        "maxBound" : 10,
+        "minBound" : 0.5,
+        "targetKind" : "skHillCoeff"
+      },
+      {
+        "chi" : 5,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : false,
+        "maxBound" : 500,
+        "minBound" : 1,
+        "targetKind" : "skTauActivation"
+      },
+      {
+        "chi" : 6,
+        "ci" : 0,
+        "gi" : -1,
+        "isActive" : true,
+        "maxBound" : 1,
+        "minBound" : 0,
+        "targetKind" : "channelGMax"
+      }
+    ],
+    "simDuration" : 800,
+    "targetError" : 1e-07
+  },
+  "stimuli" : [
+    {
+      "compartmentID" : "4A5B8CDC-F79A-4411-82C2-FE488035D85D",
+      "stimulus" : {
+        "amplitude" : -1,
+        "kind" : "constant"
+      }
+    }
+  ],
+  "synapses" : [
+
+  ]
+}

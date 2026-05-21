@@ -73,6 +73,29 @@ struct ToolPaletteView: View {
             reservedButton(icon: "waveform.path.badge.plus", label: "Générateur de patterns")
             reservedButton(icon: "cube.transparent",     label: "Vue 3D")
 
+            // ── RÉSEAU ───────────────────────────────────────────────────────
+            paletteSeparator
+            sectionLabel("RÉSEAU")
+
+            networkBuilderButton(
+                systemImage: "doc.on.doc.fill",
+                label: "Dupliquer ×N",
+                color: Color(hue: 0.55, saturation: 0.5, brightness: 0.8),
+                tab: 0
+            )
+            networkBuilderButton(
+                systemImage: "arrow.triangle.branch",
+                label: "Auto-connecter",
+                color: Color(hue: 0.08, saturation: 0.55, brightness: 0.82),
+                tab: 1
+            )
+            networkBuilderButton(
+                systemImage: "square.3.layers.3d",
+                label: "Topologie",
+                color: Color(hue: 0.73, saturation: 0.45, brightness: 0.80),
+                tab: 2
+            )
+
             Spacer()
         }
         .padding(.vertical, 8)
@@ -203,6 +226,32 @@ struct ToolPaletteView: View {
               let n = Int(tf.stringValue.trimmingCharacters(in: .whitespaces)),
               n > 0 else { return nil }
         return n
+    }
+
+    // MARK: - Network builder action buttons (open sheet, do NOT change active tool)
+
+    @ViewBuilder
+    private func networkBuilderButton(systemImage: String,
+                                      label: String,
+                                      color: Color,
+                                      tab: Int) -> some View {
+        Button {
+            vm.networkBuilderInitialTab = tab
+            vm.showNetworkBuilder = true
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .regular))
+                .frame(width: 32, height: 32)
+                .foregroundStyle(color.opacity(0.85))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(color.opacity(0.12))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     // MARK: - Reserved placeholder

@@ -68,27 +68,22 @@ public final class CANChannel: IonChannel, HHGated {
         return gMax * m * (v - reversal)
     }
 
-    /// Voltage-only fallback (used by HHGated preview); evaluates at resting [Ca].
+    /// Gate derivative. `_latestCa` updated by `applyConcentrations` before this call.
     public func gateDerivatives(voltage _: Double,
                                 gates: ArraySlice<Double>,
                                 into output: inout [Double],
                                 offset: Int) {
         let m = gates[gates.startIndex]
-        output[offset] = (hillInf(calcium: restingCalcium) - m) / tauActivation
-    }
-
-    /// Concentration-aware path called by Compartment during integration.
-    public func gateDerivatives(voltage _: Double,
-                                gates: ArraySlice<Double>,
-                                concentrations: [String: Double],
-                                into output: inout [Double],
-                                offset: Int) {
-        let ca = concentrations["Ca"] ?? restingCalcium
-        let m  = gates[gates.startIndex]
-        output[offset] = (hillInf(calcium: ca) - m) / tauActivation
+        output[offset] = (hillInf(calcium: _latestCa) - m) / tauActivation
     }
 
     public var concentrationDependencies: [String] { ["Ca"] }
+
+    private var _latestCa: Double = 1e-4
+
+    public func applyConcentrations(_ concentrations: [String: Double]) {
+        _latestCa = concentrations["Ca"] ?? restingCalcium
+    }
 
     // MARK: HHGated
 
@@ -96,8 +91,9 @@ public final class CANChannel: IonChannel, HHGated {
 
     /// Preview curve: m∞ vs V is flat (no V dependence).
     /// Returns the Hill value at resting [Ca] so the preview shows a constant.
+    /// Rush-Larsen steady-state: uses _latestCa so exponential update is correct.
     public func gateInf(_ index: Int, voltage _: Double) -> Double {
-        index == 0 ? hillInf(calcium: restingCalcium) : 0
+        index == 0 ? hillInf(calcium: _latestCa) : 0
     }
 
     /// Preview: constant time constant.

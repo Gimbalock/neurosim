@@ -55,6 +55,10 @@ struct NeuroSimApp: App {
                 Divider()
                 OpenResultsMenuItem()
             }
+            CommandMenu("Presets") {
+                Button("PD Neuron — soma + AIS (STG)") { viewModel.loadPresetPD() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+            }
         }
 
         Window("Results", id: "results") {

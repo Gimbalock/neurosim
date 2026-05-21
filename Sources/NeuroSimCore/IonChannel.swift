@@ -55,31 +55,22 @@ public protocol IonChannel: AnyObject {
     /// dependency. Used by `Compartment` to know which ions to pass.
     var concentrationDependencies: [String] { get }
 
-    /// Concentration-aware variant of `gateDerivatives`. `concentrations` is
-    /// a dictionary of ion-symbol → current value (mM) for every tracked ion
-    /// in this compartment. Channels that depend on concentrations override
-    /// this method; all others get the default implementation below which
-    /// simply ignores `concentrations` and delegates to the voltage-only form.
-    func gateDerivatives(voltage v: Double,
-                         gates: ArraySlice<Double>,
-                         concentrations: [String: Double],
-                         into output: inout [Double],
-                         offset: Int)
+    /// Called by Compartment once per integration step, BEFORE `gateDerivatives`,
+    /// with the current intracellular ion concentrations (mM).
+    /// Ca²⁺-dependent channels (SK, BK, CAN…) override this to cache the Ca
+    /// value and use it inside their `gateDerivatives(voltage:gates:into:offset:)`.
+    /// Using a dedicated unique method name (no overloads) guarantees correct
+    /// Swift protocol witness dispatch via existentials.
+    /// Default: no-op — purely voltage-dependent channels ignore it.
+    func applyConcentrations(_ concentrations: [String: Double])
 }
 
 public extension IonChannel {
     /// Default: no concentration dependency.
     var concentrationDependencies: [String] { [] }
 
-    /// Default: ignore concentrations and delegate to the voltage-only form.
-    /// Every existing channel conforms automatically without any source change.
-    func gateDerivatives(voltage v: Double,
-                         gates: ArraySlice<Double>,
-                         concentrations: [String: Double],
-                         into output: inout [Double],
-                         offset: Int) {
-        gateDerivatives(voltage: v, gates: gates, into: &output, offset: offset)
-    }
+    /// Default: no-op — purely voltage-dependent channels ignore concentrations.
+    func applyConcentrations(_ concentrations: [String: Double]) {}
 
     /// Default: channel doesn't declare an ion species. Keeps every channel
     /// written before the IonSpecies layer existed conforming as-is.

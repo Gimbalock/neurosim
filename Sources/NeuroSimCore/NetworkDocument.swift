@@ -554,7 +554,7 @@ public extension NetworkDocument {
 
 extension ChannelDoc {
 
-    static func from(_ ch: IonChannel) -> ChannelDoc {
+    public static func from(_ ch: IonChannel) -> ChannelDoc {
         switch ch {
         case let s as SodiumChannel:
             return ChannelDoc(kind: "sodium", gMax: s.gMax, reversal: s.reversal,
@@ -617,7 +617,7 @@ extension ChannelDoc {
         }
     }
 
-    func toChannel() -> IonChannel {
+    public func toChannel() -> IonChannel {
         let infs = gateInfOverrides.map { $0.map { GateCurve.from($0) } }
         let taus = gateTauOverrides.map { $0.map { GateCurve.from($0) } }
         switch kind {

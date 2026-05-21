@@ -170,13 +170,24 @@ public final class Compartment: Identifiable {
                 localState[localState.startIndex + 1 + totalGateSlots + i]
         }
 
+        // Step 1 — push concentrations into Ca-dependent channels.
+        // applyConcentrations has a unique name (no overloads), guaranteeing
+        // correct Swift protocol witness dispatch. Channels cache the value and
+        // use it inside their voltage-only gateDerivatives below.
+        if !concentrations.isEmpty {
+            for ch in channels where !ch.concentrationDependencies.isEmpty {
+                ch.applyConcentrations(concentrations)
+            }
+        }
+
+        // Step 2 — compute gate derivatives (voltage-only signature; no overload
+        // ambiguity). Ca-dependent channels use their cached _latestCa value.
         var src = localState.startIndex + 1
         var dst = offset + 1
         for ch in channels {
             let gates = localState[src..<(src + ch.stateCount)]
             iIonic += ch.current(voltage: v, gates: gates)
             ch.gateDerivatives(voltage: v, gates: gates,
-                               concentrations: concentrations,
                                into: &output, offset: dst)
             src += ch.stateCount
             dst += ch.stateCount

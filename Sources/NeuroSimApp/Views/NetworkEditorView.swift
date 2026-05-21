@@ -78,6 +78,11 @@ struct NetworkEditorView: View {
         canvas
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onHover { isMouseOverCanvas = $0 }
+            .sheet(isPresented: $vm.showNetworkBuilder) {
+                NetworkBuilderSheet(isPresented: $vm.showNetworkBuilder,
+                                    selectedTab: vm.networkBuilderInitialTab)
+                    .environmentObject(vm)
+            }
     }
 
     // MARK: - Canvas

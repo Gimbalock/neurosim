@@ -293,7 +293,19 @@ struct ChannelEditorSheet: View {
     @State private var gates:       [UnifiedGateDraft]
     @State private var expandedGate: UUID? = nil
 
+    // ── SK-specific state (only used when editing an SKChannel) ──────────────
+    @State private var skHalfActivation: Double   // mM  (e.g. 5e-4)
+    @State private var skHillN:          Double   // Hill coefficient
+    @State private var skTauW:           Double   // ms
+    @State private var skRestCa:         Double   // mM resting [Ca]
+
     let context: ChannelEditorContext
+
+    /// True when the underlying channel is an SKChannel — shows dedicated Ca²⁺ editor.
+    private var isSK: Bool {
+        if case let .compartment(ch, _) = context { return ch is SKChannel }
+        return false
+    }
 
     init(draft: CustomChannelDefinition, context: ChannelEditorContext) {
         _channelName = State(initialValue: draft.name)
@@ -302,6 +314,10 @@ struct ChannelEditorSheet: View {
         _reversal    = State(initialValue: draft.reversal)
         _gates       = State(initialValue: draft.gates.map { UnifiedGateDraft(from: $0) })
         self.context = context
+        _skHalfActivation = State(initialValue: 5e-4)
+        _skHillN          = State(initialValue: 4)
+        _skTauW           = State(initialValue: 80)
+        _skRestCa         = State(initialValue: 1e-4)
     }
 
     init(channel: any HHGated, context: ChannelEditorContext) {
@@ -309,9 +325,22 @@ struct ChannelEditorSheet: View {
         _ionSymbol   = State(initialValue: channel.species?.symbol)
         _gMax        = State(initialValue: channel.gMax)
         _reversal    = State(initialValue: channel.reversal)
-        _gates       = State(initialValue: (0..<channel.stateCount).map {
-            UnifiedGateDraft(from: channel, index: $0)
-        })
+        if let sk = channel as? SKChannel {
+            // SK is Ca²⁺-dependent — no meaningful voltage gate drafts
+            _gates            = State(initialValue: [])
+            _skHalfActivation = State(initialValue: sk.halfActivation)
+            _skHillN          = State(initialValue: sk.hillCoefficient)
+            _skTauW           = State(initialValue: sk.tauActivation)
+            _skRestCa         = State(initialValue: sk.restingCalcium)
+        } else {
+            _gates            = State(initialValue: (0..<channel.stateCount).map {
+                UnifiedGateDraft(from: channel, index: $0)
+            })
+            _skHalfActivation = State(initialValue: 5e-4)
+            _skHillN          = State(initialValue: 4)
+            _skTauW           = State(initialValue: 80)
+            _skRestCa         = State(initialValue: 1e-4)
+        }
         self.context = context
     }
 
@@ -330,13 +359,19 @@ struct ChannelEditorSheet: View {
             Divider()
             HStack(alignment: .top, spacing: 0) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) { formSection; gatesSection }
-                        .padding(16)
+                    VStack(alignment: .leading, spacing: 14) {
+                        formSection
+                        if isSK { skParamsSection } else { gatesSection }
+                    }
+                    .padding(16)
                 }
                 .frame(width: 420)
                 Divider()
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) { previewSection }.padding(16)
+                    VStack(alignment: .leading, spacing: 16) {
+                        if isSK { skPreviewSection } else { previewSection }
+                    }
+                    .padding(16)
                 }
             }
         }
@@ -355,15 +390,23 @@ struct ChannelEditorSheet: View {
             onSave(d)
         case let .compartment(channel, onSave):
             channel.gMax = gMax; channel.reversal = reversal
-            for (i, g) in gates.enumerated() {
-                if i < channel.gateInfOverrides.count {
-                    channel.gateInfOverrides[i] = g.infCurve
-                    channel.gateTauOverrides[i]  = g.tauCurve
+            if let sk = channel as? SKChannel {
+                // Apply Ca²⁺-dependent parameters directly — do NOT touch gateInfOverrides
+                sk.halfActivation  = skHalfActivation
+                sk.hillCoefficient = skHillN
+                sk.tauActivation   = skTauW
+                sk.restingCalcium  = skRestCa
+            } else {
+                for (i, g) in gates.enumerated() {
+                    if i < channel.gateInfOverrides.count {
+                        channel.gateInfOverrides[i] = g.infCurve
+                        channel.gateTauOverrides[i]  = g.tauCurve
+                    }
                 }
-            }
-            if let cc = channel as? CustomChannel {
-                for (i, g) in gates.enumerated() where i < cc.definition.gates.count {
-                    cc.definition.gates[i] = g.toGateDef()
+                if let cc = channel as? CustomChannel {
+                    for (i, g) in gates.enumerated() where i < cc.definition.gates.count {
+                        cc.definition.gates[i] = g.toGateDef()
+                    }
                 }
             }
             onSave(channel)
@@ -400,7 +443,44 @@ struct ChannelEditorSheet: View {
         }
     }
 
-    // MARK: Gates
+    // MARK: SK Ca²⁺-dependent params
+
+    private var skParamsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Cinétique Ca²⁺").font(.headline)
+                Text("(Hill · dépendant du [Ca²⁺]ᵢ)").font(.caption).foregroundStyle(.secondary)
+            }
+            // Kd in µM for readability; store internally in mM
+            NumericSlider(label: "Kd",  value: Binding(
+                get: { skHalfActivation * 1000 },   // mM → µM
+                set: { skHalfActivation = $0 / 1000 }
+            ), range: 0.01...10, step: 0.01, format: "%.2f", unit: "µM", labelWidth: 80)
+            NumericSlider(label: "Hill n", value: $skHillN,  range: 1...8,    step: 0.5, format: "%.1f", unit: "",    labelWidth: 80)
+            NumericSlider(label: "τ_w",    value: $skTauW,   range: 1...500,  step: 1,   format: "%.0f", unit: "ms",  labelWidth: 80)
+            NumericSlider(label: "[Ca]₀",  value: Binding(
+                get: { skRestCa * 1000 },            // mM → µM
+                set: { skRestCa = $0 / 1000 }
+            ), range: 0.001...1, step: 0.001, format: "%.3f", unit: "µM", labelWidth: 80)
+
+            Text("w∞([Ca]) = [Ca]ⁿ / (Kdⁿ + [Ca]ⁿ)  ·  τ_w indépendant de V")
+                .font(.caption2).foregroundStyle(.tertiary).padding(.top, 4)
+        }
+    }
+
+    // MARK: SK Preview — w∞ vs [Ca²⁺]
+
+    private var skPreviewSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Aperçu").font(.headline)
+            Text("w∞([Ca²⁺])").font(.subheadline).foregroundStyle(.secondary)
+            SKHillPreviewChart(halfActivation: skHalfActivation,
+                               hillN: skHillN,
+                               tauW: skTauW)
+        }
+    }
+
+    // MARK: Gates (non-SK channels)
 
     private var gatesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -436,7 +516,7 @@ struct ChannelEditorSheet: View {
         return ["m","h","n","p","q","r","s"].first { !used.contains($0) } ?? "x\(gates.count)"
     }
 
-    // MARK: Preview interactif
+    // MARK: Preview interactif (non-SK)
 
     private var previewSection: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -449,6 +529,80 @@ struct ChannelEditorSheet: View {
                 InteractivePreviewChart(gates: $gates, title: "τ(V)",
                                         yLabel: "τ (ms)", yRange: nil, isInf: false)
             }
+        }
+    }
+}
+
+// MARK: - SKHillPreviewChart
+
+/// Previews w∞ vs [Ca²⁺] and the time constant for an SK channel.
+private struct SKHillPreviewChart: View {
+    let halfActivation: Double   // mM
+    let hillN:          Double
+    let tauW:           Double   // ms
+
+    private struct Pt: Identifiable {
+        let id: Double; let ca: Double; let w: Double
+    }
+
+    private var pts: [Pt] {
+        let caMax = max(halfActivation * 5, 0.002)   // show up to 5× Kd or 2 µM
+        let steps = 200
+        return (0...steps).map { i in
+            let ca = Double(i) / Double(steps) * caMax       // mM
+            let n  = hillN
+            let kn = pow(halfActivation, n)
+            let cn = pow(max(ca, 0), n)
+            let w  = cn / (kn + cn)
+            return Pt(id: ca, ca: ca * 1000, w: w)            // display ca in µM
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Chart(pts) { p in
+                LineMark(x: .value("[Ca²⁺] (µM)", p.ca),
+                         y: .value("w∞",           p.w))
+                    .foregroundStyle(Color.accentColor)
+                // Mark Kd
+                RuleMark(x: .value("Kd", halfActivation * 1000))
+                    .foregroundStyle(.orange.opacity(0.6))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .annotation(position: .top, alignment: .leading) {
+                        Text("Kd=\(String(format: "%.2f", halfActivation*1000)) µM")
+                            .font(.caption2).foregroundStyle(.orange)
+                    }
+            }
+            .chartYScale(domain: 0...1)
+            .chartXAxisLabel("[Ca²⁺] (µM)")
+            .chartYAxisLabel("w∞", position: .leading)
+            .frame(height: 180)
+
+            // τ info
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("τ_w = \(String(format: "%.0f", tauW)) ms  (indépendant de V et [Ca²⁺])")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            // Hill coefficient info
+            HStack(spacing: 4) {
+                Image(systemName: "function")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Hill n = \(String(format: "%.1f", hillN))  →  coopérativité \(hillN >= 3 ? "forte" : hillN >= 2 ? "modérée" : "faible")")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            // Explain Ca source
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "info.circle")
+                    .font(.caption).foregroundStyle(.blue)
+                Text("Le canal lit [Ca²⁺]ᵢ calculé par EnergyEngine à partir des courants Ca (I_T, I_L…). Activer la dynamique calcique dans le compartiment pour un effet SK réaliste.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(8)
+            .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 }

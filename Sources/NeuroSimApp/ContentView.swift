@@ -38,14 +38,16 @@ struct ContentView: View {
         ZStack {
             mainLayout
 
-            // Welcome overlay — shown whenever the network has no neurons
-            if vm.network.neurons.isEmpty {
+            // Welcome overlay — shown on fresh launch until the user picks an action.
+            // `showWelcomeScreen` is set to false by newNetwork/openNetwork/importNetwork
+            // so the overlay dismisses even when the resulting network is empty.
+            if vm.showWelcomeScreen {
                 WelcomeView()
                     .environmentObject(vm)
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: vm.network.neurons.isEmpty)
+        .animation(.easeInOut(duration: 0.2), value: vm.showWelcomeScreen)
     }
 
     private var mainLayout: some View {

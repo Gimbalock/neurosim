@@ -92,35 +92,30 @@ public final class BKChannel: IonChannel, HHGated {
         return gMax * w * (v - reversal)
     }
 
-    /// Voltage-only fallback; preview chart uses this at restingCalcium.
+    /// Gate derivative. `_latestCa` updated by `applyConcentrations` before this call.
     public func gateDerivatives(voltage v: Double,
                                 gates: ArraySlice<Double>,
                                 into output: inout [Double],
                                 offset: Int) {
         let w = gates[gates.startIndex]
-        output[offset] = (inf(voltage: v, calcium: restingCalcium) - w)
-                          / tau(voltage: v)
-    }
-
-    /// Concentration-aware path called by Compartment during integration.
-    public func gateDerivatives(voltage v: Double,
-                                gates: ArraySlice<Double>,
-                                concentrations: [String: Double],
-                                into output: inout [Double],
-                                offset: Int) {
-        let ca = concentrations["Ca"] ?? restingCalcium
-        let w  = gates[gates.startIndex]
-        output[offset] = (inf(voltage: v, calcium: ca) - w) / tau(voltage: v)
+        output[offset] = (inf(voltage: v, calcium: _latestCa) - w) / tau(voltage: v)
     }
 
     public var concentrationDependencies: [String] { ["Ca"] }
+
+    private var _latestCa: Double = 1e-4
+
+    public func applyConcentrations(_ concentrations: [String: Double]) {
+        _latestCa = concentrations["Ca"] ?? restingCalcium
+    }
 
     // MARK: HHGated
 
     public var gateNames: [String] { ["w"] }
 
+    /// Rush-Larsen steady-state: uses _latestCa so exponential update is correct.
     public func gateInf(_ index: Int, voltage v: Double) -> Double {
-        index == 0 ? inf(voltage: v, calcium: restingCalcium) : 0
+        index == 0 ? inf(voltage: v, calcium: _latestCa) : 0
     }
 
     public func gateTau(_ index: Int, voltage v: Double) -> Double {

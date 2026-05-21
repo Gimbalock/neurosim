@@ -42,6 +42,14 @@ public final class SKChannel: IonChannel, HHGated {
     /// 1e-4 mM = 100 nM — typical cytosolic resting value.
     public var restingCalcium: Double = 1e-4
 
+    /// Most-recently seen intracellular [Ca²⁺] (mM), updated each integration
+    /// step by the concentration-aware `gateDerivatives` path.
+    /// Kept as a stored property so the voltage-only fallback (used e.g. by
+    /// VoltageClampEngine and the UI preview) always uses the latest value seen
+    /// during simulation — avoiding any Swift protocol-dispatch ambiguity
+    /// between the two `gateDerivatives` overloads.
+    private var _latestCa: Double = 1e-4
+
     public var gateInfOverrides: [GateCurve?] = [nil]
     public var gateTauOverrides: [GateCurve?] = [nil]
 
@@ -71,36 +79,35 @@ public final class SKChannel: IonChannel, HHGated {
         return gMax * w * (v - reversal)
     }
 
-    /// Voltage-only fallback (used by HHGated preview); evaluates at resting [Ca].
+    /// Gate derivative. `_latestCa` is updated by `applyConcentrations` each step,
+    /// which Compartment calls before this method. No overloaded variant needed.
     public func gateDerivatives(voltage _: Double,
                                 gates: ArraySlice<Double>,
                                 into output: inout [Double],
                                 offset: Int) {
         let w = gates[gates.startIndex]
-        output[offset] = (hillInf(calcium: restingCalcium) - w) / tauActivation
-    }
-
-    /// Concentration-aware path called by Compartment during integration.
-    public func gateDerivatives(voltage _: Double,
-                                gates: ArraySlice<Double>,
-                                concentrations: [String: Double],
-                                into output: inout [Double],
-                                offset: Int) {
-        let ca = concentrations["Ca"] ?? restingCalcium
-        let w  = gates[gates.startIndex]
-        output[offset] = (hillInf(calcium: ca) - w) / tauActivation
+        output[offset] = (hillInf(calcium: _latestCa) - w) / tauActivation
     }
 
     public var concentrationDependencies: [String] { ["Ca"] }
+
+    /// Receives the current [Ca²⁺]ᵢ (mM) from Compartment before each
+    /// `gateDerivatives` call, bypassing any Swift existential dispatch
+    /// ambiguity between overloaded `gateDerivatives` signatures.
+    public func applyConcentrations(_ concentrations: [String: Double]) {
+        _latestCa = concentrations["Ca"] ?? restingCalcium
+    }
 
     // MARK: HHGated
 
     public var gateNames: [String] { ["w"] }
 
-    /// Preview curve: w∞ vs V is flat (no V dependence).
-    /// Returns the Hill value at resting [Ca] so the preview shows a constant.
+    /// Rush-Larsen steady-state: uses the most recently cached [Ca²⁺]
+    /// so the exponential update w_new = w∞ + (w-w∞)·exp(-dt/τ) is
+    /// correct for Ca-dependent gating (not stuck at restingCalcium).
+    /// `applyConcentrations` is always called before gateInf in the RL loop.
     public func gateInf(_ index: Int, voltage _: Double) -> Double {
-        index == 0 ? hillInf(calcium: restingCalcium) : 0
+        index == 0 ? hillInf(calcium: _latestCa) : 0
     }
 
     /// Preview: constant time constant.
