@@ -67,14 +67,8 @@ struct ChannelKineticsView: View {
     @State private var history: [[ControlPoint]] = []   // for undo
 
     // V(t) density overlay — frozen snapshot of the simulation trace
+    // VBin is defined at file scope in ChannelEditorSheet.swift (shared)
     @State private var frozenVBins: [VBin]? = nil
-
-    /// One histogram bin: voltage centre + normalized density (0…1).
-    struct VBin: Identifiable {
-        let vCenter:  Double
-        let density:  Double   // 0…1 (normalised to peak bin)
-        var id: Double { vCenter }
-    }
 
     // Axis range — user-adjustable via the corner triangle handles.
     // Initialised from `defaultXRange()` / `defaultYRange()` on appear.
@@ -965,33 +959,13 @@ let plotFrame: CGRect = proxy.plotFrame.map { geo[$0] } ?? .zero
     /// current visible voltage range (`xMin…xMax`) so it aligns with the
     /// gate curves already on screen.
     private func snapshotVTrace() {
-        // Collect every voltage sample from every neuron.
         let allV = vm.network.neurons
             .compactMap { vm.traces[$0.id] }
             .flatMap { $0.map(\.v) }
-        guard !allV.isEmpty else { return }
-
-        let nBins = 80
-        let lo    = vRange.lowerBound
-        let hi    = vRange.upperBound
-        let binW  = (hi - lo) / Double(nBins)
-        guard binW > 0 else { return }
-
-        var counts = [Int](repeating: 0, count: nBins)
-        for v in allV {
-            // Clamp to valid index range: samples outside vRange are ignored.
-            let i = Int((v - lo) / binW)
-            guard i >= 0, i < nBins else { continue }
-            counts[i] += 1
-        }
-
-        let maxCount = Double(counts.max() ?? 1)
-        guard maxCount > 0 else { return }
-
-        frozenVBins = counts.enumerated().map { i, c in
-            VBin(vCenter: lo + (Double(i) + 0.5) * binW,
-                 density: Double(c) / maxCount)
-        }
+        frozenVBins = buildVBins(allV,
+                                 vLo: vRange.lowerBound,
+                                 vHi: vRange.upperBound,
+                                 nBins: 80)
     }
 
     // MARK: - CSV import / export

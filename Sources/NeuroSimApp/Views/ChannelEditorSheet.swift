@@ -18,6 +18,40 @@ import NeuroSimCore
 
 let kGateColors: [Color] = [.blue, .orange, .green, .red, .purple]
 
+// MARK: - VBin (V(t) density histogram bin, shared across editor and kinetics views)
+
+/// One histogram bin for V(t) density overlay: voltage centre + normalized density [0…1].
+struct VBin: Identifiable {
+    let vCenter:  Double
+    let density:  Double   // 0…1 (normalised to peak bin)
+    var id: Double { vCenter }
+}
+
+/// Build a V(t) density histogram from a set of voltage samples.
+/// - Parameters:
+///   - allV: All voltage values to histogram.
+///   - vLo: Lower bound of voltage range.
+///   - vHi: Upper bound of voltage range.
+///   - nBins: Number of bins (default 80).
+/// - Returns: Array of `VBin`, or `nil` if insufficient data.
+func buildVBins(_ allV: [Double], vLo: Double = -100, vHi: Double = 60, nBins: Int = 80) -> [VBin]? {
+    guard !allV.isEmpty else { return nil }
+    let binW = (vHi - vLo) / Double(nBins)
+    guard binW > 0 else { return nil }
+    var counts = [Int](repeating: 0, count: nBins)
+    for v in allV {
+        let i = Int((v - vLo) / binW)
+        guard i >= 0, i < nBins else { continue }
+        counts[i] += 1
+    }
+    let maxCount = Double(counts.max() ?? 1)
+    guard maxCount > 0 else { return nil }
+    return counts.enumerated().map { i, c in
+        VBin(vCenter: vLo + (Double(i) + 0.5) * binW,
+             density:  Double(c) / maxCount)
+    }
+}
+
 // MARK: - PolyPoint
 
 struct PolyPoint: Identifiable, Equatable {
@@ -284,7 +318,8 @@ enum ChannelEditorContext {
 // MARK: - ChannelEditorSheet
 
 struct ChannelEditorSheet: View {
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss)  private var dismiss
+    @EnvironmentObject private var vm: SimulationViewModel
 
     @State private var channelName: String
     @State private var ionSymbol:   String?
@@ -292,6 +327,9 @@ struct ChannelEditorSheet: View {
     @State private var reversal:    Double
     @State private var gates:       [UnifiedGateDraft]
     @State private var expandedGate: UUID? = nil
+
+    // V(t) density overlay (frozen snapshot from the current simulation traces)
+    @State private var frozenVBins: [VBin]? = nil
 
     // ── SK-specific state (only used when editing an SKChannel) ──────────────
     @State private var skHalfActivation: Double   // mM  (e.g. 5e-4)
@@ -520,16 +558,47 @@ struct ChannelEditorSheet: View {
 
     private var previewSection: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Aperçu").font(.headline)
+            HStack {
+                Text("Aperçu").font(.headline)
+                Spacer()
+                // V(t) overlay controls
+                if frozenVBins != nil {
+                    Button {
+                        frozenVBins = nil
+                    } label: {
+                        Label("Effacer V(t)", systemImage: "waveform.slash")
+                    }
+                    .buttonStyle(.bordered).tint(.orange).controlSize(.small)
+                } else {
+                    Button {
+                        snapshotVTrace()
+                    } label: {
+                        Label("Superposer V(t)", systemImage: "waveform.badge.plus")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Superpose un histogramme de densité du V(t) simulé sur les courbes")
+                    .disabled(vm.network.neurons.allSatisfy { vm.traces[$0.id]?.isEmpty ?? true })
+                }
+            }
             if gates.isEmpty {
                 Text("Ajoutez au moins un gate.").font(.caption).foregroundStyle(.secondary)
             } else {
                 InteractivePreviewChart(gates: $gates, title: "x∞(V)",
-                                        yLabel: "Probabilité", yRange: 0...1, isInf: true)
+                                        yLabel: "Probabilité", yRange: 0...1,
+                                        isInf: true, frozenVBins: frozenVBins)
                 InteractivePreviewChart(gates: $gates, title: "τ(V)",
-                                        yLabel: "τ (ms)", yRange: nil, isInf: false)
+                                        yLabel: "τ (ms)", yRange: nil,
+                                        isInf: false, frozenVBins: frozenVBins)
             }
         }
+    }
+
+    /// Capture a normalised V(t) density histogram from the current simulation traces.
+    private func snapshotVTrace() {
+        let allV = vm.network.neurons
+            .compactMap { vm.traces[$0.id] }
+            .flatMap { $0.map(\.v) }
+        frozenVBins = buildVBins(allV, vLo: -100, vHi: 60, nBins: 80)
     }
 }
 
@@ -613,10 +682,11 @@ private struct SKHillPreviewChart: View {
 /// En mode polynomial, les points de contrôle sont déplaçables directement par drag.
 private struct InteractivePreviewChart: View {
     @Binding var gates: [UnifiedGateDraft]
-    let title:  String
-    let yLabel: String
-    let yRange: ClosedRange<Double>?
-    let isInf:  Bool
+    let title:       String
+    let yLabel:      String
+    let yRange:      ClosedRange<Double>?
+    let isInf:       Bool
+    var frozenVBins: [VBin]? = nil   // optional V(t) density overlay
 
     @State private var dragging: (gi: Int, pi: Int)? = nil
 
@@ -715,6 +785,30 @@ private struct InteractivePreviewChart: View {
                 }
             }
             Chart {
+                // ── V(t) density overlay ───────────────────────────────────
+                // Shown as a light gray area behind the gate curves.
+                // In x∞ mode: density goes from 0 to 1 (same scale as curves).
+                // In τ mode:  density is scaled to bottom 25% of the visible y range.
+                if let bins = frozenVBins {
+                    let yTop: Double = {
+                        if isInf { return 1.0 }
+                        // Use visible yRange max if known, else estimate from curves
+                        if let r = yRange { return r.upperBound * 0.25 }
+                        let ys = lpts.map(\.y)
+                        return (ys.max() ?? 10) * 0.25
+                    }()
+                    ForEach(bins) { bin in
+                        AreaMark(
+                            x:      .value("V (mV)", bin.vCenter),
+                            yStart: .value("", 0),
+                            yEnd:   .value("", bin.density * yTop)
+                        )
+                        .foregroundStyle(Color.gray.opacity(0.22))
+                        .interpolationMethod(.catmullRom)
+                    }
+                }
+                // ──────────────────────────────────────────────────────────
+
                 ForEach(lpts) { pt in
                     LineMark(x: .value("V (mV)", pt.v), y: .value(yLabel, pt.y))
                         .foregroundStyle(by: .value("Gate", pt.gate))
