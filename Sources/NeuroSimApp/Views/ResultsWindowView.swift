@@ -437,6 +437,10 @@ private struct SignalChartCard: View {
     @State private var selStartX: CGFloat? = nil
     @State private var selCurrentX: CGFloat = 0
 
+    // Cursor (measurement crosshair)
+    @State private var cursorAbs: CGPoint? = nil   // position in GeometryReader space
+    @State private var cursorT:   Double?  = nil   // time value at cursor (ms)
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
@@ -564,7 +568,7 @@ private struct SignalChartCard: View {
                         }
                     }
 
-                    // Invisible hit-target for the selection drag gesture
+                    // Invisible hit-target for rubber-band zoom (original, unchanged)
                     Color.clear
                         .contentShape(Rectangle())
                         .frame(width: plotFrame.width, height: plotFrame.height)
@@ -572,6 +576,7 @@ private struct SignalChartCard: View {
                         .gesture(
                             DragGesture(minimumDistance: 4, coordinateSpace: .local)
                                 .onChanged { val in
+                                    cursorAbs = nil   // hide cursor while rubber-banding
                                     let x = max(plotFrame.minX,
                                                 min(val.location.x, plotFrame.maxX))
                                     if selStartX == nil {
@@ -595,6 +600,64 @@ private struct SignalChartCard: View {
                                     }
                                 }
                         )
+
+                    // Hover-tracking rectangle — same hit area as the zoom Color.clear
+                    // (covers only the plot area). onContinuousHover gives coordinates
+                    // in the LOCAL space of this view (0…plotFrame.width × 0…plotFrame.height).
+                    // Translate to GeometryReader space for drawing by adding plotFrame.minX/Y.
+                    Rectangle().fill(Color.clear).contentShape(Rectangle())
+                        .frame(width: plotFrame.width, height: plotFrame.height)
+                        .offset(x: plotFrame.minX, y: plotFrame.minY)
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let loc):
+                                guard loc.x >= 0, loc.x <= plotFrame.width,
+                                      loc.y >= 0, loc.y <= plotFrame.height
+                                else { cursorT = nil; cursorAbs = nil; return }
+                                // Translate to GeometryReader space for crosshair drawing
+                                cursorAbs = CGPoint(x: loc.x + plotFrame.minX,
+                                                    y: loc.y + plotFrame.minY)
+                                // proxy.value(atX:) expects plot-relative coords (0…width)
+                                cursorT   = proxy.value(atX: loc.x, as: Double.self)
+                            case .ended:
+                                cursorT = nil; cursorAbs = nil
+                            }
+                        }
+
+                    // ── Cursor crosshair (only when not rubber-banding) ────
+                    if let loc = cursorAbs, selStartX == nil {
+                        let dash = StrokeStyle(lineWidth: 1, dash: [4, 4])
+                        // Vertical line
+                        Path { p in
+                            p.move(to:    CGPoint(x: loc.x, y: plotFrame.minY))
+                            p.addLine(to: CGPoint(x: loc.x, y: plotFrame.maxY))
+                        }
+                        .stroke(Color.white.opacity(0.5), style: dash)
+                        .allowsHitTesting(false)
+                        // Horizontal line
+                        Path { p in
+                            p.move(to:    CGPoint(x: plotFrame.minX, y: loc.y))
+                            p.addLine(to: CGPoint(x: plotFrame.maxX, y: loc.y))
+                        }
+                        .stroke(Color.white.opacity(0.25), style: dash)
+                        .allowsHitTesting(false)
+                    }
+
+                    // ── Cursor value label ─────────────────────────────────
+                    if let loc = cursorAbs, let t = cursorT, selStartX == nil {
+                        let labelW: CGFloat = 148
+                        let lineH:  CGFloat = 14
+                        let labelH  = lineH + lineH * CGFloat(traces.count) + 10
+                        let onRight = loc.x + 12 + labelW < plotFrame.maxX
+                        let lx = onRight ? loc.x + 12 : loc.x - 12 - labelW
+                        let rawLY   = loc.y - labelH / 2
+                        let ly      = max(plotFrame.minY + 2,
+                                          min(rawLY, plotFrame.maxY - labelH - 2))
+
+                        cursorValueLabel(t: t)
+                            .position(x: lx + labelW / 2, y: ly + labelH / 2)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
         }
@@ -663,6 +726,52 @@ private struct SignalChartCard: View {
         case .yMin: yMin = min(snap.yMax - 1e-3, snap.yMin + dy)
         case .yMax: yMax = max(snap.yMin + 1e-3, snap.yMax + dy)
         }
+    }
+
+    // MARK: - Cursor helpers
+
+    /// Multi-trace floating label: shows t + interpolated value for every trace.
+    @ViewBuilder
+    private func cursorValueLabel(t: Double) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(String(format: "t = %.2f ms", t))
+                .foregroundStyle(.primary)
+            ForEach(Array(traces.enumerated()), id: \.element.id) { _, trace in
+                let v = interpolated(trace.points, at: t)
+                let unit = trace.signal.unit.isEmpty ? "" : " \(trace.signal.unit)"
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(trace.color)
+                        .frame(width: 5, height: 5)
+                    Text(v.map { String(format: "%.4g", $0) + unit } ?? "—")
+                }
+            }
+        }
+        .font(.system(size: 10, design: .monospaced))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    /// Linear interpolation of `points` at time `t`.
+    /// Returns the nearest boundary value when `t` is outside the range.
+    private func interpolated(_ points: [SimulationViewModel.PlotPoint],
+                               at t: Double) -> Double? {
+        guard !points.isEmpty else { return nil }
+        if points.count == 1 { return points[0].v }
+        if t <= points[0].t  { return points[0].v }
+        let last = points[points.count - 1]
+        if t >= last.t { return last.v }
+        // Binary search for the bracketing pair
+        var lo = 0, hi = points.count - 1
+        while lo < hi - 1 {
+            let mid = (lo + hi) / 2
+            if points[mid].t <= t { lo = mid } else { hi = mid }
+        }
+        let a = points[lo], b = points[lo + 1]
+        let dt = b.t - a.t
+        guard dt > 0 else { return a.v }
+        return a.v + (b.v - a.v) * (t - a.t) / dt
     }
 
     // MARK: - Helpers
