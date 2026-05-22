@@ -626,7 +626,7 @@ struct TrajectoryDensityView: View {
                                 return runner.bestParams[idx]
                             }()
                             OptimParamRow(param: $p, bestValue: bestVal)
-                                .disabled(runner.isRunning)
+                                .disabled(runner.isRunning || runner.isPaused)
                             Divider().opacity(0.08)
                         }
                     }
@@ -650,7 +650,7 @@ struct TrajectoryDensityView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .disabled(runner.isRunning)
+                    .disabled(runner.isRunning || runner.isPaused)
                 }
 
                 // Burst-specific controls (only shown when objectiveMode == .burst)
@@ -671,7 +671,7 @@ struct TrajectoryDensityView: View {
                             }
                             .labelsHidden()
                             .frame(maxWidth: .infinity)
-                            .disabled(runner.isRunning)
+                            .disabled(runner.isRunning || runner.isPaused)
                         }
                     }
                     // Resting voltage
@@ -698,7 +698,7 @@ struct TrajectoryDensityView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .disabled(runner.isRunning)
+                    .disabled(runner.isRunning || runner.isPaused)
                 }
 
                 // Simulation duration per eval
@@ -709,7 +709,7 @@ struct TrajectoryDensityView: View {
                     Slider(value: $optimConfig.simDuration, in: 100...2000, step: 100)
                         .frame(maxWidth: .infinity)
                         .tint(.white.opacity(0.4))
-                        .disabled(runner.isRunning)
+                        .disabled(runner.isRunning || runner.isPaused)
                     Text(String(format: "%.0f ms", optimConfig.simDuration))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.55))
@@ -727,7 +727,7 @@ struct TrajectoryDensityView: View {
                     ), in: 20...500, step: 10)
                     .frame(maxWidth: .infinity)
                     .tint(.white.opacity(0.4))
-                    .disabled(runner.isRunning)
+                    .disabled(runner.isRunning || runner.isPaused)
                     Text("\(optimConfig.maxIterations)")
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.55))
@@ -740,57 +740,81 @@ struct TrajectoryDensityView: View {
 
             Divider().opacity(0.2)
 
-            // ── Status + Start/Stop ──────────────────────────────────────────
+            // ── Status + Start / Pause / Resume / Stop ──────────────────────
             VStack(alignment: .leading, spacing: 6) {
                 Text(runner.status)
                     .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.45))
-                    .lineLimit(2)
+                    .foregroundStyle(runner.isPaused ? .yellow.opacity(0.7) : .white.opacity(0.45))
+                    .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
 
-                HStack(spacing: 6) {
-                    Button(runner.isRunning ? "Stop" : "Lancer") {
-                        if runner.isRunning {
-                            runner.stop()
-                        } else {
-                            guard let id = resolvedRight else { return }
-                            switch objectiveMode {
-                            case .density:
-                                runner.start(
-                                    vm:        vm,
-                                    params:    optimParams,
-                                    neuronID:  id,
-                                    refPoints: leftPoints,
-                                    config:    optimConfig,
-                                    nBinsV:    nBinsV,
-                                    nBinsDvdt: nBinsDvdt
-                                )
-                            case .burst:
-                                runner.start(
-                                    vm:       vm,
-                                    params:   optimParams,
-                                    neuronID: id,
-                                    config:   optimConfig,
-                                    objective: .burstCounting(
-                                        aisCompartmentID:  burstAISID,
-                                        restingVoltage:    burstRestingV,
-                                        targetBPS:         burstTargetBPS,
-                                        targetAPsPerBurst: burstTargetAPs,
-                                        targetPeriodMs:    burstTargetPeriodMs
-                                    )
-                                )
-                            }
-                        }
+                if runner.isPaused {
+                    // ── Paused: Reprendre + Arrêter ──────────────────────
+                    HStack(spacing: 6) {
+                        Button("Reprendre") { runner.resume(vm: vm) }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .tint(.orange)
+                        Button("Arrêter") { runner.stop() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .tint(.red)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(runner.isRunning ? .red : .orange)
+                    Text("Simulation lancée librement pendant la pause.")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.yellow.opacity(0.4))
+                        .fixedSize(horizontal: false, vertical: true)
 
-                    if runner.isRunning {
+                } else if runner.isRunning {
+                    // ── Running: Pause + Stop ────────────────────────────
+                    HStack(spacing: 6) {
+                        Button("Pause") { runner.pause() }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .tint(.yellow)
+                        Button("Stop") { runner.stop() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .tint(.red)
                         ProgressView()
                             .scaleEffect(0.6)
                             .tint(.orange)
                     }
+
+                } else {
+                    // ── Idle: Lancer ─────────────────────────────────────
+                    Button("Lancer") {
+                        guard let id = resolvedRight else { return }
+                        switch objectiveMode {
+                        case .density:
+                            runner.start(
+                                vm:        vm,
+                                params:    optimParams,
+                                neuronID:  id,
+                                refPoints: leftPoints,
+                                config:    optimConfig,
+                                nBinsV:    nBinsV,
+                                nBinsDvdt: nBinsDvdt
+                            )
+                        case .burst:
+                            runner.start(
+                                vm:       vm,
+                                params:   optimParams,
+                                neuronID: id,
+                                config:   optimConfig,
+                                objective: .burstCounting(
+                                    aisCompartmentID:  burstAISID,
+                                    restingVoltage:    burstRestingV,
+                                    targetBPS:         burstTargetBPS,
+                                    targetAPsPerBurst: burstTargetAPs,
+                                    targetPeriodMs:    burstTargetPeriodMs
+                                )
+                            )
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(.orange)
                 }
 
                 Text("\(optimParams.filter(\.isActive).count) param(s)  •  \(runner.iteration) iter.")
@@ -814,7 +838,7 @@ struct TrajectoryDensityView: View {
             Slider(value: value, in: range)
                 .frame(maxWidth: .infinity)
                 .tint(.white.opacity(0.35))
-                .disabled(runner.isRunning)
+                .disabled(runner.isRunning || runner.isPaused)
             Text(String(format: format, value.wrappedValue))
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.55))
@@ -833,7 +857,7 @@ struct TrajectoryDensityView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 3))
         }
         .buttonStyle(.plain)
-        .disabled(runner.isRunning)
+        .disabled(runner.isRunning || runner.isPaused)
     }
 
     // MARK: - Import

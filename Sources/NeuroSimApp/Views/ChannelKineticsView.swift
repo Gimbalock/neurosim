@@ -66,6 +66,16 @@ struct ChannelKineticsView: View {
     @State private var translateAnchor: [ControlPoint]? = nil
     @State private var history: [[ControlPoint]] = []   // for undo
 
+    // V(t) density overlay — frozen snapshot of the simulation trace
+    @State private var frozenVBins: [VBin]? = nil
+
+    /// One histogram bin: voltage centre + normalized density (0…1).
+    struct VBin: Identifiable {
+        let vCenter:  Double
+        let density:  Double   // 0…1 (normalised to peak bin)
+        var id: Double { vCenter }
+    }
+
     // Axis range — user-adjustable via the corner triangle handles.
     // Initialised from `defaultXRange()` / `defaultYRange()` on appear.
     @State private var xMin: Double = -100
@@ -134,6 +144,28 @@ struct ChannelKineticsView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            // V(t) overlay buttons
+            if frozenVBins != nil {
+                Button {
+                    frozenVBins = nil
+                } label: {
+                    Label("Effacer V(t)", systemImage: "waveform.slash")
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+            } else {
+                Button {
+                    snapshotVTrace()
+                } label: {
+                    Label("Superposer V(t)", systemImage: "waveform.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .help("Capture un histogramme de densité de V(t) et le superpose en transparence grisée")
+                .disabled(vm.network.neurons.allSatisfy { vm.traces[$0.id]?.isEmpty ?? true })
+            }
+
+            Divider().frame(height: 20).padding(.horizontal, 2)
+
             if isEditing {
                 Button {
                     cancelEditing()
@@ -276,6 +308,29 @@ struct ChannelKineticsView: View {
 
     private var chart: some View {
         Chart {
+            // ── V(t) density overlay ───────────────────────────────────────
+            // Shown as a light gray area behind the gate curves.
+            // In steady-state mode: density is normalized to [0, 1].
+            // In kinetics mode: density is scaled to the bottom 25 % of yDomain.
+            if let bins = frozenVBins {
+                ForEach(bins) { bin in
+                    let yVal: Double = {
+                        switch mode {
+                        case .steadyState: return bin.density
+                        case .kinetics:    return bin.density * (yDomain.upperBound * 0.25)
+                        }
+                    }()
+                    AreaMark(
+                        x:      .value("V (mV)", bin.vCenter),
+                        yStart: .value("", 0),
+                        yEnd:   .value("", yVal)
+                    )
+                    .foregroundStyle(Color.gray.opacity(0.22))
+                    .interpolationMethod(.catmullRom)
+                }
+            }
+            // ──────────────────────────────────────────────────────────────
+
             // Built-in (faded reference) — only shown in edit mode for the
             // gate being edited, so users can compare against the original.
             if isEditing {
@@ -900,6 +955,42 @@ let plotFrame: CGRect = proxy.plotFrame.map { geo[$0] } ?? .zero
         switch mode {
         case .steadyState: return min(max(y, 0), 1)
         case .kinetics:    return max(y, 1e-3)
+        }
+    }
+
+    // MARK: - V(t) density overlay
+
+    /// Compute a normalised density histogram of all V values currently in
+    /// `vm.traces` and store it in `frozenVBins`.  The histogram spans the
+    /// current visible voltage range (`xMin…xMax`) so it aligns with the
+    /// gate curves already on screen.
+    private func snapshotVTrace() {
+        // Collect every voltage sample from every neuron.
+        let allV = vm.network.neurons
+            .compactMap { vm.traces[$0.id] }
+            .flatMap { $0.map(\.v) }
+        guard !allV.isEmpty else { return }
+
+        let nBins = 80
+        let lo    = vRange.lowerBound
+        let hi    = vRange.upperBound
+        let binW  = (hi - lo) / Double(nBins)
+        guard binW > 0 else { return }
+
+        var counts = [Int](repeating: 0, count: nBins)
+        for v in allV {
+            // Clamp to valid index range: samples outside vRange are ignored.
+            let i = Int((v - lo) / binW)
+            guard i >= 0, i < nBins else { continue }
+            counts[i] += 1
+        }
+
+        let maxCount = Double(counts.max() ?? 1)
+        guard maxCount > 0 else { return }
+
+        frozenVBins = counts.enumerated().map { i, c in
+            VBin(vCenter: lo + (Double(i) + 0.5) * binW,
+                 density: Double(c) / maxCount)
         }
     }
 

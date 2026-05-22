@@ -72,6 +72,7 @@ struct ActiveParamInfo {
 @MainActor
 final class OptimizationRunner: ObservableObject {
     @Published var isRunning   = false
+    @Published var isPaused    = false   // true while suspended between iterations
     @Published var iteration   = 0
     @Published var bestError   = Double.infinity
     @Published var bestParams: [Double] = []
@@ -90,6 +91,33 @@ final class OptimizationRunner: ObservableObject {
 
     private var runTask: Task<Void, Never>?
 
+    // MARK: - Pause / resume support
+
+    /// Set to true from the main actor; the running loop checks it each iteration.
+    private var shouldPause = false
+
+    /// Everything needed to reconstruct an evalFn and resume the optimizer.
+    private struct StartContext {
+        let params:    [OptimParam]
+        let neuronID:  UUID
+        let config:    OptimConfig
+        let objective: OptimObjective
+        let bounds:    [(lo: Double, hi: Double)]
+        let active:    [OptimParam]   // params.filter(\.isActive), precomputed
+    }
+    private var startContext: StartContext? = nil
+
+    /// Frozen optimizer state saved when pause() is called.
+    private enum SavedOptState {
+        case de(DifferentialEvolution)
+        case cmaes(CMAES)
+    }
+    private struct PausedState {
+        let context:  StartContext
+        let optState: SavedOptState
+    }
+    private var pausedState: PausedState? = nil
+
     // MARK: Public API
 
     /// Generalised entry point — caller passes any `OptimObjective`.
@@ -99,31 +127,24 @@ final class OptimizationRunner: ObservableObject {
                neuronID:  UUID,
                config:    OptimConfig,
                objective: OptimObjective) {
-        guard !isRunning else { return }
+        guard !isRunning, !isPaused else { return }
 
         let active = params.filter(\.isActive)
         guard !active.isEmpty else { status = "Aucun paramètre sélectionné"; return }
 
         let bounds = active.map { (lo: $0.minBound, hi: $0.maxBound) }
-        let sim    = Simulator(network: vm.network, dt: 0.025)
-        sim.method = .rushLarsen
 
-        // Build the objective-specific scorer once (pre-computes e.g. reference grid).
-        let scorer = objective.makeScorer(neuronID: neuronID, duration: config.simDuration)
-
-        let evalFn: ([Double]) -> Double = { [weak vm] candidate in
-            guard let vm else { return .infinity }
-            for (i, param) in active.enumerated() {
-                applyOptimParam(param, value: candidate[i],
-                                neuronID: neuronID, network: vm.network)
-            }
-            let (score, pts) = scorer(sim)
-            self._lastEvalPts = pts   // non-empty only for density-match mode
-            return score
-        }
+        // Save context for potential pause/resume
+        let ctx = StartContext(params: params, neuronID: neuronID,
+                               config: config, objective: objective,
+                               bounds: bounds, active: active)
+        startContext = ctx
+        pausedState  = nil
 
         // Reset all published state
         isRunning       = true
+        isPaused        = false
+        shouldPause     = false
         iteration       = 0
         bestError       = .infinity
         bestParams      = []
@@ -133,32 +154,11 @@ final class OptimizationRunner: ObservableObject {
         activeParamInfo = active.map { ActiveParamInfo(label: $0.label,
                                                        lo: $0.minBound, hi: $0.maxBound) }
         status          = "Démarrage…"
-        _evalFn         = evalFn
 
-        runTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            switch config.algorithm {
-            case .differentialEvolution:
-                await self.runDE(evalFn: evalFn, bounds: bounds, config: config)
-            case .cmaes:
-                await self.runCMAES(evalFn: evalFn, bounds: bounds, config: config)
-            }
-            if !self.bestParams.isEmpty {
-                for (i, param) in active.enumerated() {
-                    applyOptimParam(param, value: self.bestParams[i],
-                                    neuronID: neuronID, network: vm.network)
-                }
-                vm.reset()
-            }
-            self._evalFn   = nil
-            self.isRunning = false
-            self.status    = String(format: "Terminé  E = %.3e  (%d iter.)",
-                                    self.bestError, self.iteration)
-        }
+        launchTask(vm: vm, ctx: ctx, optState: nil)
     }
 
     /// Convenience wrapper: density-match objective.
-    /// Keeps existing `TrajectoryDensityView` call sites working without change.
     func start(vm:        SimulationViewModel,
                params:    [OptimParam],
                neuronID:  UUID,
@@ -172,44 +172,143 @@ final class OptimizationRunner: ObservableObject {
                                        nBinsV: nBinsV, nBinsDvdt: nBinsDvdt))
     }
 
+    /// Request a pause at the next inter-iteration boundary.
+    func pause() {
+        guard isRunning, !isPaused else { return }
+        shouldPause = true
+        status = "Mise en pause…"
+    }
+
+    /// Resume from a previously paused state (rebuilds evalFn from saved context).
+    func resume(vm: SimulationViewModel) {
+        guard isPaused, let ps = pausedState else { return }
+        isPaused    = false
+        shouldPause = false
+        isRunning   = true
+        status      = "Reprise…"
+        startContext = ps.context   // keep available for potential re-pause
+        launchTask(vm: vm, ctx: ps.context, optState: ps.optState)
+    }
+
     func stop() {
-        runTask?.cancel(); runTask = nil
-        _evalFn   = nil
-        isRunning = false
-        status    = "Arrêté"
+        runTask?.cancel(); runTask  = nil
+        shouldPause = false
+        _evalFn     = nil
+        isRunning   = false
+        isPaused    = false
+        pausedState = nil
+        status      = "Arrêté"
+    }
+
+    // MARK: - Internal task launcher (shared by start + resume)
+
+    private func launchTask(vm:       SimulationViewModel,
+                            ctx:      StartContext,
+                            optState: SavedOptState?) {
+        // Build a fresh Simulator and scorer each time (safe for concurrent runs).
+        let sim    = Simulator(network: vm.network, dt: 0.025)
+        sim.method = .rushLarsen
+        let scorer = ctx.objective.makeScorer(neuronID: ctx.neuronID,
+                                              duration: ctx.config.simDuration)
+        let evalFn: ([Double]) -> Double = { [weak vm] candidate in
+            guard let vm else { return .infinity }
+            for (i, param) in ctx.active.enumerated() {
+                applyOptimParam(param, value: candidate[i],
+                                neuronID: ctx.neuronID, network: vm.network)
+            }
+            let (score, pts) = scorer(sim)
+            self._lastEvalPts = pts
+            return score
+        }
+        _evalFn = evalFn
+
+        runTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            switch ctx.config.algorithm {
+            case .differentialEvolution:
+                await self.runDE(evalFn: evalFn, bounds: ctx.bounds,
+                                 config: ctx.config,
+                                 resumeFrom: optState.flatMap {
+                                     if case .de(let d) = $0 { return d } else { return nil }
+                                 })
+            case .cmaes:
+                await self.runCMAES(evalFn: evalFn, bounds: ctx.bounds,
+                                    config: ctx.config,
+                                    resumeFrom: optState.flatMap {
+                                        if case .cmaes(let c) = $0 { return c } else { return nil }
+                                    })
+            }
+            // Task finished normally (not paused) — apply best and clean up.
+            guard !self.isPaused else { return }
+            if !self.bestParams.isEmpty {
+                for (i, param) in ctx.active.enumerated() {
+                    applyOptimParam(param, value: self.bestParams[i],
+                                    neuronID: ctx.neuronID, network: vm.network)
+                }
+                vm.reset()
+            }
+            self._evalFn     = nil
+            self.isRunning   = false
+            self.startContext = nil
+            self.status      = String(format: "Terminé  E = %.3e  (%d iter.)",
+                                      self.bestError, self.iteration)
+        }
     }
 
     // MARK: - DE loop
 
-    private func runDE(evalFn: ([Double]) -> Double,
-                       bounds: [(lo: Double, hi: Double)],
-                       config: OptimConfig) async {
-        var de = DifferentialEvolution(bounds: bounds, popFactor: config.dePopFactor,
-                                       F: config.deF, CR: config.deCR)
-        status = "DE — init (\(de.popSize) candidats)…"
+    private func runDE(evalFn:     ([Double]) -> Double,
+                       bounds:     [(lo: Double, hi: Double)],
+                       config:     OptimConfig,
+                       resumeFrom: DifferentialEvolution? = nil) async {
 
-        // Evaluate initial population, track best pts within this batch
-        let initCandidates = de.initialCandidates()
-        var initFitness = [Double](repeating: .infinity, count: de.popSize)
-        var bestInitErr  = Double.infinity
-        var bestInitPts: [(v: Double, dvdt: Double)] = []
-        for (i, c) in initCandidates.enumerated() {
-            guard !Task.isCancelled else { isRunning = false; return }
-            initFitness[i] = evalFn(c)
-            if initFitness[i] < bestInitErr {
-                bestInitErr = initFitness[i]
-                bestInitPts = _lastEvalPts
+        var de = resumeFrom ?? DifferentialEvolution(bounds: bounds,
+                                                      popFactor: config.dePopFactor,
+                                                      F: config.deF, CR: config.deCR)
+
+        if resumeFrom == nil {
+            // Fresh start — evaluate initial population
+            status = "DE — init (\(de.popSize) candidats)…"
+            let initCandidates = de.initialCandidates()
+            var initFitness    = [Double](repeating: .infinity, count: de.popSize)
+            var bestInitErr    = Double.infinity
+            var bestInitPts:   [(v: Double, dvdt: Double)] = []
+            for (i, c) in initCandidates.enumerated() {
+                guard !Task.isCancelled else { isRunning = false; return }
+                initFitness[i] = evalFn(c)
+                if initFitness[i] < bestInitErr {
+                    bestInitErr = initFitness[i]
+                    bestInitPts = _lastEvalPts
+                }
+                await Task.yield()
             }
-            await Task.yield()
+            de.setInitialFitness(initFitness)
+            let bi = initFitness.indices.min(by: { initFitness[$0] < initFitness[$1] })!
+            updateBest(params: de.population[bi], error: initFitness.min()!,
+                       gen: 0, pts: bestInitPts)
+        } else {
+            status = String(format: "DE — reprise gen. %d…", de.generation)
         }
-        de.setInitialFitness(initFitness)
-        let bestInitIdx = initFitness.indices.min(by: { initFitness[$0] < initFitness[$1] })!
-        updateBest(params: de.population[bestInitIdx], error: initFitness.min()!,
-                   gen: 0, pts: bestInitPts)
 
         // Generational loop
         for _ in 0..<config.maxIterations {
             guard !Task.isCancelled else { break }
+
+            // ── Pause check ────────────────────────────────────────────────
+            if shouldPause {
+                shouldPause = false
+                if let ctx = startContext {
+                    pausedState = PausedState(context: ctx, optState: .de(de))
+                }
+                isRunning = false
+                isPaused  = true
+                status = String(format: "⏸  En pause — gen. %d  E = %.3e  " +
+                                        "(Reprendre pour continuer, ou lancez la sim. pour voir le résultat)",
+                                de.generation, bestError)
+                return
+            }
+            // ──────────────────────────────────────────────────────────────
+
             let trials = de.generateTrials()
             var errors = [Double](repeating: .infinity, count: de.popSize)
             var bestGenErr = Double.infinity
@@ -233,14 +332,36 @@ final class OptimizationRunner: ObservableObject {
 
     // MARK: - CMA-ES loop
 
-    private func runCMAES(evalFn: ([Double]) -> Double,
-                          bounds: [(lo: Double, hi: Double)],
-                          config: OptimConfig) async {
-        var cma = CMAES(bounds: bounds, sigma0fraction: config.cmaeSigma0)
-        status = "CMA-ES — λ=\(cma.lambda), μ=\(cma.mu)…"
+    private func runCMAES(evalFn:     ([Double]) -> Double,
+                          bounds:     [(lo: Double, hi: Double)],
+                          config:     OptimConfig,
+                          resumeFrom: CMAES? = nil) async {
+
+        var cma = resumeFrom ?? CMAES(bounds: bounds, sigma0fraction: config.cmaeSigma0)
+        if resumeFrom == nil {
+            status = "CMA-ES — λ=\(cma.lambda), μ=\(cma.mu)…"
+        } else {
+            status = String(format: "CMA-ES — reprise gen. %d…", cma.generation)
+        }
 
         for _ in 0..<config.maxIterations {
             guard !Task.isCancelled else { break }
+
+            // ── Pause check ────────────────────────────────────────────────
+            if shouldPause {
+                shouldPause = false
+                if let ctx = startContext {
+                    pausedState = PausedState(context: ctx, optState: .cmaes(cma))
+                }
+                isRunning = false
+                isPaused  = true
+                status = String(format: "⏸  En pause — gen. %d  E = %.3e  " +
+                                        "(Reprendre pour continuer, ou lancez la sim. pour voir le résultat)",
+                                cma.generation, bestError)
+                return
+            }
+            // ──────────────────────────────────────────────────────────────
+
             let offspring = cma.generateOffspring()
             var errors = [Double](repeating: .infinity, count: cma.lambda)
             var bestGenErr = Double.infinity
