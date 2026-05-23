@@ -331,6 +331,10 @@ struct ChannelEditorSheet: View {
     // V(t) density overlay (frozen snapshot from the current simulation traces)
     @State private var frozenVBins: [VBin]? = nil
 
+    // [Ca²⁺](t) density overlay — for Ca-dependent channels (SK, BK).
+    // Values stored in µM to match the chart's x-axis.
+    @State private var frozenCaBins: [VBin]? = nil
+
     // ── SK-specific state (only used when editing an SKChannel) ──────────────
     @State private var skHalfActivation: Double   // mM  (e.g. 5e-4)
     @State private var skHillN:          Double   // Hill coefficient
@@ -510,12 +514,65 @@ struct ChannelEditorSheet: View {
 
     private var skPreviewSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Aperçu").font(.headline)
+            HStack {
+                Text("Aperçu").font(.headline)
+                Spacer()
+                // [Ca²⁺](t) overlay — mirrors the V(t) overlay for voltage-gated channels.
+                if frozenCaBins != nil {
+                    Button { frozenCaBins = nil } label: {
+                        Label("Effacer [Ca²⁺]", systemImage: "waveform.slash")
+                    }
+                    .buttonStyle(.bordered).tint(.orange).controlSize(.small)
+                } else {
+                    Button { snapshotCaTrace() } label: {
+                        Label("Superposer [Ca²⁺]", systemImage: "waveform.badge.plus")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Superpose un histogramme de densité du [Ca²⁺]ᵢ simulé sur la courbe Hill")
+                    .disabled(!hasCaTraceData)
+                }
+            }
             Text("w∞([Ca²⁺])").font(.subheadline).foregroundStyle(.secondary)
             SKHillPreviewChart(halfActivation: skHalfActivation,
                                hillN: skHillN,
-                               tauW: skTauW)
+                               tauW: skTauW,
+                               frozenCaBins: frozenCaBins)
         }
+    }
+
+    /// True when at least one Ca concentration signal trace or energy trace
+    /// has recorded data — used to enable/disable the "Superposer [Ca²⁺]" button.
+    private var hasCaTraceData: Bool {
+        let hasSignal = vm.signalTraces.contains {
+            if case .ionConcentration(_, _, let sym) = $0.signal { return sym == "Ca" && !$0.points.isEmpty }
+            return false
+        }
+        let hasEnergy = vm.energyTraces.values.contains { !$0.isEmpty }
+        return hasSignal || hasEnergy
+    }
+
+    /// Collect [Ca²⁺] values (in µM) from signal traces + energy traces and
+    /// build a normalised density histogram over the chart's current x range.
+    private func snapshotCaTrace() {
+        var allCaUm: [Double] = []
+
+        // Source 1: explicit ionConcentration signal traces (stored in mM → µM)
+        for st in vm.signalTraces {
+            if case .ionConcentration(_, _, let sym) = st.signal, sym == "Ca" {
+                allCaUm.append(contentsOf: st.points.map { $0.v * 1000 })
+            }
+        }
+
+        // Source 2: energy traces — caI is in mM → µM
+        for pts in vm.energyTraces.values {
+            allCaUm.append(contentsOf: pts.map { $0.caI * 1000 })
+        }
+
+        guard !allCaUm.isEmpty else { return }
+
+        // Use the same x range as SKHillPreviewChart (0 … 5×Kd or 2 µM)
+        let caMaxUm = max(skHalfActivation * 5_000, 2.0)
+        frozenCaBins = buildVBins(allCaUm, vLo: 0, vHi: caMaxUm, nBins: 60)
     }
 
     // MARK: Gates (non-SK channels)
@@ -609,6 +666,7 @@ private struct SKHillPreviewChart: View {
     let halfActivation: Double   // mM
     let hillN:          Double
     let tauW:           Double   // ms
+    var frozenCaBins:   [VBin]? = nil   // [Ca²⁺] density overlay in µM
 
     private struct Pt: Identifiable {
         let id: Double; let ca: Double; let w: Double
@@ -629,10 +687,28 @@ private struct SKHillPreviewChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Chart(pts) { p in
-                LineMark(x: .value("[Ca²⁺] (µM)", p.ca),
-                         y: .value("w∞",           p.w))
-                    .foregroundStyle(Color.accentColor)
+            Chart {
+                // ── [Ca²⁺](t) density overlay ─────────────────────────────
+                // Normalised density [0…1] matches the w∞ y-scale so the
+                // histogram peak aligns with the top of the Hill curve.
+                if let bins = frozenCaBins {
+                    ForEach(bins) { bin in
+                        AreaMark(
+                            x:      .value("[Ca²⁺] (µM)", bin.vCenter),
+                            yStart: .value("", 0),
+                            yEnd:   .value("", bin.density)   // 0…1, same as w∞
+                        )
+                        .foregroundStyle(Color.gray.opacity(0.22))
+                        .interpolationMethod(.catmullRom)
+                    }
+                }
+                // ─────────────────────────────────────────────────────────
+
+                ForEach(pts) { p in
+                    LineMark(x: .value("[Ca²⁺] (µM)", p.ca),
+                             y: .value("w∞",           p.w))
+                        .foregroundStyle(Color.accentColor)
+                }
                 // Mark Kd
                 RuleMark(x: .value("Kd", halfActivation * 1000))
                     .foregroundStyle(.orange.opacity(0.6))
