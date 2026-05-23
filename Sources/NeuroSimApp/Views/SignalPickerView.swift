@@ -31,11 +31,28 @@ struct SignalPickerView: View {
     @State private var search = ""
     @State private var mode: PickerMode = .byType
 
-    private var title: String { targetGroupID != nil ? "Add to Chart" : "Add Signal" }
+    private var title: String { targetGroupID != nil ? "Superposer sur ce graphe" : "Ajouter un signal" }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                if targetGroupID != nil {
+                    // "Add to chart" hint banner
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.blue)
+                            .font(.caption)
+                        Text("Cliquez pour ajouter/retirer des signaux sur ce graphe. Le picker reste ouvert.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.blue.opacity(0.07))
+                    Divider()
+                }
+
                 Picker("", selection: $mode) {
                     ForEach(PickerMode.allCases, id: \.self) { m in
                         Text(m.rawValue).tag(m)
@@ -61,7 +78,7 @@ struct SignalPickerView: View {
             .navigationTitle(title)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { isPresented = false }
+                    Button("Fermer") { isPresented = false }
                 }
             }
         }
@@ -446,16 +463,33 @@ private struct SignalRow: View {
     var groupID: UUID?           // nil → new chart; non-nil → overlay on that chart
     @Binding var isPresented: Bool
 
+    /// True when this signal is already tracked (anywhere in the trace list).
     private var alreadyAdded: Bool {
         vm.signalTraces.contains { $0.signal == signal }
     }
 
+    /// True when this signal is part of the target group specifically.
+    private var inTargetGroup: Bool {
+        guard let gid = groupID else { return false }
+        return vm.signalTraces.contains { $0.signal == signal && $0.chartGroupID == gid }
+    }
+
     var body: some View {
         Button {
-            if !alreadyAdded {
-                vm.addSignalTrace(signal, toGroup: groupID)
+            if groupID != nil {
+                // "Add to chart" mode: toggle on/off, keep picker open for multi-select.
+                if inTargetGroup {
+                    vm.removeSignalTrace(signal: signal)
+                } else {
+                    vm.addSignalTrace(signal, toGroup: groupID)
+                }
+            } else {
+                // "New chart" mode: add (if not already there) and close.
+                if !alreadyAdded {
+                    vm.addSignalTrace(signal, toGroup: nil)
+                }
+                isPresented = false
             }
-            isPresented = false
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: icon)
@@ -464,13 +498,28 @@ private struct SignalRow: View {
                 Text(label)
                     .foregroundStyle(.primary)
                 Spacer()
-                if alreadyAdded {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
+                if groupID != nil {
+                    // In "add to group" mode: show a fill checkmark if in the group,
+                    // a dimmed checkmark if already plotted elsewhere.
+                    if inTargetGroup {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(color)
+                            .font(.callout)
+                    } else if alreadyAdded {
+                        Image(systemName: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    }
+                } else {
+                    if alreadyAdded {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
                 }
             }
         }
         .buttonStyle(.plain)
+        .disabled(groupID == nil && alreadyAdded)
     }
 }

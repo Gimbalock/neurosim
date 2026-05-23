@@ -152,6 +152,11 @@ final class SimulationViewModel: ObservableObject {
         signalTraces.removeAll { $0.id == id }
     }
 
+    /// Remove the trace matching a given signal (used by the picker toggle in "add to group" mode).
+    func removeSignalTrace(signal: TracedSignal) {
+        signalTraces.removeAll { $0.signal == signal }
+    }
+
     func clearSignalTraces() {
         signalTraces.removeAll()
     }
