@@ -104,6 +104,20 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                // Warm-start indicator — shows when the next Run will continue
+                // from the end of the last simulation rather than resting state.
+                if vm.hasWarmState {
+                    HStack(spacing: 2) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 9))
+                        Text("Warm")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.orange)
+                    .help("Prochain Run repart de l'état final de la dernière simulation. " +
+                          "Cliquez ↺ pour revenir à l'état de repos.")
+                }
+
                 Spacer()
 
                 if let err = vm.divergenceError {
@@ -137,6 +151,9 @@ struct ContentView: View {
                 Button(action: vm.reset) {
                     Label("Reset", systemImage: "arrow.counterclockwise")
                 }
+                .help(vm.hasWarmState
+                      ? "Réinitialiser à l'état de repos (efface le warm start)"
+                      : "Réinitialiser à l'état de repos")
                 Button { openWindow(id: "results") } label: {
                     Label("Results", systemImage: "chart.xyaxis.line")
                 }

@@ -18,6 +18,11 @@ public struct NetworkDocument: Codable {
     public var graphConfig:   GraphConfigDoc?      // nil in old files → ignored on load
     public var noiseParams:   [String: SynapticNoiseParams]?  // UUID string → params
     public var optimSettings: OptimSettingsDoc?    // nil in old files → ignored on load
+    /// Final state vector of the last simulation run. When present, the next
+    /// simulation starts from this state (warm start) instead of resting steady
+    /// state. `nil` in files saved before this feature; silently ignored on load
+    /// if its size doesn't match the current network topology.
+    public var warmState:     [Double]?            // nil in old files → cold start
 
     public struct StimulusEntry: Codable {
         public var compartmentID: UUID

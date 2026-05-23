@@ -68,6 +68,37 @@ public final class Simulator {
         buf1 = z; buf2 = z; buf3 = z; buf4 = z; buf5 = z
     }
 
+    /// Reset time to 0 and re-arm stimuli / noise, but keep the provided
+    /// state vector rather than re-initialising to resting steady state.
+    /// Use this to continue from the final state of a previous simulation run.
+    /// If `warmState` has the wrong size (topology changed), falls back silently
+    /// to a standard cold reset at `preferredRestingVoltage` = -65 mV.
+    public func resetToWarmState(_ warmState: [Double],
+                                 fallbackVoltage v0: Double = -65.0) {
+        guard warmState.count == network.stateCount else {
+            reset(restingVoltage: v0)
+            return
+        }
+        time  = 0
+        state = warmState
+        prevVoltages.removeAll(keepingCapacity: true)
+        for n in network.neurons {
+            if let i = network.voltageIndex(of: n.id) {
+                prevVoltages[n.id] = state[i]
+            }
+        }
+        for stim  in network.stimuli.values       { stim.reset()  }
+        for noise in network.synapticNoises.values { noise.reset() }
+        // Re-seed energy states from current channel E_rev (same as cold reset).
+        energyStates.removeAll(keepingCapacity: true)
+        for n in network.neurons where n.energyParams.enabled {
+            guard let somaComp = n.compartments.first(
+                    where: { $0.id == n.somaCompartmentID }) else { continue }
+            energyStates[n.id] = EnergyState(inferredFrom: somaComp,
+                                              params: n.energyParams)
+        }
+    }
+
     /// Reset to the resting state (V = v0, gates at steady state, synapses off).
     public func reset(restingVoltage v0: Double = -65.0) {
         time = 0

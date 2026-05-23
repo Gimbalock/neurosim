@@ -236,6 +236,19 @@ final class SimulationViewModel: ObservableObject {
     /// pacemakers that need the inactivation gate h_T to be pre-deinactivated.
     var preferredRestingVoltage: Double = -65.0
 
+    // MARK: - Warm-start state
+
+    /// Final state vector captured at the end of the last simulation run.
+    /// When non-nil the next `play()` restores this state (V, gates, [ion])
+    /// instead of initialising from resting steady state.
+    /// Cleared by an explicit `reset()` or by any structural topology change
+    /// (adding/removing neurons/channels/compartments).
+    private var savedFinalState: [Double]? = nil
+
+    /// True when a warm state is available. Published so the UI can show
+    /// the "⚡ warm" indicator and adjust button labels.
+    @Published private(set) var hasWarmState: Bool = false
+
     private var simulator: Simulator
     private var simTimer: Timer?
     /// Prevents overlapping simulation frames if computation exceeds 1/60 s.
@@ -619,6 +632,9 @@ final class SimulationViewModel: ObservableObject {
     private func rebuildSimulator() {
         let wasRunning = isRunning
         if wasRunning { pause() }
+        // Topology changed → state-vector layout changed → warm state is stale.
+        savedFinalState = nil
+        hasWarmState    = false
         simulator = Simulator(network: network, dt: dt)
         simulationTime = 0
         seedTraces()
@@ -642,7 +658,14 @@ final class SimulationViewModel: ObservableObject {
     func play() {
         guard !isRunning else { return }
         divergenceError = nil
-        simulator.reset(restingVoltage: preferredRestingVoltage)
+        // Warm start: restore the final state of the last run so the simulation
+        // continues from where it stopped. Stimuli are re-armed to t=0 so they
+        // fire on schedule relative to the new window.
+        if let ws = savedFinalState {
+            simulator.resetToWarmState(ws, fallbackVoltage: preferredRestingVoltage)
+        } else {
+            simulator.reset(restingVoltage: preferredRestingVoltage)
+        }
         simulationTime = 0
         seedTraces()
 
@@ -663,9 +686,14 @@ final class SimulationViewModel: ObservableObject {
         frameInFlight = false
     }
 
+    /// Explicit cold reset: clears the warm state and re-initialises every
+    /// neuron to its resting voltage. Use this when you want to start fresh
+    /// regardless of the last simulation's final state.
     func reset() {
         pause()
-        divergenceError = nil
+        divergenceError  = nil
+        savedFinalState  = nil
+        hasWarmState     = false
         simulator.reset(restingVoltage: preferredRestingVoltage)
         simulationTime = 0
         seedTraces()
@@ -678,6 +706,10 @@ final class SimulationViewModel: ObservableObject {
         guard isRunning, !frameInFlight else { return }
 
         if simulator.time >= plotWindow {
+            // Capture the final state BEFORE pausing so the next play() can
+            // warm-start from here. The state is a value-type copy — safe.
+            savedFinalState = simulator.state
+            hasWarmState    = true
             pause()
             autoscaleGeneration += 1
             return
@@ -1185,6 +1217,11 @@ final class SimulationViewModel: ObservableObject {
             plotWindow: plotWindow
         )
         doc.optimSettings = optimSettings
+        // Persist the warm state so the simulation can resume on next open.
+        // Only written when it is valid (same stateCount as current network).
+        if let ws = savedFinalState, ws.count == network.stateCount {
+            doc.warmState = ws
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(doc) else { return }
@@ -1217,7 +1254,15 @@ final class SimulationViewModel: ObservableObject {
                             color: color)
             }
         }
-        rebuildSimulator()
+        rebuildSimulator()  // clears savedFinalState — restore it below
+
+        // Restore warm state only if it matches the freshly-loaded network's
+        // state-vector size. Mismatches (file edited externally, topology
+        // mismatch) fall through to a normal cold start.
+        if let ws = doc.warmState, ws.count == network.stateCount {
+            savedFinalState = ws
+            hasWarmState    = true
+        }
     }
 
     // MARK: - Export
