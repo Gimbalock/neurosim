@@ -528,10 +528,29 @@ struct ChannelEditorSheet: View {
                         Label("Superposer [Ca²⁺]", systemImage: "waveform.badge.plus")
                     }
                     .buttonStyle(.bordered).controlSize(.small)
-                    .help("Superpose un histogramme de densité du [Ca²⁺]ᵢ simulé sur la courbe Hill")
                     .disabled(!hasCaTraceData)
+                    .help(hasCaTraceData
+                          ? "Superpose un histogramme de densité du [Ca²⁺]ᵢ simulé sur la courbe Hill"
+                          : "Aucune donnée Ca disponible — activez la dynamique calcique dans l'onglet Énergie du neurone et lancez une simulation")
                 }
             }
+
+            // Hint when no Ca data is available yet
+            if !hasCaTraceData {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Aucune trace [Ca²⁺] disponible")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Activez la dynamique calcique dans l'onglet **Énergie** du neurone, lancez une simulation, puis revenez ici pour superposer la densité de [Ca²⁺]ᵢ.")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(8)
+                .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            }
+
             Text("w∞([Ca²⁺])").font(.subheadline).foregroundStyle(.secondary)
             SKHillPreviewChart(halfActivation: skHalfActivation,
                                hillN: skHillN,
@@ -541,7 +560,7 @@ struct ChannelEditorSheet: View {
     }
 
     /// True when at least one Ca concentration signal trace or energy trace
-    /// has recorded data — used to enable/disable the "Superposer [Ca²⁺]" button.
+    /// has recorded data — used to guide the user for the "Superposer [Ca²⁺]" button.
     private var hasCaTraceData: Bool {
         let hasSignal = vm.signalTraces.contains {
             if case .ionConcentration(_, _, let sym) = $0.signal { return sym == "Ca" && !$0.points.isEmpty }
