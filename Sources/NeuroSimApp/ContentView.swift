@@ -33,6 +33,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var vm: SimulationViewModel
     @Environment(\.openWindow) private var openWindow
+    @State private var showSnapshots = false
 
     var body: some View {
         ZStack {
@@ -160,6 +161,20 @@ struct ContentView: View {
                 .help("Open Results window (⌘G)")
                 Button(action: vm.exportTracesCSV) {
                     Label("Export CSV", systemImage: "square.and.arrow.up")
+                }
+                // Freeze State — parameter snapshots
+                Button {
+                    showSnapshots = true
+                } label: {
+                    Label(
+                        vm.snapshots.isEmpty ? "Freeze State" : "Freeze State (\(vm.snapshots.count))",
+                        systemImage: "snowflake"
+                    )
+                }
+                .help("Capturer / restaurer un instantané des paramètres du modèle")
+                .sheet(isPresented: $showSnapshots) {
+                    SnapshotsView()
+                        .environmentObject(vm)
                 }
             }
             ToolbarItemGroup(placement: .status) {

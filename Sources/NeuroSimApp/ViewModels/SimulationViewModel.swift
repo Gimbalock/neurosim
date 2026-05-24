@@ -127,6 +127,33 @@ final class SimulationViewModel: ObservableObject {
 
     @Published var optimSettings: NetworkDocument.OptimSettingsDoc? = nil
 
+    // MARK: - Parameter snapshots ("freeze states")
+
+    /// Named parameter snapshots — each one is a frozen copy of the full
+    /// network model at the time the user clicked "Freeze State".
+    @Published var snapshots: [NetworkDocument.ModelSnapshot] = []
+
+    /// Create a new named snapshot from the current network parameters.
+    func freezeState(name: String) {
+        let doc = NetworkDocument.from(network)
+        let snap = NetworkDocument.ModelSnapshot(name: name, network: doc)
+        snapshots.insert(snap, at: 0)   // newest first
+    }
+
+    /// Restore the network parameters from a snapshot, then rebuild the simulator.
+    /// The simulation is paused first; warm state is cleared (topology may have changed).
+    func restoreSnapshot(_ snapshot: NetworkDocument.ModelSnapshot) {
+        pause()
+        network = snapshot.network.toNetwork()
+        rebuildSimulator()   // clears warm state
+        objectWillChange.send()
+    }
+
+    /// Delete a snapshot by id.
+    func deleteSnapshot(id: UUID) {
+        snapshots.removeAll { $0.id == id }
+    }
+
     /// Add a new signal. Pass `groupID` to overlay it on an existing chart;
     /// omit (or pass nil) to open it on its own new chart.
     func addSignalTrace(_ signal: TracedSignal, toGroup groupID: UUID? = nil) {
@@ -1227,6 +1254,10 @@ final class SimulationViewModel: ObservableObject {
         if let ws = savedFinalState, ws.count == network.stateCount {
             doc.warmState = ws
         }
+        // Persist parameter snapshots (freeze states).
+        if !snapshots.isEmpty {
+            doc.snapshots = snapshots
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(doc) else { return }
@@ -1268,6 +1299,9 @@ final class SimulationViewModel: ObservableObject {
             savedFinalState = ws
             hasWarmState    = true
         }
+
+        // Restore parameter snapshots.
+        snapshots = doc.snapshots ?? []
     }
 
     // MARK: - Export

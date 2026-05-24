@@ -24,6 +24,38 @@ public struct NetworkDocument: Codable {
     /// if its size doesn't match the current network topology.
     public var warmState:     [Double]?            // nil in old files → cold start
 
+    /// Named parameter snapshots — "freeze states" of the model.
+    /// Each entry captures the full network topology + channel parameters at a
+    /// given moment so the user can revert to any earlier configuration.
+    /// `nil` in files saved before this feature; an empty array means no snapshots.
+    public var snapshots:     [ModelSnapshot]?     // nil in old files → no snapshots
+
+    // MARK: - ModelSnapshot
+
+    /// A frozen copy of the entire network parameter set (topology, g_max,
+    /// reversal potentials, gating overrides, stimuli). Does NOT include the
+    /// simulation state vector — use warmState for that.
+    public struct ModelSnapshot: Codable, Identifiable {
+        public var id:        UUID
+        public var name:      String
+        public var date:      Date
+        /// Full parameter document captured at freeze time.
+        /// GraphConfig and warmState are intentionally excluded — we only
+        /// want model parameters, not plotting preferences or runtime state.
+        public var network:   NetworkDocument
+
+        public init(name: String, network: NetworkDocument) {
+            self.id      = UUID()
+            self.name    = name
+            self.date    = Date()
+            var stripped = network
+            stripped.graphConfig   = nil   // not relevant to parameter snapshots
+            stripped.warmState     = nil   // runtime state, not model params
+            stripped.snapshots     = nil   // avoid recursive nesting
+            self.network = stripped
+        }
+    }
+
     public struct StimulusEntry: Codable {
         public var compartmentID: UUID
         public var stimulus: StimulusDoc
