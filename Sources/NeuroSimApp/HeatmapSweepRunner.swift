@@ -59,6 +59,8 @@ final class HeatmapSweepRunner: ObservableObject {
     @Published var totalEvals = 0
     @Published var status     = "Prêt"
     @Published var result:    HeatmapResult? = nil
+    /// Downsampled V(t) trace of the last evaluated candidate — for the live preview.
+    @Published var lastCandidateTrace: [(t: Double, v: Double)] = []
 
     private var sweepTask: Task<Void, Never>?
 
@@ -134,7 +136,8 @@ final class HeatmapSweepRunner: ObservableObject {
                                     neuronID: neuronID, network: evalNet)
 
                     // Score (scorer handles reset + run internally)
-                    let (err, _) = scorer(sim)
+                    let (err, _, candidateTrace) = scorer(sim)
+                    self.lastCandidateTrace = candidateTrace
 
                     let flatIdx = iy * nX + ix
                     r.errors[flatIdx] = err
@@ -158,6 +161,7 @@ final class HeatmapSweepRunner: ObservableObject {
         sweepTask = nil
         isRunning = false
         status    = "Arrêté"
+        lastCandidateTrace = []
     }
 
     /// Apply the best grid point's parameter values to the live network.

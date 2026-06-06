@@ -817,6 +817,26 @@ struct TrajectoryDensityView: View {
                     .tint(.orange)
                 }
 
+                // ── V(t) comparison preview ──────────────────────────────
+                if !runner.lastCandidateTrace.isEmpty {
+                    let refID = resolvedLeft
+                    let refRaw: [(t: Double, v: Double)] = {
+                        guard let id = refID,
+                              let trace = vm.traces[id], !trace.isEmpty else { return [] }
+                        let st = max(1, trace.count / 600)
+                        return Swift.stride(from: 0, to: trace.count, by: st)
+                                   .map { (t: trace[$0].t, v: trace[$0].v) }
+                    }()
+                    if !refRaw.isEmpty {
+                        TracePreviewCanvas(
+                            refPts: refRaw,
+                            simPts: runner.lastCandidateTrace
+                        )
+                        .frame(height: 68)
+                        .padding(.horizontal, 4)
+                    }
+                }
+
                 Text("\(optimParams.filter(\.isActive).count) param(s)  •  \(runner.iteration) iter.")
                     .font(.system(size: 9))
                     .foregroundStyle(.white.opacity(0.25))

@@ -139,7 +139,7 @@ final class ModelSweepRunner: ObservableObject {
                                     neuronID: neuronID, network: evalNet)
                 }
 
-                let (score, _) = scorer(sim)
+                let (score, _, _) = scorer(sim)
 
                 let burstInfo: (Int, Double, Double)? = nil
                 // Burst info is encoded in score; no separate capture needed

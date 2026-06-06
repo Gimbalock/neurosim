@@ -65,6 +65,7 @@ struct HeatmapView: View {
     // ── CSV reference ─────────────────────────────────────────────────────
     @State private var refSource: RefSource = .neuron
     @State private var csvRefPoints: [(v: Double, dvdt: Double)] = []
+    @State private var csvRefTrace:  [(t: Double, v: Double)]    = []   // raw V(t) for preview
     @State private var csvFileName: String = ""
     @State private var csvLoadError: String = ""
 
@@ -102,6 +103,21 @@ struct HeatmapView: View {
                   trace.count >= 2 else { return [] }
             let raw = trace.map { (t: $0.t, v: $0.v) }
             return phasePlanePoints(from: raw)
+        }
+    }
+
+    /// Downsampled V(t) trace used in the comparison preview panel.
+    private var refTraceForPreview: [(t: Double, v: Double)] {
+        switch refSource {
+        case .csv:
+            return csvRefTrace   // already stored from CSV parsing
+        case .neuron:
+            guard availableNeurons.indices.contains(refNeuronIdx),
+                  let trace = vm.traces[availableNeurons[refNeuronIdx].id],
+                  !trace.isEmpty else { return [] }
+            // Stride to ≤ 600 points for the preview canvas
+            let st = max(1, trace.count / 600)
+            return Swift.stride(from: 0, to: trace.count, by: st).map { (t: trace[$0].t, v: trace[$0].v) }
         }
     }
 
@@ -310,6 +326,20 @@ struct HeatmapView: View {
                     Text(runner.status)
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+
+                // ── V(t) comparison preview ───────────────────────────
+                if !runner.lastCandidateTrace.isEmpty || !refTraceForPreview.isEmpty {
+                    GroupBox {
+                        TracePreviewCanvas(
+                            refPts: refTraceForPreview,
+                            simPts: runner.lastCandidateTrace
+                        )
+                        .frame(height: 68)
+                    } label: {
+                        Label("Aperçu V(t)", systemImage: "waveform")
+                            .font(.caption.bold())
+                    }
                 }
 
                 // ── Best / Apply ──────────────────────────────────────
@@ -651,18 +681,19 @@ struct HeatmapView: View {
 
             guard pairs.count >= 2 else {
                 csvLoadError = "Aucune donnée numérique trouvée"
-                csvRefPoints = []
+                csvRefPoints = []; csvRefTrace = []
                 csvFileName  = ""
                 return
             }
 
             // Sort by time (safety), then build phase-plane
             pairs.sort { $0.t < $1.t }
+            csvRefTrace  = pairs                           // keep raw V(t) for preview
             csvRefPoints = phasePlanePoints(from: pairs)
             csvFileName  = url.lastPathComponent
         } catch {
             csvLoadError = error.localizedDescription
-            csvRefPoints = []
+            csvRefPoints = []; csvRefTrace = []
             csvFileName  = ""
         }
     }

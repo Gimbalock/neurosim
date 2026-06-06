@@ -154,7 +154,9 @@ extension OptimObjective {
     /// The returned closure:
     ///   - receives a `Simulator` with candidate parameters already applied
     ///   - resets it, runs it for `duration` ms, measures, and returns
-    ///     `(score, displayPts)` where `score` is to MINIMISE.
+    ///     `(score, displayPts, tracePts)` where `score` is to MINIMISE,
+    ///     `displayPts` are (V, dV/dt) phase-plane points for the overlay,
+    ///     and `tracePts` are downsampled (t, V) pairs for the V(t) preview.
     ///
     /// - Parameters:
     ///   - neuronID: UUID of the neuron being optimised.
@@ -162,19 +164,23 @@ extension OptimObjective {
     func makeScorer(
         neuronID: UUID,
         duration: Double
-    ) -> (Simulator) -> (score: Double, displayPts: [(v: Double, dvdt: Double)]) {
+    ) -> (Simulator) -> (score: Double,
+                         displayPts: [(v: Double, dvdt: Double)],
+                         tracePts:   [(t: Double, v: Double)]) {
 
         switch self {
 
         // ── Density match ─────────────────────────────────────────────────
         case let .densityMatch(refPoints, nBinsV, nBinsDvdt):
             guard let refGrid = buildEvalGrid(refPoints, nV: nBinsV, nD: nBinsDvdt) else {
-                return { _ in (.infinity, []) }
+                return { _ in (.infinity, [], []) }
             }
-            let every = max(1, Int(duration / 0.025 / 12_000))
+            let every      = max(1, Int(duration / 0.025 / 12_000))  // phase-plane stride
+            let traceEvery = max(1, Int(duration / 0.025 / 400))     // display trace (~400 pts)
             return { sim in
                 sim.reset()
-                var pts: [(v: Double, dvdt: Double)] = []
+                var pts:   [(v: Double, dvdt: Double)] = []
+                var trace: [(t: Double, v: Double)]    = []
                 var step = 0
                 // Central-difference rolling buffer: keep the two previous samples
                 // so we can compute dV/dt[i] = (V[i+1] − V[i−1]) / (t[i+1] − t[i−1])
@@ -182,24 +188,27 @@ extension OptimObjective {
                 var pp: (t: Double, v: Double)? = nil   // i−1
                 var pv: (t: Double, v: Double)? = nil   // i
                 sim.run(duration: duration) { sample in
-                    step += 1; guard step % every == 0 else { return }
+                    step += 1
                     guard let v = sample.voltages[neuronID] else { return }
+                    // Low-res display trace
+                    if step % traceEvery == 0 { trace.append((t: sample.time, v: v)) }
+                    // Phase-plane central differences
+                    guard step % every == 0 else { return }
                     let cur = (t: sample.time, v: v)
                     defer { pp = pv; pv = cur }
-                    // Need three consecutive samples to compute central derivative at pv
                     guard let prev2 = pp, let prev1 = pv else { return }
-                    let dt2 = cur.t - prev2.t          // spans two steps
+                    let dt2 = cur.t - prev2.t
                     guard dt2 > 0, dt2 < 4.0 else { return }
                     let dv = (cur.v - prev2.v) / dt2
                     guard abs(dv) < 5000 else { return }
-                    pts.append((v: prev1.v, dvdt: dv)) // V at the centre point
+                    pts.append((v: prev1.v, dvdt: dv))
                 }
-                guard !pts.isEmpty else { return (.infinity, []) }
+                guard !pts.isEmpty else { return (.infinity, [], trace) }
                 let cg = buildEvalGridInRange(pts,
                                               vLo: refGrid.vMin, vHi: refGrid.vMax,
                                               dLo: refGrid.dvdtMin, dHi: refGrid.dvdtMax,
                                               nV: nBinsV, nD: nBinsDvdt)
-                return (ssdNormalized(refGrid, cg), pts)
+                return (ssdNormalized(refGrid, cg), pts, trace)
             }
 
         // ── Burst counting ────────────────────────────────────────────────
@@ -215,7 +224,7 @@ extension OptimObjective {
                 } else if let idx = sim.network.voltageIndex(of: neuronID) {
                     vIdx = idx
                 } else {
-                    return (.infinity, [])
+                    return (.infinity, [], [])
                 }
 
                 // Sample every 0.5 ms — reliable upward-crossing detection for Na APs
@@ -240,9 +249,13 @@ extension OptimObjective {
                     targetAPsPerBurst: targetAPs,
                     targetPeriodMs:    targetPeriod)
 
+                // Downsample samples → ~400 pts for the V(t) preview
+                let traceStep = max(1, samples.count / 400)
+                let trace = Swift.stride(from: 0, to: samples.count, by: traceStep)
+                               .map { samples[$0] }
                 // DE/CMA-ES minimise → invert (perfect score 36 → 0.027; no bursts → ~1.0)
                 let toMinimise = 1.0 / (1.0 + max(score, 0))
-                return (toMinimise, [])   // burst mode has no phase-plane display
+                return (toMinimise, [], trace)
             }
         }
     }

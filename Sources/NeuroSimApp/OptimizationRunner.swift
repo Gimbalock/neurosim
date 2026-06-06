@@ -155,6 +155,7 @@ final class OptimizationRunner: ObservableObject {
 
     // Live feedback
     @Published var lastBestPoints: [(v: Double, dvdt: Double)] = []
+    @Published var lastCandidateTrace: [(t: Double, v: Double)] = []   // V(t) preview
     @Published var paramSnapshots: [(iteration: Int, values: [Double])] = []
     @Published var activeParamInfo: [ActiveParamInfo] = []
 
@@ -290,8 +291,9 @@ final class OptimizationRunner: ObservableObject {
                 applyOptimParam(param, value: candidate[i],
                                 neuronID: ctx.neuronID, network: vm.network)
             }
-            let (score, pts) = scorer(sim)
-            self._lastEvalPts = pts
+            let (score, pts, tracePts) = scorer(sim)
+            self._lastEvalPts       = pts
+            self.lastCandidateTrace = tracePts   // @Published, safe on main actor
             return score
         }
         _evalFn = evalFn
