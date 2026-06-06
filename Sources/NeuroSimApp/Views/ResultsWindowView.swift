@@ -34,7 +34,6 @@ private enum AnalysisTab: String, CaseIterable {
     case bifurcation = "Bifurcation"
     case heatmap     = "Heatmap"
     case modelSweep  = "Model Sweep"
-    case pdSweep     = "PD Sweep"
     case mutualInfo  = "Info Mut."
     case energy      = "Énergie"
 }
@@ -101,7 +100,6 @@ struct ResultsWindowView: View {
             case .bifurcation:  BifurcationView()
             case .heatmap:      HeatmapView()
             case .modelSweep:   ModelSweepView()
-            case .pdSweep:      PDSweepView()
             case .mutualInfo:   MutualInfoView()
             case .energy:       EnergyView()
             }
