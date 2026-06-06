@@ -175,17 +175,24 @@ extension OptimObjective {
             return { sim in
                 sim.reset()
                 var pts: [(v: Double, dvdt: Double)] = []
-                var step  = 0; var prevV: Double? = nil; var prevT = 0.0
+                var step = 0
+                // Central-difference rolling buffer: keep the two previous samples
+                // so we can compute dV/dt[i] = (V[i+1] − V[i−1]) / (t[i+1] − t[i−1])
+                // and place the point at V[i] (the centre sample).
+                var pp: (t: Double, v: Double)? = nil   // i−1
+                var pv: (t: Double, v: Double)? = nil   // i
                 sim.run(duration: duration) { sample in
                     step += 1; guard step % every == 0 else { return }
                     guard let v = sample.voltages[neuronID] else { return }
-                    defer { prevV = v; prevT = sample.time }
-                    guard let pv = prevV else { return }
-                    let dt = sample.time - prevT
-                    guard dt > 0, dt < 2.0 else { return }
-                    let dv = (v - pv) / dt
+                    let cur = (t: sample.time, v: v)
+                    defer { pp = pv; pv = cur }
+                    // Need three consecutive samples to compute central derivative at pv
+                    guard let prev2 = pp, let prev1 = pv else { return }
+                    let dt2 = cur.t - prev2.t          // spans two steps
+                    guard dt2 > 0, dt2 < 4.0 else { return }
+                    let dv = (cur.v - prev2.v) / dt2
                     guard abs(dv) < 5000 else { return }
-                    pts.append((v: pv, dvdt: dv))
+                    pts.append((v: prev1.v, dvdt: dv)) // V at the centre point
                 }
                 guard !pts.isEmpty else { return (.infinity, []) }
                 let cg = buildEvalGridInRange(pts,

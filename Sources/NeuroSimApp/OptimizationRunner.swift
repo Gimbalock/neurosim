@@ -13,13 +13,25 @@ import NeuroSimCore
 
 // MARK: - Density grid (shared between reference pre-compute and eval)
 
+// MARK: - Density grid
+//
+// `weights` accumulates arc-length mass rather than raw point counts so that
+// each segment of the phase-plane trajectory contributes proportionally to
+// its length in (V, dV/dt) space — not to the time spent there.
+// This prevents slow-oscillation regimes (long dwell, small arc) from
+// drowning out fast action-potential bursts (short dwell, large arc).
+//
+// `outFraction` tracks the fraction of candidate points that fell outside the
+// reference bounding box (see `buildEvalGridInRange`).
+
 struct EvalDensityGrid {
-    let counts:   [Int]
-    let nV:       Int
-    let nDvdt:    Int
-    let vMin:     Double; let vMax:     Double
-    let dvdtMin:  Double; let dvdtMax:  Double
-    var total: Int { counts.reduce(0, +) }
+    let weights:     [Double]   // arc-length-weighted bin masses
+    let nV:          Int
+    let nDvdt:       Int
+    let vMin:        Double; let vMax:        Double
+    let dvdtMin:     Double; let dvdtMax:     Double
+    let outFraction: Double     // fraction of pts outside reference range (0 for ref grid)
+    var totalWeight: Double { weights.reduce(0, +) }
 }
 
 func buildEvalGrid(_ pts: [(v: Double, dvdt: Double)], nV: Int, nD: Int) -> EvalDensityGrid? {
@@ -27,36 +39,98 @@ func buildEvalGrid(_ pts: [(v: Double, dvdt: Double)], nV: Int, nD: Int) -> Eval
     let vs = pts.map(\.v); let ds = pts.map(\.dvdt)
     guard let vMn = vs.min(), let vMx = vs.max(), vMx > vMn,
           let dMn = ds.min(), let dMx = ds.max(), dMx > dMn else { return nil }
-    let vPad = (vMx-vMn)*0.04; let dPad = (dMx-dMn)*0.04
+    let vPad = (vMx - vMn) * 0.04; let dPad = (dMx - dMn) * 0.04
     return buildEvalGridInRange(pts,
-                                vLo: vMn-vPad, vHi: vMx+vPad,
-                                dLo: dMn-dPad, dHi: dMx+dPad,
+                                vLo: vMn - vPad, vHi: vMx + vPad,
+                                dLo: dMn - dPad, dHi: dMx + dPad,
                                 nV: nV, nD: nD)
 }
 
+/// Build a weighted density grid within a fixed (V, dV/dt) bounding box.
+///
+/// Each point `pts[i]` receives a weight equal to the average arc-length of
+/// its two adjacent phase-plane segments:
+///
+///   w_i = ( ‖pts[i] − pts[i−1]‖ + ‖pts[i+1] − pts[i]‖ ) / 2
+///
+/// with boundary corrections for the first and last points.
+/// Points outside [vLo, vHi] × [dLo, dHi] are counted in `outFraction` but
+/// not binned (their arc-length contribution is forfeit — this acts as an
+/// implicit penalty for trajectories that escape the reference domain).
 func buildEvalGridInRange(_ pts: [(v: Double, dvdt: Double)],
                           vLo: Double, vHi: Double,
                           dLo: Double, dHi: Double,
                           nV: Int, nD: Int) -> EvalDensityGrid {
-    var counts = [Int](repeating: 0, count: nV * nD)
-    for p in pts {
-        guard p.v >= vLo, p.v <= vHi, p.dvdt >= dLo, p.dvdt <= dHi else { continue }
-        let ci = min(Int((p.v    - vLo)/(vHi-vLo) * Double(nV)), nV-1)
-        let ri = min(Int((p.dvdt - dLo)/(dHi-dLo) * Double(nD)), nD-1)
-        counts[ri*nV + ci] += 1
+    var weights  = [Double](repeating: 0, count: nV * nD)
+    var outCount = 0
+    let n        = pts.count
+
+    /// Euclidean distance in (V, dV/dt) space between two consecutive points.
+    @inline(__always)
+    func segLen(_ i: Int, _ j: Int) -> Double {
+        let dv = pts[j].v    - pts[i].v
+        let dd = pts[j].dvdt - pts[i].dvdt
+        return max(sqrt(dv*dv + dd*dd), 1e-12)   // never exactly zero
     }
-    return EvalDensityGrid(counts: counts, nV: nV, nDvdt: nD,
-                           vMin: vLo, vMax: vHi, dvdtMin: dLo, dvdtMax: dHi)
+
+    for i in 0..<n {
+        // Arc-length weight: half-sum of adjacent segment lengths
+        let w: Double
+        switch (i, n) {
+        case (_, 1):        w = 1.0                              // single point
+        case (0, _):        w = segLen(0, 1)                    // first point
+        case (_, _) where i == n - 1: w = segLen(n-2, n-1)     // last point
+        default:            w = (segLen(i-1, i) + segLen(i, i+1)) * 0.5
+        }
+
+        let p = pts[i]
+        guard p.v    >= vLo, p.v    <= vHi,
+              p.dvdt >= dLo, p.dvdt <= dHi else { outCount += 1; continue }
+
+        let ci = min(Int((p.v    - vLo) / (vHi - vLo) * Double(nV)), nV - 1)
+        let ri = min(Int((p.dvdt - dLo) / (dHi - dLo) * Double(nD)), nD - 1)
+        weights[ri * nV + ci] += w
+    }
+
+    let outFrac = n > 0 ? Double(outCount) / Double(n) : 0.0
+    return EvalDensityGrid(weights: weights, nV: nV, nDvdt: nD,
+                           vMin: vLo, vMax: vHi,
+                           dvdtMin: dLo, dvdtMax: dHi,
+                           outFraction: outFrac)
 }
 
+/// χ² distance between two arc-length-weighted density grids, plus an
+/// out-of-range penalty for the candidate (`b`).
+///
+/// χ²(p, q) = Σ_i (p_i − q_i)² / (p_i + q_i + ε)
+///
+/// Advantages over plain SSD:
+/// · Automatically up-weights sparse regions (AP peaks, burst transitions)
+///   where a mismatch matters most diagnostically.
+/// · Bounded ≈ [0, 2] for normalised distributions, so it scales predictably
+///   regardless of bin count.
+///
+/// Out-of-range penalty:
+/// · Each fraction of candidate points that lands outside the reference domain
+///   adds up to 2.0 to the score (matching the maximum χ² value).
+///   Convention: `a` = reference (outFraction ≈ 0), `b` = candidate.
 func ssdNormalized(_ a: EvalDensityGrid, _ b: EvalDensityGrid) -> Double {
-    let tA = max(1, a.total); let tB = max(1, b.total)
-    var e = 0.0
-    for i in 0..<min(a.counts.count, b.counts.count) {
-        let d = Double(a.counts[i])/Double(tA) - Double(b.counts[i])/Double(tB)
-        e += d*d
+    let tA = max(1e-10, a.totalWeight)
+    let tB = max(1e-10, b.totalWeight)
+    var dist = 0.0
+    let n = min(a.weights.count, b.weights.count)
+    for i in 0..<n {
+        let pA = a.weights[i] / tA
+        let pB = b.weights[i] / tB
+        let denom = pA + pB
+        if denom > 1e-20 {
+            let diff = pA - pB
+            dist += diff * diff / denom
+        }
     }
-    return e
+    // Out-of-range penalty: up to +2.0 when all candidate points are out of bounds
+    dist += b.outFraction * 2.0
+    return dist
 }
 
 // MARK: - Param info (published for the view)

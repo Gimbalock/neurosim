@@ -19,19 +19,23 @@ func heatColor(_ t: Double) -> Color {
 // MARK: - Phase-plane point extraction
 
 /// Convert a voltage trace into (V, dV/dt) phase-plane points.
-/// dt must be > 0 and < 2 ms; |dV/dt| must be < 5000 mV/ms to filter noise.
+///
+/// Uses **central differences** — `dV/dt[i] = (V[i+1] − V[i−1]) / (t[i+1] − t[i−1])` — which
+/// halves the derivative noise compared to a forward difference and is placed at the centre
+/// sample V[i].  The span `dt2 = t[i+1]−t[i−1]` must be > 0 and < 4 ms (two forward steps);
+/// |dV/dt| must be < 5000 mV/ms to reject numerical noise.
 func phasePlanePoints(
     from trace: [(t: Double, v: Double)]
 ) -> [(v: Double, dvdt: Double)] {
-    guard trace.count >= 2 else { return [] }
+    guard trace.count >= 3 else { return [] }
     var pts: [(v: Double, dvdt: Double)] = []
-    pts.reserveCapacity(trace.count)
-    for i in 1..<trace.count {
-        let dt = trace[i].t - trace[i-1].t
-        guard dt > 0, dt < 2.0 else { continue }
-        let dvdt = (trace[i].v - trace[i-1].v) / dt
+    pts.reserveCapacity(trace.count - 2)
+    for i in 1..<trace.count - 1 {
+        let dt2 = trace[i+1].t - trace[i-1].t   // spans two steps
+        guard dt2 > 0, dt2 < 4.0 else { continue }
+        let dvdt = (trace[i+1].v - trace[i-1].v) / dt2
         guard abs(dvdt) < 5000 else { continue }
-        pts.append((v: trace[i-1].v, dvdt: dvdt))
+        pts.append((v: trace[i].v, dvdt: dvdt))  // V at the centre point
     }
     return pts
 }
