@@ -115,8 +115,8 @@ struct HeatmapView: View {
             guard availableNeurons.indices.contains(refNeuronIdx),
                   let trace = vm.traces[availableNeurons[refNeuronIdx].id],
                   !trace.isEmpty else { return [] }
-            // Stride to ≤ 600 points for the preview canvas
-            let st = max(1, trace.count / 600)
+            // Stride to ≤ 3000 points — the canvas pools further with min/max
+            let st = max(1, trace.count / 3_000)
             return Swift.stride(from: 0, to: trace.count, by: st).map { (t: trace[$0].t, v: trace[$0].v) }
         }
     }
@@ -335,7 +335,7 @@ struct HeatmapView: View {
                             refPts: refTraceForPreview,
                             simPts: runner.lastCandidateTrace
                         )
-                        .frame(height: 68)
+                        .frame(height: 110)
                     } label: {
                         Label("Aperçu V(t)", systemImage: "waveform")
                             .font(.caption.bold())

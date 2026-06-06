@@ -823,7 +823,7 @@ struct TrajectoryDensityView: View {
                     let refRaw: [(t: Double, v: Double)] = {
                         guard let id = refID,
                               let trace = vm.traces[id], !trace.isEmpty else { return [] }
-                        let st = max(1, trace.count / 600)
+                        let st = max(1, trace.count / 3_000)
                         return Swift.stride(from: 0, to: trace.count, by: st)
                                    .map { (t: trace[$0].t, v: trace[$0].v) }
                     }()
@@ -832,7 +832,7 @@ struct TrajectoryDensityView: View {
                             refPts: refRaw,
                             simPts: runner.lastCandidateTrace
                         )
-                        .frame(height: 68)
+                        .frame(height: 110)
                         .padding(.horizontal, 4)
                     }
                 }

@@ -45,50 +45,65 @@ func phasePlanePoints(
 /// A compact canvas that overlays a reference V(t) trace (blue) and a candidate
 /// V(t) trace (orange) for live visual comparison during sweeps / optimisation.
 /// Both traces are auto-scaled to a shared Y range.
+/// Uses min/max pooling so action potential peaks are never missed even at
+/// high compression ratios.
 struct TracePreviewCanvas: View {
     /// Reference trace — blue.
     var refPts: [(t: Double, v: Double)]
     /// Current candidate trace — orange.
     var simPts: [(t: Double, v: Double)]
+    /// Number of visual "buckets" drawn per trace (each contributes 2 pts: min + max).
+    var buckets: Int = 500
 
     var body: some View {
         Canvas { ctx, size in
             let all = refPts + simPts
             guard all.count >= 2 else { return }
 
-            var tMin = all[0].t,  tMax = all[0].t
-            var vMin = all[0].v,  vMax = all[0].v
+            var tMin = all[0].t, tMax = all[0].t
+            var vMin = all[0].v, vMax = all[0].v
             for p in all {
-                if p.t < tMin { tMin = p.t }
-                if p.t > tMax { tMax = p.t }
-                if p.v < vMin { vMin = p.v }
-                if p.v > vMax { vMax = p.v }
+                if p.t < tMin { tMin = p.t }; if p.t > tMax { tMax = p.t }
+                if p.v < vMin { vMin = p.v }; if p.v > vMax { vMax = p.v }
             }
             let tSpan = max(tMax - tMin, 1e-6)
             let vSpan = max(vMax - vMin, 1e-6)
 
-            // Map a (t, v) point to canvas coordinates.
             func xy(_ t: Double, _ v: Double) -> CGPoint {
                 CGPoint(x: (t - tMin) / tSpan * size.width,
                         y: (1.0 - (v - vMin) / vSpan) * size.height)
             }
 
-            // Draw one trace, striding to ≤ maxPts segments.
-            func draw(_ pts: [(t: Double, v: Double)], color: Color, width: CGFloat) {
-                guard pts.count >= 2 else { return }
-                let maxPts = 600
-                let st = max(1, pts.count / maxPts)
+            /// Min/max pooling: each of the `n` buckets keeps the sample with the
+            /// lowest V and the sample with the highest V, in chronological order.
+            /// This guarantees AP peaks are captured regardless of compression ratio.
+            func pooled(_ pts: [(t: Double, v: Double)], n: Int) -> [(t: Double, v: Double)] {
+                guard pts.count > n * 2 else { return pts }
+                let bsz = pts.count / n
+                var out = [(t: Double, v: Double)]()
+                out.reserveCapacity(n * 2)
+                for b in 0..<n {
+                    let lo = b * bsz
+                    let hi = min(lo + bsz, pts.count)
+                    var minP = pts[lo], maxP = pts[lo]
+                    for i in (lo + 1)..<hi {
+                        if pts[i].v < minP.v { minP = pts[i] }
+                        if pts[i].v > maxP.v { maxP = pts[i] }
+                    }
+                    if minP.t <= maxP.t { out.append(minP); out.append(maxP) }
+                    else                { out.append(maxP); out.append(minP) }
+                }
+                return out
+            }
+
+            func draw(_ raw: [(t: Double, v: Double)], color: Color, width: CGFloat) {
+                guard raw.count >= 2 else { return }
+                let pts = pooled(raw, n: buckets)
                 var path = Path()
                 var moved = false
-                var i = 0
-                while i < pts.count {
-                    let p = xy(pts[i].t, pts[i].v)
-                    if !moved { path.move(to: p); moved = true } else { path.addLine(to: p) }
-                    i += st
-                }
-                // Always include the last point
-                if pts.count % st != 0 {
-                    path.addLine(to: xy(pts.last!.t, pts.last!.v))
+                for p in pts {
+                    let c = xy(p.t, p.v)
+                    if !moved { path.move(to: c); moved = true } else { path.addLine(to: c) }
                 }
                 ctx.stroke(path, with: .color(color), lineWidth: width)
             }
@@ -98,7 +113,6 @@ struct TracePreviewCanvas: View {
         }
         .background(Color.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 4))
         .overlay(alignment: .bottomTrailing) {
-            // Tiny legend
             HStack(spacing: 4) {
                 Capsule().fill(Color(red: 0.35, green: 0.65, blue: 1.0))
                     .frame(width: 10, height: 2)

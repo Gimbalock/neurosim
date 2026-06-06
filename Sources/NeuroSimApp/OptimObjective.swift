@@ -176,7 +176,7 @@ extension OptimObjective {
                 return { _ in (.infinity, [], []) }
             }
             let every      = max(1, Int(duration / 0.025 / 12_000))  // phase-plane stride
-            let traceEvery = max(1, Int(duration / 0.025 / 400))     // display trace (~400 pts)
+            let traceEvery = max(1, Int(duration / 0.025 / 3_000))  // display trace (~3000 pts — pooled later)
             return { sim in
                 sim.reset()
                 var pts:   [(v: Double, dvdt: Double)] = []
@@ -249,8 +249,8 @@ extension OptimObjective {
                     targetAPsPerBurst: targetAPs,
                     targetPeriodMs:    targetPeriod)
 
-                // Downsample samples → ~400 pts for the V(t) preview
-                let traceStep = max(1, samples.count / 400)
+                // Downsample samples → ~3000 pts for the V(t) preview (pooled in canvas)
+                let traceStep = max(1, samples.count / 3_000)
                 let trace = Swift.stride(from: 0, to: samples.count, by: traceStep)
                                .map { samples[$0] }
                 // DE/CMA-ES minimise → invert (perfect score 36 → 0.027; no bursts → ~1.0)
