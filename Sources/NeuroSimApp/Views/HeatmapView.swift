@@ -29,6 +29,13 @@ private enum GridSpacing: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+// MARK: - Reference source
+
+private enum RefSource: String, CaseIterable {
+    case neuron = "Neurone"
+    case csv    = "Fichier CSV"
+}
+
 // MARK: - View
 
 struct HeatmapView: View {
@@ -55,9 +62,22 @@ struct HeatmapView: View {
     @State private var simDuration: Double = 500.0   // ms
     @State private var refNeuronIdx: Int = 0
 
+    // ── CSV reference ─────────────────────────────────────────────────────
+    @State private var refSource: RefSource = .neuron
+    @State private var csvRefPoints: [(v: Double, dvdt: Double)] = []
+    @State private var csvFileName: String = ""
+    @State private var csvLoadError: String = ""
+
     // ── Hover / selection ─────────────────────────────────────────────────
     @State private var hoveredCell: Int? = nil
     @State private var selectedCell: Int? = nil
+
+    // ── Colour scale ───────────────────────────────────────────────────────
+    /// When true, colour is mapped on log(error) instead of error.
+    /// Recommended whenever errors span several orders of magnitude — it
+    /// prevents a few high-error outliers from compressing all "good" cells
+    /// into an indistinguishable dark-blue band.
+    @State private var logColorScale: Bool = true
 
     // MARK: - Derived helpers
 
@@ -73,11 +93,16 @@ struct HeatmapView: View {
     private var yParam: OptimParam? { optimParams[safe: yParamIdx] }
 
     private var refPoints: [(v: Double, dvdt: Double)] {
-        guard availableNeurons.indices.contains(refNeuronIdx),
-              let trace = vm.traces[availableNeurons[refNeuronIdx].id],
-              trace.count >= 2 else { return [] }
-        let raw = trace.map { (t: $0.t, v: $0.v) }
-        return phasePlanePoints(from: raw)
+        switch refSource {
+        case .csv:
+            return csvRefPoints
+        case .neuron:
+            guard availableNeurons.indices.contains(refNeuronIdx),
+                  let trace = vm.traces[availableNeurons[refNeuronIdx].id],
+                  trace.count >= 2 else { return [] }
+            let raw = trace.map { (t: $0.t, v: $0.v) }
+            return phasePlanePoints(from: raw)
+        }
     }
 
     private func makeGrid(min: Double, max: Double, steps: Int,
@@ -136,19 +161,64 @@ struct HeatmapView: View {
                         }
                         .labelsHidden()
 
-                        sectionLabel("Référence (tracé actuel)")
-                        Picker("", selection: $refNeuronIdx) {
-                            ForEach(Array(availableNeurons.enumerated()), id: \.offset) { i, n in
-                                let hasTrace = vm.traces[n.id]?.count ?? 0 >= 2
-                                Text(n.name + (hasTrace ? "" : " ✗")).tag(i)
+                        sectionLabel("Source de référence")
+                        Picker("", selection: $refSource) {
+                            ForEach(RefSource.allCases, id: \.self) { s in
+                                Text(s.rawValue).tag(s)
                             }
                         }
+                        .pickerStyle(.segmented)
                         .labelsHidden()
-                        if refPoints.isEmpty {
-                            Label("Lancez une simulation d'abord",
-                                  systemImage: "exclamationmark.triangle")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
+
+                        if refSource == .neuron {
+                            Picker("", selection: $refNeuronIdx) {
+                                ForEach(Array(availableNeurons.enumerated()), id: \.offset) { i, n in
+                                    let hasTrace = vm.traces[n.id]?.count ?? 0 >= 2
+                                    Text(n.name + (hasTrace ? "" : " ✗")).tag(i)
+                                }
+                            }
+                            .labelsHidden()
+                            if refPoints.isEmpty {
+                                Label("Lancez une simulation d'abord",
+                                      systemImage: "exclamationmark.triangle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                        } else {
+                            // CSV loader
+                            Button {
+                                loadCSVFile()
+                            } label: {
+                                Label(csvFileName.isEmpty ? "Charger CSV…" : "Changer…",
+                                      systemImage: "doc.text")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+
+                            if !csvFileName.isEmpty {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                    Text(csvFileName)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                .font(.system(size: 10))
+                                Text("\(csvRefPoints.count) pts plan de phase")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            if !csvLoadError.isEmpty {
+                                Label(csvLoadError, systemImage: "xmark.circle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.red)
+                            } else if csvRefPoints.isEmpty && csvFileName.isEmpty {
+                                Label("Sélectionnez un fichier CSV",
+                                      systemImage: "exclamationmark.triangle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
                         }
                     }
                 } label: {
@@ -305,9 +375,26 @@ struct HeatmapView: View {
         let cellW = plotW / CGFloat(r.nX)
         let cellH = plotH / CGFloat(r.nY)
 
-        let eMin = r.minError
-        let eMax = r.maxError
-        let span = max(eMax - eMin, 1e-10)
+        let eMin  = r.minError
+        let eMax  = r.maxError
+        let span  = max(eMax - eMin, 1e-10)
+
+        // Pre-compute log bounds once (safe: eMin may be 0)
+        let eMinSafe = max(eMin, 1e-12)
+        let eMaxSafe = max(eMax, eMinSafe * 1.0001)
+        let logMin   = log(eMinSafe)
+        let logSpan  = max(log(eMaxSafe) - logMin, 1e-15)
+
+        // Normalise a single error value → [0,1] for heatColor()
+        let normT: (Double) -> Double = { e in
+            if logColorScale {
+                // Log scale: spreads colours evenly across orders of magnitude
+                let t = (log(max(e, eMinSafe)) - logMin) / logSpan
+                return Swift.max(0, Swift.min(1, t))
+            } else {
+                return Swift.max(0, Swift.min(1, (e - eMin) / span))
+            }
+        }
 
         Canvas { ctx, _ in
             // Draw cells (y is inverted: low Y index = low param value = bottom)
@@ -321,8 +408,7 @@ struct HeatmapView: View {
                     if e.isNaN {
                         ctx.fill(Path(rect), with: .color(.gray.opacity(0.15)))
                     } else {
-                        let t = (e - eMin) / span   // 0 = best (blue), 1 = worst (red)
-                        ctx.fill(Path(rect), with: .color(heatColor(t)))
+                        ctx.fill(Path(rect), with: .color(heatColor(normT(e))))
                     }
                 }
             }
@@ -443,6 +529,14 @@ struct HeatmapView: View {
                     .foregroundStyle(.tertiary)
             }
             Spacer()
+            // Log / Linear toggle
+            Toggle(isOn: $logColorScale) {
+                Text("Échelle log")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.checkbox)
+            .help("Normalise les couleurs en log(erreur) pour mieux distinguer les zones de faible erreur")
             // Colour scale legend
             colorLegend
         }
@@ -515,6 +609,62 @@ struct HeatmapView: View {
                      xValues: xVals, yValues: yVals,
                      refPoints: refPoints,
                      simDuration: simDuration)
+    }
+
+    // MARK: - CSV loading
+
+    private func loadCSVFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Charger une trajectoire de référence (CSV)"
+        panel.message = "Colonnes attendues : temps (ms), tension (mV) — ligne d'en-tête optionnelle"
+        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        parseCSV(url: url)
+    }
+
+    private func parseCSV(url: URL) {
+        csvLoadError = ""
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let rows = text.components(separatedBy: .newlines)
+                           .map { $0.trimmingCharacters(in: .whitespaces) }
+                           .filter { !$0.isEmpty }
+
+            var pairs: [(t: Double, v: Double)] = []
+
+            for row in rows {
+                // Try comma first, then semicolons and tabs as fallback
+                let sep: Character = row.contains(",") ? ","
+                                   : row.contains(";") ? ";"
+                                   : "\t"
+                let cols = row.split(separator: sep, omittingEmptySubsequences: true)
+                              .map { $0.trimmingCharacters(in: .whitespaces) }
+                guard cols.count >= 2 else { continue }
+                // Skip header rows (first cell is not numeric)
+                guard let t = Double(cols[0]), let v = Double(cols[1]) else { continue }
+                pairs.append((t: t, v: v))
+            }
+
+            guard pairs.count >= 2 else {
+                csvLoadError = "Aucune donnée numérique trouvée"
+                csvRefPoints = []
+                csvFileName  = ""
+                return
+            }
+
+            // Sort by time (safety), then build phase-plane
+            pairs.sort { $0.t < $1.t }
+            csvRefPoints = phasePlanePoints(from: pairs)
+            csvFileName  = url.lastPathComponent
+        } catch {
+            csvLoadError = error.localizedDescription
+            csvRefPoints = []
+            csvFileName  = ""
+        }
     }
 
     private func formatVal(_ v: Double) -> String {
