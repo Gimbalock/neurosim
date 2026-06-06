@@ -376,52 +376,43 @@ extension NetworkDocument.OptimSettingsDoc {
 
 // MARK: - Gate override helpers
 
-/// Update a sigmoid x∞ override on any HHGated class-based channel.
-private func applyGateInfSigmoid<C: HHGated & AnyObject>(
-    _ ch: C, gi: Int, transform: (Double, Double, Double, Double) -> GateCurve) {
-    guard gi < ch.gateInfOverrides.count,
-          let curve = ch.gateInfOverrides[gi],
-          case .sigmoid(let lo, let hi, let vHalf, let k, _) = curve
-    else { return }
-    ch.gateInfOverrides[gi] = transform(lo, hi, vHalf, k)
+/// Protocol-extension helpers so any HHGated channel (including MODImportedChannel,
+/// PersistentSodiumChannel, etc.) can have its overrides updated without requiring
+/// an exhaustive switch over every concrete type.
+private extension HHGated {
+    /// Replace the current sigmoid x∞ override on gate `gi` with a new one.
+    /// No-op if gate `gi` doesn't already have a `.sigmoid` override.
+    func applyInfSigmoid(gi: Int,
+                         transform: (Double, Double, Double, Double) -> GateCurve) {
+        guard gi < gateInfOverrides.count,
+              let curve = gateInfOverrides[gi],
+              case .sigmoid(let lo, let hi, let vHalf, let k, _) = curve
+        else { return }
+        gateInfOverrides[gi] = transform(lo, hi, vHalf, k)
+    }
+
+    /// Replace the current gaussian τ override on gate `gi` with a new one.
+    /// No-op if gate `gi` doesn't already have a `.gaussian` override.
+    func applyTauGaussian(gi: Int,
+                          transform: (Double, Double, Double, Double) -> GateCurve) {
+        guard gi < gateTauOverrides.count,
+              let curve = gateTauOverrides[gi],
+              case .gaussian(let tMin, let tMax, let vPeak, let width, _) = curve
+        else { return }
+        gateTauOverrides[gi] = transform(tMin, tMax, vPeak, width)
+    }
 }
 
-/// Update a gaussian τ override on any HHGated class-based channel.
-private func applyGateTauGaussian<C: HHGated & AnyObject>(
-    _ ch: C, gi: Int, transform: (Double, Double, Double, Double) -> GateCurve) {
-    guard gi < ch.gateTauOverrides.count,
-          let curve = ch.gateTauOverrides[gi],
-          case .gaussian(let tMin, let tMax, let vPeak, let width, _) = curve
-    else { return }
-    ch.gateTauOverrides[gi] = transform(tMin, tMax, vPeak, width)
-}
-
-/// Dispatch gate inf update to whatever concrete HHGated type owns the channel.
+/// Dispatch gate x∞ update to any HHGated channel (class-bound protocol).
 private func withGateInf(_ ch: IonChannel, gi: Int,
-                          inf: @escaping (Double, Double, Double, Double) -> GateCurve) {
-    switch ch {
-    case let c as SodiumChannel:       applyGateInfSigmoid(c, gi: gi, transform: inf)
-    case let c as PotassiumChannel:    applyGateInfSigmoid(c, gi: gi, transform: inf)
-    case let c as TTypeCalciumChannel: applyGateInfSigmoid(c, gi: gi, transform: inf)
-    case let c as CaSChannel:          applyGateInfSigmoid(c, gi: gi, transform: inf)
-    case let c as ATypeChannel:        applyGateInfSigmoid(c, gi: gi, transform: inf)
-    case let c as HChannel:            applyGateInfSigmoid(c, gi: gi, transform: inf)
-    default: break
-    }
+                          inf: (Double, Double, Double, Double) -> GateCurve) {
+    (ch as? any HHGated)?.applyInfSigmoid(gi: gi, transform: inf)
 }
 
-/// Dispatch gate tau update to whatever concrete HHGated type owns the channel.
+/// Dispatch gate τ update to any HHGated channel (class-bound protocol).
 private func withGateTau(_ ch: IonChannel, gi: Int,
-                          tau: @escaping (Double, Double, Double, Double) -> GateCurve) {
-    switch ch {
-    case let c as SodiumChannel:       applyGateTauGaussian(c, gi: gi, transform: tau)
-    case let c as PotassiumChannel:    applyGateTauGaussian(c, gi: gi, transform: tau)
-    case let c as TTypeCalciumChannel: applyGateTauGaussian(c, gi: gi, transform: tau)
-    case let c as CaSChannel:          applyGateTauGaussian(c, gi: gi, transform: tau)
-    case let c as ATypeChannel:        applyGateTauGaussian(c, gi: gi, transform: tau)
-    case let c as HChannel:            applyGateTauGaussian(c, gi: gi, transform: tau)
-    default: break
-    }
+                          tau: (Double, Double, Double, Double) -> GateCurve) {
+    (ch as? any HHGated)?.applyTauGaussian(gi: gi, transform: tau)
 }
 
 // MARK: - Apply

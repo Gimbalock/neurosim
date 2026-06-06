@@ -649,6 +649,10 @@ extension ChannelDoc {
             return ChannelDoc(kind: "lTypeCalcium", gMax: cal.gMax, reversal: cal.reversal,
                               gateInfOverrides: cal.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
                               gateTauOverrides: cal.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
+        case let cas as CaSChannel:
+            return ChannelDoc(kind: "caslow", gMax: cas.gMax, reversal: cas.reversal,
+                              gateInfOverrides: cas.gateInfOverrides.map { $0.map(GateCurveDoc.from) },
+                              gateTauOverrides: cas.gateTauOverrides.map { $0.map(GateCurveDoc.from) })
         default:
             return ChannelDoc(kind: "leak", gMax: ch.gMax, reversal: ch.reversal)
         }
@@ -728,6 +732,11 @@ extension ChannelDoc {
             let ch = LTypeCalciumChannel(gMax: gMax, reversal: reversal)
             if infs.count == 2 { ch.gateInfOverrides = infs }
             if taus.count == 2 { ch.gateTauOverrides = taus }
+            return ch
+        case "caslow":
+            let ch = CaSChannel(gMax: gMax, reversal: reversal)
+            if infs.count == 1 { ch.gateInfOverrides = infs }
+            if taus.count == 1 { ch.gateTauOverrides = taus }
             return ch
         default: // "leak" or unknown
             return LeakChannel(gMax: gMax, reversal: reversal)
