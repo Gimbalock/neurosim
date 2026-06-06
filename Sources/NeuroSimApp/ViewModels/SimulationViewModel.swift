@@ -173,19 +173,27 @@ final class SimulationViewModel: ObservableObject {
                                         label: label,
                                         points: [],
                                         color: color))
+        pendingSignalPoints.append([])   // keep parallel array in sync
     }
 
     func removeSignalTrace(id: UUID) {
+        if let idx = signalTraces.firstIndex(where: { $0.id == id }) {
+            pendingSignalPoints.remove(at: idx)
+        }
         signalTraces.removeAll { $0.id == id }
     }
 
     /// Remove the trace matching a given signal (used by the picker toggle in "add to group" mode).
     func removeSignalTrace(signal: TracedSignal) {
+        if let idx = signalTraces.firstIndex(where: { $0.signal == signal }) {
+            pendingSignalPoints.remove(at: idx)
+        }
         signalTraces.removeAll { $0.signal == signal }
     }
 
     func clearSignalTraces() {
         signalTraces.removeAll()
+        pendingSignalPoints.removeAll()
     }
 
     // MARK: - Graph config persistence
@@ -243,6 +251,7 @@ final class SimulationViewModel: ObservableObject {
                         points: [],
                         color: color)
         }
+        pendingSignalPoints = Array(repeating: [], count: signalTraces.count)
     }
 
     // MARK: - Run state
@@ -285,12 +294,35 @@ final class SimulationViewModel: ObservableObject {
     private var simTimer: Timer?
     /// Prevents overlapping simulation frames if computation exceeds 1/60 s.
     private var frameInFlight = false
+
+    // ── Pending (non-@Published) sample buffers ───────────────────────────────
+    // The hot loop writes here every frame (no SwiftUI re-render).
+    // `kickFrame` flushes them to the @Published vars at ≤30 fps so Charts
+    // and the canvas don't redraw on every simulation step.
+    private var pendingTraces:       [UUID: [PlotPoint]]       = [:]
+    private var pendingEnergyTraces: [UUID: [EnergyPlotPoint]] = [:]
+    /// Parallel to `signalTraces`; only the `.points` array is maintained here.
+    private var pendingSignalPoints: [[PlotPoint]]             = []
+    private var pendingSimTime:      Double                    = 0
+    /// Wall-clock instant of the last display flush (used to throttle to ≤30 fps).
+    private var lastDisplayFlush: ContinuousClock.Instant      = .now
+    /// Wall-clock instant at the start of the most recent kickFrame() call.
+    /// Used to compute actual inter-frame elapsed time, which determines how many
+    /// simulation steps to run — this enforces the correct realtimeFactor regardless
+    /// of how fast the background task completes (prevents the sim from running ahead
+    /// of real-time when self-scheduling is used with fast/simple networks).
+    private var lastKickStartTime: ContinuousClock.Instant     = .now
+
     /// Hard memory cap on a single neuron's trace buffer. Time-based trimming
     /// (`cutoff = simulator.time − plotWindow`) is the primary mechanism;
-    /// this is just a safety net so a runaway window can't blow up memory.
-    /// Sized to comfortably hold a 5 s window at current downsample stride.
-    private let plotMaxSamples = 500_000
-    private let plotDownsampleStride: Int = 1
+    /// this is a safety net so a runaway window can't blow up memory.
+    /// At stride 4 and dt 0.025 ms a 5 s window holds ~50 000 points.
+    private let plotMaxSamples = 100_000
+    /// Record one sample every N simulation steps.
+    /// stride 4 × dt 0.025 ms = one point every 0.1 ms.
+    /// A 200 ms window → 2 000 pts/trace; a 5 s window → 50 000 pts/trace.
+    /// Action-potential detail is fully preserved (≥ 20 pts per ~2 ms spike).
+    private let plotDownsampleStride: Int = 4
 
     // MARK: - Init
 
@@ -676,11 +708,15 @@ final class SimulationViewModel: ObservableObject {
     private func seedTraces() {
         var t: [UUID: [PlotPoint]] = [:]
         for n in network.neurons { t[n.id] = [] }
-        traces = t
+        traces        = t
+        pendingTraces = t
         for i in signalTraces.indices { signalTraces[i].points = [] }
+        pendingSignalPoints = Array(repeating: [], count: signalTraces.count)
         var et: [UUID: [EnergyPlotPoint]] = [:]
         for n in network.neurons where n.energyParams.enabled { et[n.id] = [] }
-        energyTraces = et
+        energyTraces        = et
+        pendingEnergyTraces = et
+        pendingSimTime      = 0
     }
 
     // MARK: - Run / pause / reset
@@ -705,6 +741,15 @@ final class SimulationViewModel: ObservableObject {
         frameInFlight = false
         simulator.dt = dt
         simulator.method = integrationMethod
+        lastDisplayFlush  = .now
+        lastKickStartTime = .now   // reset so first frame uses a clean baseline
+
+        // Kick the first frame immediately — no need to wait for the timer's
+        // first tick (which could be up to 16 ms away).
+        Task { @MainActor [weak self] in self?.kickFrame() }
+
+        // Keep the timer as a fallback heartbeat in case the self-scheduling
+        // chain ever breaks (e.g. divergence branch returns early).
         simTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0,
                                         repeats: true) { [weak self] _ in
             Task { @MainActor in self?.kickFrame() }
@@ -716,6 +761,21 @@ final class SimulationViewModel: ObservableObject {
         simTimer = nil
         isRunning = false
         frameInFlight = false
+        // Flush any pending data so views show the last simulated state.
+        flushPendingDisplay()
+    }
+
+    /// Copy pending (non-@Published) buffers → @Published vars, triggering one
+    /// SwiftUI redraw.  Called by the display-throttle inside kickFrame and by pause().
+    private func flushPendingDisplay() {
+        simulationTime = pendingSimTime
+        traces         = pendingTraces
+        if !pendingEnergyTraces.isEmpty { energyTraces = pendingEnergyTraces }
+        if !pendingSignalPoints.isEmpty && pendingSignalPoints.count == signalTraces.count {
+            var st = signalTraces
+            for j in st.indices { st[j].points = pendingSignalPoints[j] }
+            signalTraces = st   // single @Published write → one SwiftUI re-render
+        }
     }
 
     /// Explicit cold reset: clears the warm state and re-initialises every
@@ -731,9 +791,18 @@ final class SimulationViewModel: ObservableObject {
         seedTraces()
     }
 
-    /// Timer callback: offload the simulation step-loop to a background thread,
-    /// then marshal results back to the main actor for UI update.
-    /// `frameInFlight` prevents overlapping frames if computation exceeds 1/60 s.
+    /// Simulation driver.
+    ///
+    /// Architecture (post-optimisation):
+    ///  - Background `Task.detached` runs nSteps of integration (no main-thread stall).
+    ///  - After each batch the main-actor commit immediately self-reschedules the next
+    ///    batch via `Task { @MainActor in kickFrame() }` — no idle gap waiting for the
+    ///    60 fps timer tick (which stays as a fallback heartbeat only).
+    ///  - Data is accumulated in non-@Published `pending*` buffers every simulation
+    ///    frame; the @Published `traces/energyTraces/signalTraces` are flushed at most
+    ///    once every 33 ms (~30 fps) so SwiftUI / Charts re-render less often.
+    ///  - `frameInFlight` prevents overlapping frames if a batch takes longer than the
+    ///    reschedule interval.
     private func kickFrame() {
         guard isRunning, !frameInFlight else { return }
 
@@ -747,9 +816,38 @@ final class SimulationViewModel: ObservableObject {
             return
         }
 
-        // Compute how many steps to simulate this frame (same logic as before).
-        let frameDurationMs = 1000.0 / 60.0
-        let simulatedMsPerFrame = frameDurationMs * realtimeFactor
+        // ── Compute how many steps to simulate this frame ──────────────────────
+        //
+        // Use ACTUAL elapsed wall-clock time since the last kickFrame() call
+        // rather than a fixed 16.67 ms nominal frame period.
+        //
+        // Rationale: with self-scheduling, fast/simple networks can call
+        // kickFrame() 700+ times per second.  Each call used to simulate
+        // 16.67 ms × realtimeFactor regardless — making a 200 ms simulation
+        // complete in ~17 ms wall time (11.6× too fast at realtimeFactor=1).
+        // Measuring actual elapsed time makes the simulation self-pacing:
+        //
+        //   • Fast network (1 neuron, RL):  cycle ≈ 0.10 ms  →  nSteps ≈ 4
+        //     700 frames/s × 4 steps × 0.025 ms = 70 ms sim / 70 ms wall ≈ 1× ✓
+        //
+        //   • Slow network (10 neurons):    cycle ≈ 25 ms   → nSteps ≈ 1000
+        //     40 frames/s × 1000 steps × 0.025 ms = 1000 ms sim / 1000 ms wall ≈ 1× ✓
+        //
+        //   • realtimeFactor = 10:  nSteps = elapsed × 10 / dt  → 10× real-time
+        //     (capped by hardware; `simToWallRatio` in the UI shows actual ratio)
+        //
+        // The cap at 50 ms prevents the first frame after a suspend from
+        // trying to catch up all the missed time in one giant batch.
+        let kickNow = ContinuousClock.now
+        let wallDeltaMs: Double = {
+            let e   = kickNow - lastKickStartTime
+            let ms  = Double(e.components.seconds)     * 1_000.0
+                    + Double(e.components.attoseconds) / 1_000_000_000_000_000.0
+            return max(0.0, min(ms, 50.0))
+        }()
+        lastKickStartTime = kickNow
+
+        let simulatedMsPerFrame = wallDeltaMs * realtimeFactor
         var nSteps = max(1, Int((simulatedMsPerFrame / dt).rounded()))
         let remaining = plotWindow - simulator.time
         nSteps = min(nSteps, max(1, Int((remaining / dt).rounded())))
@@ -831,7 +929,7 @@ final class SimulationViewModel: ObservableObject {
                              + Double(elapsed.components.attoseconds) / 1e15
             let ratio        = wallMs > 0 ? simulatedMsThisFrame / wallMs : 0
 
-            // ── Back to main actor for UI update ─────────────────────────────
+            // ── Back to main actor: commit samples + throttled display flush ─────
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.frameInFlight = false
@@ -841,19 +939,19 @@ final class SimulationViewModel: ObservableObject {
                 if let msg = fDivergeMsg {
                     self.divergenceError = msg
                     self.pause()
-                    return
+                    return   // don't reschedule
                 }
 
-                self.simulationTime = finalTime
                 let cutoff = finalTime - plotWin
+                self.pendingSimTime = finalTime
 
-                // Batch-append then single binary-search trim per neuron.
-                var updatedTraces = self.traces
+                // ── Voltage traces → pendingTraces (no @Published write) ──────
+                var pt = self.pendingTraces
                 for (id, t, v) in fVoltSamples {
-                    updatedTraces[id, default: []].append(.init(t: t, v: v))
+                    pt[id, default: []].append(.init(t: t, v: v))
                 }
-                for id in updatedTraces.keys {
-                    guard var arr = updatedTraces[id], !arr.isEmpty else { continue }
+                for id in pt.keys {
+                    guard var arr = pt[id], !arr.isEmpty else { continue }
                     var lo = 0, hi = arr.count
                     while lo < hi {
                         let mid = lo + (hi - lo) / 2
@@ -861,13 +959,13 @@ final class SimulationViewModel: ObservableObject {
                     }
                     if lo > 0 { arr.removeSubrange(0..<lo) }
                     if arr.count > maxSamples { arr.removeFirst(arr.count - maxSamples) }
-                    updatedTraces[id] = arr
+                    pt[id] = arr
                 }
-                self.traces = updatedTraces
+                self.pendingTraces = pt
 
-                // Energy traces — append and trim to plotWindow.
+                // ── Energy traces → pendingEnergyTraces ───────────────────────
                 if !fEnergySamples.isEmpty {
-                    var et = self.energyTraces
+                    var et = self.pendingEnergyTraces
                     for (id, _, ep) in fEnergySamples {
                         et[id, default: []].append(ep)
                     }
@@ -882,14 +980,15 @@ final class SimulationViewModel: ObservableObject {
                         if arr.count > maxSamples { arr.removeFirst(arr.count - maxSamples) }
                         et[id] = arr
                     }
-                    self.energyTraces = et
+                    self.pendingEnergyTraces = et
                 }
 
-                if !fSigSamples.isEmpty {
-                    var updated = self.signalTraces
-                    for j in updated.indices where j < fSigSamples.count {
-                        updated[j].points.append(contentsOf: fSigSamples[j])
-                        var arr = updated[j].points
+                // ── Signal traces → pendingSignalPoints ───────────────────────
+                if !fSigSamples.isEmpty &&
+                   fSigSamples.count == self.pendingSignalPoints.count {
+                    for j in self.pendingSignalPoints.indices {
+                        var arr = self.pendingSignalPoints[j]
+                        arr.append(contentsOf: fSigSamples[j])
                         var lo = 0, hi = arr.count
                         while lo < hi {
                             let mid = lo + (hi - lo) / 2
@@ -897,9 +996,25 @@ final class SimulationViewModel: ObservableObject {
                         }
                         if lo > 0 { arr.removeSubrange(0..<lo) }
                         if arr.count > maxSamples { arr.removeFirst(arr.count - maxSamples) }
-                        updated[j].points = arr
+                        self.pendingSignalPoints[j] = arr
                     }
-                    self.signalTraces = updated
+                }
+
+                // ── Throttled display flush (~30 fps) ─────────────────────────
+                // Charts are expensive to re-render; skip @Published writes that
+                // arrive faster than 33 ms apart.
+                let now = ContinuousClock.now
+                if (now - self.lastDisplayFlush) >= .milliseconds(33) {
+                    self.lastDisplayFlush = now
+                    self.flushPendingDisplay()
+                }
+
+                // ── Self-reschedule immediately (no idle gap waiting for timer) ─
+                // This is the key throughput fix: as soon as frame N finishes its
+                // background compute + main-actor commit, frame N+1 starts right
+                // away instead of waiting up to 16 ms for the next timer tick.
+                if self.isRunning {
+                    Task { @MainActor [weak self] in self?.kickFrame() }
                 }
             }
         }

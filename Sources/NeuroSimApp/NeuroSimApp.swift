@@ -11,7 +11,8 @@ import NeuroSimCore
 
 @main
 struct NeuroSimApp: App {
-    @StateObject private var viewModel = SimulationViewModel(network: Network())
+    @StateObject  private var viewModel     = SimulationViewModel(network: Network())
+    @ObservedObject private var presetLib   = PresetLibrary.shared
 
     init() {
         // Without a signed .app bundle, `swift run`-launched executables
@@ -56,8 +57,40 @@ struct NeuroSimApp: App {
                 OpenResultsMenuItem()
             }
             CommandMenu("Presets") {
+                // ── Save current model ──────────────────────────────
+                Button("Sauvegarder le modèle comme preset…") {
+                    let alert = NSAlert()
+                    alert.messageText = "Sauvegarder comme preset global"
+                    alert.informativeText = "Ce preset sera disponible dans toutes les sessions."
+                    let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+                    tf.placeholderString = "Nom du preset…"
+                    alert.accessoryView = tf
+                    alert.addButton(withTitle: "Sauvegarder")
+                    alert.addButton(withTitle: "Annuler")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        let name = tf.stringValue.trimmingCharacters(in: .whitespaces)
+                        if !name.isEmpty {
+                            PresetLibrary.shared.save(name: name, from: viewModel)
+                        }
+                    }
+                }
+                .keyboardShortcut("p", modifiers: [.command, .option])
+
+                Divider()
+
+                // ── Built-in models ─────────────────────────────────
                 Button("PD Neuron — soma + AIS (STG)") { viewModel.loadPresetPD() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
+
+                // ── User-saved presets (dynamic) ────────────────────
+                if !presetLib.presets.isEmpty {
+                    Divider()
+                    ForEach(presetLib.presets) { preset in
+                        Button(preset.name) {
+                            PresetLibrary.shared.restore(preset, to: viewModel)
+                        }
+                    }
+                }
             }
         }
 

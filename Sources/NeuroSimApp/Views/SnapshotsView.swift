@@ -31,6 +31,7 @@ struct SnapshotsView: View {
     @State private var restoreTarget: NetworkDocument.ModelSnapshot? = nil
     @State private var editingID: UUID? = nil
     @State private var editingName: String = ""
+    @State private var showPresets = false
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -48,6 +49,18 @@ struct SnapshotsView: View {
                 Text("Freeze State — Instantanés paramètres")
                     .font(.headline)
                 Spacer()
+                Button {
+                    showPresets = true
+                } label: {
+                    Label("Presets globaux", systemImage: "star.fill")
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .controlSize(.small)
+                .help("Ouvrir la bibliothèque de presets globaux (persistants entre sessions)")
+                .sheet(isPresented: $showPresets) {
+                    PresetsView().environmentObject(vm)
+                }
                 Button("Fermer") { dismiss() }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
@@ -188,6 +201,15 @@ struct SnapshotsView: View {
                 .controlSize(.small)
                 .tint(.blue)
                 .help("Restaurer les paramètres du modèle à partir de cet instantané")
+
+                Button {
+                    PresetLibrary.shared.saveSnapshot(snap)
+                } label: {
+                    Image(systemName: "star.fill")
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.borderless)
+                .help("Exporter vers les presets globaux (persistants entre sessions)")
 
                 Button(role: .destructive) {
                     vm.deleteSnapshot(id: snap.id)

@@ -1182,10 +1182,7 @@ fileprivate struct DensityCanvas: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func heatColor(_ t: Double) -> Color {
-        let hue = (1.0 - t) * 0.67
-        return Color(hue: hue, saturation: 1.0, brightness: t < 0.05 ? t * 20.0 : 1.0)
-    }
+    // heatColor is now a module-level function in Utils.swift
 
     private func tickPath(x1: CGFloat, y1: CGFloat, x2: CGFloat, y2: CGFloat) -> Path {
         var p = Path()

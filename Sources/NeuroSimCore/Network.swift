@@ -54,6 +54,34 @@ public final class Network: DerivativeProvider {
     private var neuronByID: [UUID: HHNeuron] = [:]      // O(1) neuron lookup in hot path
     private var _iInjScratch: [UUID: Double] = [:]     // reused across derivative calls
 
+    // ── Pre-computed route caches ─────────────────────────────────────────────
+    // Rebuilt once in rebuildLayout() so computeDerivatives() never touches a
+    // dictionary in its inner loop.
+
+    /// All per-step data needed to route one synapse — computed once, reused
+    /// on every call to computeDerivatives().
+    struct SynRoute {
+        let syn:       any Synapse   // synapse object (for dispatch)
+        let synOff:    Int           // offset of synapse state in the global vector
+        let synLen:    Int           // syn.stateCount cached (avoids vtable hit)
+        let preVIdx:   Int           // voltage index of pre-synaptic soma
+        let postVIdx:  Int           // voltage index of post-synaptic compartment
+        let postCompID: UUID         // key for _iInjScratch (current injection)
+    }
+
+    /// Cached offset + stateCount per neuron — eliminates neuronOffset dict lookup.
+    private struct NeuronRoute {
+        let off:        Int
+        let stateCount: Int
+    }
+
+    /// All synapses as SynRoutes — for pass 2 of computeDerivatives.
+    private var synRoutes: [SynRoute] = []
+    /// synRoutes grouped by post-neuron position in `neurons[]` — for pass 1.
+    private var incomingRoutesByNeuronIdx: [[SynRoute]] = []
+    /// Neuron offsets parallel to `neurons[]` — eliminates neuronOffset dict lookup.
+    private var neuronRoutes: [NeuronRoute] = []
+
     public init() {}
 }
 
@@ -177,6 +205,55 @@ extension Network {
             outgoingByPre[s.preNeuronID, default: []].append(i)
             incomingByPost[s.postNeuronID, default: []].append(i)
         }
+
+        rebuildRoutes()
+    }
+
+    /// Pre-compute every integer index needed by computeDerivatives() so the
+    /// hot loop never pays a dictionary lookup per synapse per step.
+    private func rebuildRoutes() {
+
+        // ── Neuron routes (parallel to neurons[]) ────────────────────────────
+        neuronRoutes = neurons.map { n in
+            NeuronRoute(off: neuronOffset[n.id] ?? 0, stateCount: n.stateCount)
+        }
+
+        // ── Build a neuron-ID → position map for O(1) grouping below ─────────
+        var neuronIdxByID: [UUID: Int] = [:]
+        neuronIdxByID.reserveCapacity(neurons.count)
+        for (i, n) in neurons.enumerated() { neuronIdxByID[n.id] = i }
+
+        // ── Synapse routes ────────────────────────────────────────────────────
+        var all: [SynRoute] = []
+        all.reserveCapacity(synapses.count)
+        var incoming: [[SynRoute]] = Array(repeating: [], count: neurons.count)
+
+        for syn in synapses {
+            guard
+                let synOff    = synapseOffset[syn.id],
+                let preNeuron = neuronByID[syn.preNeuronID],
+                let preVIdx   = compartmentOffset[preNeuron.somaCompartmentID],
+                let postNeuron = neuronByID[syn.postNeuronID],
+                let postNeuronIdx = neuronIdxByID[syn.postNeuronID]
+            else { continue }
+
+            let targetCompID = syn.postCompartmentID ?? postNeuron.somaCompartmentID
+            guard let postVIdx = compartmentOffset[targetCompID] else { continue }
+
+            let route = SynRoute(
+                syn:        syn,
+                synOff:     synOff,
+                synLen:     syn.stateCount,
+                preVIdx:    preVIdx,
+                postVIdx:   postVIdx,
+                postCompID: targetCompID
+            )
+            all.append(route)
+            incoming[postNeuronIdx].append(route)
+        }
+
+        synRoutes                  = all
+        incomingRoutesByNeuronIdx  = incoming
     }
 
     /// Build the full initial state vector (resting V on every compartment,
@@ -300,78 +377,54 @@ extension Network {
                                    time: Double,
                                    into output: inout [Double]) {
 
-        // 1. Per-neuron pass: build a per-compartment injected-current
-        //    dictionary (stimuli + synaptic currents) and let the neuron
-        //    write all its compartments' derivatives, handling axial
-        //    coupling internally.
-        for n in neurons {
-            guard let off = neuronOffset[n.id] else { continue }
-            let neuronSlice = state[off..<(off + n.stateCount)]
+        // Pass 1 — per-neuron: stimuli + incoming synaptic currents → writeDerivatives.
+        // Uses pre-computed neuronRoutes[] and incomingRoutesByNeuronIdx[] so the
+        // inner loop never touches a dictionary.
+        for nIdx in neurons.indices {
+            let n      = neurons[nIdx]
+            let nRoute = neuronRoutes[nIdx]
+            let neuronSlice = state[nRoute.off ..< (nRoute.off + nRoute.stateCount)]
 
-            // 1a. Stimuli on any of this neuron's compartments.
-            // Reuse the scratch dict (keepingCapacity avoids dealloc/realloc).
+            // 1a. Stimuli + synaptic noise (keyed by compartment UUID — sparse,
+            //     so a dict lookup here is fine; most neurons have 0–1 stimuli).
             _iInjScratch.removeAll(keepingCapacity: true)
             for comp in n.compartments {
                 if let stim = stimuli[comp.id] {
                     _iInjScratch[comp.id, default: 0] += stim.current(at: time)
                 }
-                // Synaptic noise: voltage-dependent OU conductance injection.
                 if let noise = synapticNoises[comp.id],
                    let vIdx  = compartmentOffset[comp.id] {
-                    let v = state[vIdx]
-                    // Isyn is outward-positive; subtract to get inward injection.
-                    _iInjScratch[comp.id, default: 0] -= noise.current(at: time,
-                                                                        voltage: v,
-                                                                        dt: simulationDt)
+                    _iInjScratch[comp.id, default: 0] -= noise.current(
+                        at: time, voltage: state[vIdx], dt: simulationDt)
                 }
             }
 
-            // 1b. Incoming synaptic currents — each lands on the synapse's
-            //     postCompartmentID, falling back to the post neuron's soma.
-            for synIdx in incomingByPost[n.id] ?? [] {
-                let syn = synapses[synIdx]
-                guard let synOff = synapseOffset[syn.id],
-                      let preNeuron = neuronByID[syn.preNeuronID],
-                      let preSomaIdx = compartmentOffset[preNeuron.somaCompartmentID]
-                else { continue }
-                let targetCompID = syn.postCompartmentID ?? n.somaCompartmentID
-                guard let postIdx = compartmentOffset[targetCompID] else { continue }
-
-                let vPre = state[preSomaIdx]
-                let vPostTarget = state[postIdx]
-                let synSlice = state[synOff..<(synOff + syn.stateCount)]
-                // `currentToPost` returns I in the convention "positive =
-                // outward from the post compartment". We're adding to an
-                // injection, so flip the sign.
-                _iInjScratch[targetCompID, default: 0] -= syn.currentToPost(
-                    state: synSlice, vPre: vPre, vPost: vPostTarget
-                )
+            // 1b. Incoming synaptic currents — index-only, zero dict lookups.
+            for route in incomingRoutesByNeuronIdx[nIdx] {
+                let synSlice = state[route.synOff ..< (route.synOff + route.synLen)]
+                let i = route.syn.currentToPost(
+                    state:  synSlice,
+                    vPre:   state[route.preVIdx],
+                    vPost:  state[route.postVIdx])
+                _iInjScratch[route.postCompID, default: 0] -= i
             }
 
             n.writeDerivatives(localState: neuronSlice,
                                injectedByCompartment: _iInjScratch,
                                into: &output,
-                               offset: off)
+                               offset: nRoute.off)
         }
 
-        // 2. Synapse internal dynamics. V_pre is the pre soma; V_post is
-        //    the actual target compartment voltage.
-        for syn in synapses {
-            guard let synOff = synapseOffset[syn.id],
-                  let preNeuron = neuronByID[syn.preNeuronID],
-                  let postNeuron = neuronByID[syn.postNeuronID],
-                  let preSomaIdx = compartmentOffset[preNeuron.somaCompartmentID]
-            else { continue }
-            let targetCompID = syn.postCompartmentID ?? postNeuron.somaCompartmentID
-            guard let postIdx = compartmentOffset[targetCompID] else { continue }
-            let synSlice = state[synOff..<(synOff + syn.stateCount)]
-            let vPre = state[preSomaIdx]
-            let vPost = state[postIdx]
-            syn.writeDerivatives(state: synSlice,
-                                 vPre: vPre,
-                                 vPost: vPost,
-                                 into: &output,
-                                 offset: synOff)
+        // Pass 2 — synapse internal dynamics (gating variable ds/dt).
+        // All offsets pre-computed — zero dict lookups.
+        for route in synRoutes {
+            let synSlice = state[route.synOff ..< (route.synOff + route.synLen)]
+            route.syn.writeDerivatives(
+                state:  synSlice,
+                vPre:   state[route.preVIdx],
+                vPost:  state[route.postVIdx],
+                into:   &output,
+                offset: route.synOff)
         }
     }
 }

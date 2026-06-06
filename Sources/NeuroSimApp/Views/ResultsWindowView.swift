@@ -32,6 +32,8 @@ private enum AnalysisTab: String, CaseIterable {
     case density     = "Optimisation"
     case clamp       = "Clamp"
     case bifurcation = "Bifurcation"
+    case heatmap     = "Heatmap"
+    case modelSweep  = "Model Sweep"
     case pdSweep     = "PD Sweep"
     case mutualInfo  = "Info Mut."
     case energy      = "Énergie"
@@ -97,6 +99,8 @@ struct ResultsWindowView: View {
             case .density:      TrajectoryDensityView()
             case .clamp:        VoltageClampView()
             case .bifurcation:  BifurcationView()
+            case .heatmap:      HeatmapView()
+            case .modelSweep:   ModelSweepView()
             case .pdSweep:      PDSweepView()
             case .mutualInfo:   MutualInfoView()
             case .energy:       EnergyView()
@@ -104,6 +108,9 @@ struct ResultsWindowView: View {
         }
         .frame(minWidth: 640, minHeight: 480)
         .onChange(of: vm.autoscaleGeneration) { _, _ in xZoom = nil }
+        // Reset zoom whenever the simulation starts — the chart scrolls while
+        // running, so a frozen zoom window would immediately show stale/empty data.
+        .onChange(of: vm.isRunning) { _, running in if running { xZoom = nil } }
         .sheet(isPresented: $showingPicker) {
             SignalPickerView(isPresented: $showingPicker, targetGroupID: pickerGroupID)
                 .environmentObject(vm)
@@ -499,11 +506,83 @@ private struct SignalChartCard: View {
 
     // MARK: - Chart
 
+    /// Return the points to render in Swift Charts for one trace.
+    ///
+    /// Strategy (zoom-aware):
+    ///  1. If `range` is given (zoom active), binary-search the sorted array to
+    ///     extract only the points inside the visible window.  For a tight zoom
+    ///     this typically leaves < maxCount points → no downsampling needed →
+    ///     **full resolution automatically**.
+    ///  2. If the remaining point count still exceeds `maxCount`, apply
+    ///     **min/max pooling**: each bucket keeps its lowest-V and highest-V
+    ///     sample (in chronological order).  This preserves AP peaks that a
+    ///     uniform stride would skip.
+    ///
+    /// The raw array is never mutated; `interpolated(_:at:)` continues to use
+    /// it for accurate cursor value lookup.
+    private func displayPoints(
+        _ points: [SimulationViewModel.PlotPoint],
+        in range: ClosedRange<Double>? = nil,
+        maxCount: Int = 2_000
+    ) -> [SimulationViewModel.PlotPoint] {
+
+        // ── Step 1 : restrict to the visible time window ──────────────────
+        let src: ArraySlice<SimulationViewModel.PlotPoint>
+        if let r = range, !points.isEmpty {
+            // Binary search for first point with t >= lowerBound
+            var lo = 0, hi = points.count
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2
+                if points[mid].t < r.lowerBound { lo = mid + 1 } else { hi = mid }
+            }
+            let startIdx = lo
+            // Binary search for first point with t > upperBound
+            lo = startIdx; hi = points.count
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2
+                if points[mid].t <= r.upperBound { lo = mid + 1 } else { hi = mid }
+            }
+            src = points[startIdx..<lo]
+        } else {
+            src = points[...]
+        }
+
+        // ── Step 2 : return as-is when already within the cap ────────────
+        guard src.count > maxCount else { return Array(src) }
+
+        // ── Step 3 : min/max pooling ──────────────────────────────────────
+        let srcArr   = Array(src)
+        let buckets  = maxCount / 2
+        let bucketSz = srcArr.count / buckets
+        var result   = [SimulationViewModel.PlotPoint]()
+        result.reserveCapacity(maxCount + 2)
+
+        for b in 0..<buckets {
+            let lo    = b * bucketSz
+            let hi    = Swift.min(lo + bucketSz, srcArr.count)
+            var minPt = srcArr[lo]
+            var maxPt = srcArr[lo]
+            for i in (lo + 1)..<hi {
+                if srcArr[i].v < minPt.v { minPt = srcArr[i] }
+                if srcArr[i].v > maxPt.v { maxPt = srcArr[i] }
+            }
+            if minPt.t <= maxPt.t {
+                result.append(minPt)
+                if minPt.id != maxPt.id { result.append(maxPt) }
+            } else {
+                result.append(maxPt)
+                if minPt.id != maxPt.id { result.append(minPt) }
+            }
+        }
+        return result
+    }
+
     private var chart: some View {
         Chart {
             ForEach(Array(traces.enumerated()), id: \.element.id) { idx, trace in
                 let color = trace.color
-                ForEach(trace.points) { p in
+                let pts   = displayPoints(trace.points, in: xZoom)  // full-res when zoomed
+                ForEach(pts) { p in
                     LineMark(
                         x: .value("t (ms)", p.t),
                         y: .value(trace.signal.unit.isEmpty ? "value" : trace.signal.unit, p.v),
@@ -538,26 +617,46 @@ private struct SignalChartCard: View {
         .chartOverlay { proxy in
             GeometryReader { geo in
                 let plotFrame: CGRect = proxy.plotFrame.map { geo[$0] } ?? .zero
-                ZStack(alignment: .topLeading) {
-                    yHandle(.yMin, plotFrame: plotFrame, proxy: proxy)
-                    yHandle(.yMax, plotFrame: plotFrame, proxy: proxy)
+                // Capture the domain at render time so gesture closures use the same
+                // coordinate mapping that was used to render the chart they dragged on.
+                // Direct interpolation avoids proxy.value(atX:) returning nil when the
+                // chart has an explicitly-set domain but no actual data points.
+                let capturedDomain = xDomain
 
-                    // Rubber-band selection rectangle
+                // ── Chart overlay ZStack ─────────────────────────────────────────
+                //
+                // Coordinate convention: the GeometryReader fills the chartOverlay,
+                // its origin (0,0) is the top-left of the whole chart widget.
+                // plotFrame (resolved by geo[$0]) is a CGRect in this same space, so
+                // plotFrame.minX = left edge of the actual plot area, etc.
+                //
+                // To avoid the SwiftUI .local/.offset ambiguity that broke previous
+                // zoom attempts, a SINGLE full-size Color.clear (no .offset) hosts
+                // BOTH the DragGesture (zoom) and onContinuousHover (crosshair).
+                // On a full-size view (0,0 origin in GeoReader), .local coords are
+                // identical to GeoReader coords, so plotFrame math works directly.
+                //
+                // Y-axis handles are placed LAST so they are on top and receive
+                // drag events in the gutter before the zoom surface does.
+                ZStack(alignment: .topLeading) {
+
+                    // ── Rubber-band selection rectangle ───────────────────────────
+                    // selStartX / selCurrentX are in GeoReader space.
                     if let startX = selStartX {
-                        let left  = min(startX, selCurrentX)
-                        let right = max(startX, selCurrentX)
+                        let left         = min(startX, selCurrentX)
+                        let right        = max(startX, selCurrentX)
                         let clampedLeft  = max(left,  plotFrame.minX)
                         let clampedRight = min(right, plotFrame.maxX)
                         if clampedRight > clampedLeft {
                             Rectangle()
-                                .fill(Color.accentColor.opacity(0.12))
+                                .fill(Color.green.opacity(0.18))
                                 .overlay(
                                     ZStack {
-                                        Rectangle().fill(Color.accentColor.opacity(0.55))
-                                            .frame(width: 1)
+                                        Rectangle().fill(Color.green.opacity(0.7))
+                                            .frame(width: 1.5)
                                             .frame(maxWidth: .infinity, alignment: .leading)
-                                        Rectangle().fill(Color.accentColor.opacity(0.55))
-                                            .frame(width: 1)
+                                        Rectangle().fill(Color.green.opacity(0.7))
+                                            .frame(width: 1.5)
                                             .frame(maxWidth: .infinity, alignment: .trailing)
                                     }
                                 )
@@ -568,73 +667,74 @@ private struct SignalChartCard: View {
                         }
                     }
 
-                    // Invisible hit-target for rubber-band zoom (original, unchanged)
+                    // ── Combined hover + zoom surface ─────────────────────────────
+                    // Full-size (no .offset) → .local == GeoReader coords.
+                    // Zoom is gated on !vm.isRunning inside the handler so the
+                    // cursor crosshair still works while the simulation runs.
                     Color.clear
                         .contentShape(Rectangle())
-                        .frame(width: plotFrame.width, height: plotFrame.height)
-                        .offset(x: plotFrame.minX, y: plotFrame.minY)
-                        .gesture(
-                            DragGesture(minimumDistance: 4, coordinateSpace: .local)
-                                .onChanged { val in
-                                    cursorAbs = nil   // hide cursor while rubber-banding
-                                    let x = max(plotFrame.minX,
-                                                min(val.location.x, plotFrame.maxX))
-                                    if selStartX == nil {
-                                        selStartX = max(plotFrame.minX,
-                                                        min(val.startLocation.x,
-                                                            plotFrame.maxX))
-                                    }
-                                    selCurrentX = x
-                                }
-                                .onEnded { val in
-                                    defer { selStartX = nil }
-                                    guard let startX = selStartX,
-                                          abs(selCurrentX - startX) > 4
-                                    else { return }
-                                    let lo = min(startX, selCurrentX) - plotFrame.minX
-                                    let hi = max(startX, selCurrentX) - plotFrame.minX
-                                    if let t1 = proxy.value(atX: lo) as Double?,
-                                       let t2 = proxy.value(atX: hi) as Double?,
-                                       t2 > t1 {
-                                        xZoom = t1...t2
-                                    }
-                                }
-                        )
-
-                    // Hover-tracking rectangle — same hit area as the zoom Color.clear
-                    // (covers only the plot area). onContinuousHover gives coordinates
-                    // in the LOCAL space of this view (0…plotFrame.width × 0…plotFrame.height).
-                    // Translate to GeometryReader space for drawing by adding plotFrame.minX/Y.
-                    Rectangle().fill(Color.clear).contentShape(Rectangle())
-                        .frame(width: plotFrame.width, height: plotFrame.height)
-                        .offset(x: plotFrame.minX, y: plotFrame.minY)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // Hover: crosshair + value tooltip
                         .onContinuousHover { phase in
                             switch phase {
                             case .active(let loc):
-                                guard loc.x >= 0, loc.x <= plotFrame.width,
-                                      loc.y >= 0, loc.y <= plotFrame.height
+                                guard selStartX == nil,
+                                      loc.x >= plotFrame.minX, loc.x <= plotFrame.maxX,
+                                      loc.y >= plotFrame.minY, loc.y <= plotFrame.maxY
                                 else { cursorT = nil; cursorAbs = nil; return }
-                                // Translate to GeometryReader space for crosshair drawing
-                                cursorAbs = CGPoint(x: loc.x + plotFrame.minX,
-                                                    y: loc.y + plotFrame.minY)
-                                // proxy.value(atX:) expects plot-relative coords (0…width)
-                                cursorT   = proxy.value(atX: loc.x, as: Double.self)
+                                cursorAbs = CGPoint(x: loc.x, y: loc.y)
+                                // proxy.value(atX:) wants plot-relative (0 = left edge)
+                                cursorT = proxy.value(atX: loc.x - plotFrame.minX,
+                                                      as: Double.self)
                             case .ended:
                                 cursorT = nil; cursorAbs = nil
                             }
                         }
+                        // Zoom: rubber-band drag (disabled while simulation runs)
+                        .gesture(
+                            DragGesture(minimumDistance: 4)
+                                .onChanged { val in
+                                    // Ignore drags outside plot area or during simulation
+                                    guard !vm.isRunning,
+                                          val.startLocation.x >= plotFrame.minX,
+                                          val.startLocation.x <= plotFrame.maxX
+                                    else { return }
+                                    cursorAbs = nil
+                                    if selStartX == nil {
+                                        selStartX = val.startLocation.x
+                                    }
+                                    selCurrentX = max(plotFrame.minX,
+                                                      min(val.location.x, plotFrame.maxX))
+                                }
+                                .onEnded { _ in
+                                    defer { selStartX = nil }
+                                    guard !vm.isRunning,
+                                          let startX = selStartX,
+                                          abs(selCurrentX - startX) > 4,
+                                          plotFrame.width > 0
+                                    else { return }
+                                    // GeoReader x → fraction [0,1] in plot area
+                                    let loFrac = (min(startX, selCurrentX) - plotFrame.minX)
+                                                 / plotFrame.width
+                                    let hiFrac = (max(startX, selCurrentX) - plotFrame.minX)
+                                                 / plotFrame.width
+                                    let span = capturedDomain.upperBound
+                                             - capturedDomain.lowerBound
+                                    let t1 = capturedDomain.lowerBound + loFrac * span
+                                    let t2 = capturedDomain.lowerBound + hiFrac * span
+                                    if t2 > t1 { xZoom = t1...t2 }
+                                }
+                        )
 
-                    // ── Cursor crosshair (only when not rubber-banding) ────
+                    // ── Cursor crosshair ─────────────────────────────────────────
                     if let loc = cursorAbs, selStartX == nil {
                         let dash = StrokeStyle(lineWidth: 1, dash: [4, 4])
-                        // Vertical line
                         Path { p in
                             p.move(to:    CGPoint(x: loc.x, y: plotFrame.minY))
                             p.addLine(to: CGPoint(x: loc.x, y: plotFrame.maxY))
                         }
                         .stroke(Color.white.opacity(0.5), style: dash)
                         .allowsHitTesting(false)
-                        // Horizontal line
                         Path { p in
                             p.move(to:    CGPoint(x: plotFrame.minX, y: loc.y))
                             p.addLine(to: CGPoint(x: plotFrame.maxX, y: loc.y))
@@ -643,21 +743,26 @@ private struct SignalChartCard: View {
                         .allowsHitTesting(false)
                     }
 
-                    // ── Cursor value label ─────────────────────────────────
+                    // ── Cursor value label ────────────────────────────────────────
                     if let loc = cursorAbs, let t = cursorT, selStartX == nil {
                         let labelW: CGFloat = 148
                         let lineH:  CGFloat = 14
                         let labelH  = lineH + lineH * CGFloat(traces.count) + 10
                         let onRight = loc.x + 12 + labelW < plotFrame.maxX
-                        let lx = onRight ? loc.x + 12 : loc.x - 12 - labelW
+                        let lx      = onRight ? loc.x + 12 : loc.x - 12 - labelW
                         let rawLY   = loc.y - labelH / 2
                         let ly      = max(plotFrame.minY + 2,
                                           min(rawLY, plotFrame.maxY - labelH - 2))
-
                         cursorValueLabel(t: t)
                             .position(x: lx + labelW / 2, y: ly + labelH / 2)
                             .allowsHitTesting(false)
                     }
+
+                    // ── Y-axis handles — placed last = on top in ZStack ───────────
+                    // Their DragGesture receives events in the y-axis gutter before
+                    // the zoom surface does (no interference with plot-area dragging).
+                    yHandle(.yMin, plotFrame: plotFrame, proxy: proxy)
+                    yHandle(.yMax, plotFrame: plotFrame, proxy: proxy)
                 }
             }
         }
