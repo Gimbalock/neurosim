@@ -38,14 +38,30 @@ public struct AxialCoupling: Identifiable, Hashable {
     /// The other end.
     public let compartmentB: UUID
 
-    /// Axial conductance (mS/cm²). Higher = tighter electrical coupling
-    /// (smaller voltage gradient between A and B for the same I).
+    /// Axial conductance density at the **compartmentA** end (mS/cm²).
+    /// For equal-diameter compartments this equals the conductance at the B end.
+    /// Higher = tighter electrical coupling.
     public var conductance: Double
+
+    /// Axial conductance density at the **compartmentB** end (mS/cm²).
+    /// `nil` means the coupling is symmetric: both ends use `conductance`.
+    ///
+    /// When compartmentA (soma, d=20 µm) and compartmentB (axon, d=5 µm) have
+    /// different membrane areas the same *absolute* axial conductance G [mS]
+    /// yields different *density* values per end:
+    ///
+    ///     g_A = G / A_A        g_B = G / A_B
+    ///
+    /// Since A ∝ d², the ratio is (d_B/d_A)²  and can be 16× or more.
+    /// Storing both values lets `HHNeuron.writeDerivatives` and `HinesSolver`
+    /// apply the physically correct density to each compartment's ODE.
+    public var conductanceFarEnd: Double?
 
     public init(id: UUID = UUID(),
                 between a: UUID,
                 and b: UUID,
-                conductance: Double = 1.0) {
+                conductance: Double = 1.0,
+                conductanceFarEnd: Double? = nil) {
         precondition(a != b, "AxialCoupling must connect two distinct compartments.")
         precondition(conductance >= 0,
                      "Axial conductance must be non-negative — got \(conductance).")
@@ -53,6 +69,7 @@ public struct AxialCoupling: Identifiable, Hashable {
         self.compartmentA = a
         self.compartmentB = b
         self.conductance = conductance
+        self.conductanceFarEnd = conductanceFarEnd
     }
 
     /// Convenience: does this coupling involve the given compartment?

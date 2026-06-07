@@ -490,9 +490,21 @@ struct AxonBuilderView: View {
         var newCouplings: [AxialCoupling] = []
         // Soma → axone[0] : longueur effective du soma = max(soma.length, dx)
         let somaL = max(soma.length, dx)
+
+        // Correction d'aire asymétrique soma↔axone.
+        // La formule symétrique g = 50 000/(L_i+L_j) donne la conductance densité
+        // correcte pour le compartiment de plus petit diamètre (l'axone), mais
+        // est (d_axone/d_soma)² fois trop grande pour le soma.
+        // G_abs [µS] = g_axone × A_sphère_axone = g_axone × π·d_axone²·1e-8 cm²
+        // g_soma = G_abs / A_sphère_soma = g_axone × (d_axone/d_soma)²
+        let gAxonEnd = 50_000.0 / (somaL + dx)
+        let dRatio   = p.diameter / max(soma.diameter, 0.1)    // d_axone / d_soma
+        let gSomaEnd = gAxonEnd * dRatio * dRatio              // ≤ gAxonEnd
+
         newCouplings.append(AxialCoupling(
             between: soma.id, and: comps[0].id,
-            conductance: 50_000.0 / (somaL + dx)
+            conductance: gSomaEnd,       // densité pour le soma (compartmentA)
+            conductanceFarEnd: gAxonEnd  // densité pour l'axone[0] (compartmentB)
         ))
         // Chaîne axonale
         let gChain = 50_000.0 / (dx + dx)
@@ -541,11 +553,15 @@ struct AxonBuilderView: View {
         }
 
         var newCouplings: [AxialCoupling] = []
-        // Soma → premier nœud
+        // Soma → premier nœud (même correction asymétrique que l'axone non-myélinisé)
         let somaL = max(soma.length, p.nodeLength)
+        let gNodeEnd  = 50_000.0 / (somaL + p.nodeLength)
+        let dRatioM   = p.diameter / max(soma.diameter, 0.1)
+        let gSomaEndM = gNodeEnd * dRatioM * dRatioM
         newCouplings.append(AxialCoupling(
             between: soma.id, and: comps[0].id,
-            conductance: 50_000.0 / (somaL + p.nodeLength)
+            conductance: gSomaEndM,      // densité pour le soma
+            conductanceFarEnd: gNodeEnd  // densité pour le nœud[0]
         ))
         // Chaîne nœud/internode
         for i in 0..<(comps.count - 1) {

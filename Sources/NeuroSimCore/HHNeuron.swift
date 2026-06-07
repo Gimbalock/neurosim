@@ -209,9 +209,11 @@ public final class HHNeuron: Identifiable {
         for coup in axialCouplings {
             guard let iA = idToIdx[coup.compartmentA],
                   let iB = idToIdx[coup.compartmentB] else { continue }
-            let diff = coup.conductance * (voltages[iB] - voltages[iA])
-            iAxial[iA] += diff
-            iAxial[iB] -= diff
+            let dV = voltages[iB] - voltages[iA]
+            // Use per-end densities when compartments have different areas
+            // (e.g. soma d=20 µm → axon d=5 µm: ratio = (5/20)² = 1/16).
+            iAxial[iA] += coup.conductance * dV
+            iAxial[iB] -= (coup.conductanceFarEnd ?? coup.conductance) * dV
         }
 
         // 3. Write per-compartment derivatives.

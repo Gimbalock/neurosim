@@ -38,11 +38,20 @@ import Foundation
 
 /// Pre-computed chain topology for one multi-compartment neuron.
 /// Rebuilt at each step (can be cached as future optimisation).
+///
+/// Coupling conductances are stored PER COMPARTMENT END because adjacent
+/// compartments may have different membrane areas (soma d=20 µm ↔ axon d=5 µm).
+/// The same absolute axial conductance G [mS] yields different densities:
+///
+///     gForward[i]  = G / A_i     (density for comp[i], driving to the right)
+///     gBackward[i] = G / A_{i+1} (density for comp[i+1], receiving from the left)
+///
+/// For equal-diameter compartments gForward[i] == gBackward[i].
 struct CableChain {
-    let comps: [Compartment]
-    let vIdx:  [Int]       // state-vector index of V_i
-    let g:     [Double]    // g[i] = coupling conductance between comps[i] and comps[i+1]
-                           // length = N-1
+    let comps:     [Compartment]
+    let vIdx:      [Int]       // state-vector index of V_i
+    let gForward:  [Double]    // coupling density at comp[i] toward comp[i+1], length N-1
+    let gBackward: [Double]    // coupling density at comp[i+1] from comp[i],   length N-1
 }
 
 // MARK: - HinesCable integrator
@@ -62,11 +71,12 @@ public enum HinesCable {
               neuron.axialCouplings.count == n - 1
         else { return nil }
 
-        // Adjacency: compID → [(neighbourID, conductance)]
-        var adj = [UUID: [(UUID, Double)]](minimumCapacity: n)
+        // Adjacency: compID → [(neighbourID, coupling)] — store the coupling itself
+        // so we can determine which end 'current' is (A or B) and pick the right density.
+        var adj = [UUID: [(UUID, AxialCoupling)]](minimumCapacity: n)
         for coup in neuron.axialCouplings {
-            adj[coup.compartmentA, default: []].append((coup.compartmentB, coup.conductance))
-            adj[coup.compartmentB, default: []].append((coup.compartmentA, coup.conductance))
+            adj[coup.compartmentA, default: []].append((coup.compartmentB, coup))
+            adj[coup.compartmentB, default: []].append((coup.compartmentA, coup))
         }
 
         // A simple chain has exactly 2 endpoints (degree 1) and all others degree 2.
@@ -77,9 +87,10 @@ public enum HinesCable {
         var compByID = [UUID: Compartment](minimumCapacity: n)
         for c in neuron.compartments { compByID[c.id] = c }
 
-        var comps = [Compartment]();  comps.reserveCapacity(n)
-        var vIdxArr  = [Int]();       vIdxArr.reserveCapacity(n)
-        var gArr     = [Double]();    gArr.reserveCapacity(n - 1)
+        var comps        = [Compartment](); comps.reserveCapacity(n)
+        var vIdxArr      = [Int]();         vIdxArr.reserveCapacity(n)
+        var gForwardArr  = [Double]();      gForwardArr.reserveCapacity(n - 1)
+        var gBackwardArr = [Double]();      gBackwardArr.reserveCapacity(n - 1)
 
         var current = endpoints[0].id
         var prev: UUID? = nil
@@ -92,9 +103,21 @@ public enum HinesCable {
             comps.append(comp)
             vIdxArr.append(vi)
 
-            // Move to next uncommon neighbour and record coupling conductance.
-            if let (nextID, g) = adj[current]?.first(where: { $0.0 != prev }) {
-                gArr.append(g)
+            // Move to next uncommon neighbour, extract per-end conductances.
+            if let (nextID, coup) = adj[current]?.first(where: { $0.0 != prev }) {
+                // gForward[i]  = density at 'current' for current→next flow
+                // gBackward[i] = density at 'next'    for next←current flow
+                let gCurrent: Double
+                let gNext:    Double
+                if current == coup.compartmentA {
+                    gCurrent = coup.conductance
+                    gNext    = coup.conductanceFarEnd ?? coup.conductance
+                } else {
+                    gCurrent = coup.conductanceFarEnd ?? coup.conductance
+                    gNext    = coup.conductance
+                }
+                gForwardArr.append(gCurrent)
+                gBackwardArr.append(gNext)
                 prev    = current
                 current = nextID
             } else {
@@ -103,7 +126,8 @@ public enum HinesCable {
         }
 
         guard comps.count == n else { return nil }
-        return CableChain(comps: comps, vIdx: vIdxArr, g: gArr)
+        return CableChain(comps: comps, vIdx: vIdxArr,
+                          gForward: gForwardArr, gBackward: gBackwardArr)
     }
 
     // ── Main step ─────────────────────────────────────────────────────────────
@@ -202,20 +226,26 @@ public enum HinesCable {
 
     /// Solve the implicit cable equation for one linear chain of N compartments.
     ///
-    /// System (symmetric tridiagonal, row i):
+    /// System (generally asymmetric tridiagonal, row i):
     ///
-    ///   d[i]·V_new[i] − g[i-1]·V_new[i-1] − g[i]·V_new[i+1] = b[i]
+    ///   d[i]·V_new[i] − gB[i-1]·V_new[i-1] − gF[i]·V_new[i+1] = b[i]
     ///
-    /// where:
-    ///   d[i] = Cm_i/dt + g[i-1] + g[i]       (diagonal, mS/cm²)
-    ///   b[i] = Cm_i/dt·V_i + (I_inj_i − I_ionic_i)
-    ///        = Cm_i/dt·V_i + Cm_i·(dV/dt)_total − I_axial_explicit_i
+    /// where gF = gForward, gB = gBackward, and:
     ///
-    /// (dV/dt)_total comes from `deriv2[vIdx[i]]` which includes ionic, stimulus,
-    /// and the *explicit* axial contribution. We subtract I_axial_explicit to
-    /// get only the non-coupling part, then let the implicit matrix handle coupling.
+    ///   d[i]  = Cm_i/dt + gB[i-1] + gF[i]    (diagonal, mS/cm²)
+    ///   b[i]  = Cm_i/dt·V_i + Cm_i·(dV/dt)_total − I_axial_explicit_i
     ///
-    /// The matrix is strictly diagonally dominant → Thomas is numerically stable.
+    /// gForward[i]  = axial conductance density at comp[i] toward comp[i+1]
+    /// gBackward[i] = axial conductance density at comp[i+1] from comp[i]
+    ///
+    /// These differ when soma and axon have different diameters: the same
+    /// absolute G [mS] yields g_soma = G/A_soma and g_axon = G/A_axon,
+    /// which can differ by (d_soma/d_axon)² = up to 16× for d_soma=20 µm,
+    /// d_axon=5 µm.
+    ///
+    /// The matrix remains strictly diagonally dominant (all diagonal entries
+    /// > sum of off-diagonals) because gF[i] × A_i = gB[i] × A_{i+1} = G_abs.
+    /// Thomas is therefore numerically stable even for the asymmetric form.
     ///
     /// Complexity: O(N).
     private static func thomasSolve(chain:  CableChain,
@@ -224,58 +254,63 @@ public enum HinesCable {
                                     dt:     Double) {
         let N    = chain.comps.count
         let vIdx = chain.vIdx
-        let g    = chain.g          // length N-1
+        let gF   = chain.gForward    // length N-1: density at comp[i] toward comp[i+1]
+        let gB   = chain.gBackward   // length N-1: density at comp[i+1] from comp[i]
 
         // Current voltages after gate update
         let V = vIdx.map { state[$0] }      // [Double], length N
 
-        // Explicit axial currents I_axial[i] = Σ_j g_{ij}·(V_j − V_i)
-        // (sign convention: positive = current flowing into compartment i)
+        // Explicit axial currents using per-end densities.
+        // Current into comp[i] from right:   gF[i] × (V[i+1] − V[i])
+        // Current into comp[i+1] from left: −gB[i] × (V[i+1] − V[i])
         var iAxial = [Double](repeating: 0.0, count: N)
         for i in 0..<(N - 1) {
-            let diff      = g[i] * (V[i + 1] - V[i])   // current i+1 → i
-            iAxial[i]     += diff
-            iAxial[i + 1] -= diff
+            let dV        = V[i + 1] - V[i]
+            iAxial[i]     += gF[i] * dV
+            iAxial[i + 1] -= gB[i] * dV
         }
 
-        // Assemble tridiagonal: diagonal d[], off-diagonal (sub = super) g[],
-        // right-hand side b[].
+        // Assemble tridiagonal: diagonal d[], RHS b[].
         //
-        // Units check:
-        //   Cm [µF/cm²] / dt [ms] = mS/cm²  ✓
-        //   Cm [µF/cm²] × deriv2 [mV/ms]    = µA/cm²  ✓
-        //   iAxial [µA/cm²]                  ✓
-        //   b[i] = mS/cm²·mV + µA/cm² = µA/cm²  ✓  (all in consistent µA/cm² space)
+        // Units:  Cm [µF/cm²] / dt [ms] = mS/cm²
+        //         Cm [µF/cm²] × deriv2 [mV/ms] = µA/cm²
+        //         iAxial [µA/cm²]  →  b in µA/cm²  ✓
         var d = [Double](repeating: 0.0, count: N)
         var b = [Double](repeating: 0.0, count: N)
 
         for i in 0..<N {
             let cm   = chain.comps[i].capacitance   // µF/cm²
             let cmDt = cm / dt                      // mS/cm²
-            let gL   = i > 0     ? g[i - 1] : 0.0
-            let gR   = i < N - 1 ? g[i]     : 0.0
+            let gL   = i > 0     ? gB[i - 1] : 0.0  // density at i from left coupling
+            let gR   = i < N - 1 ? gF[i]     : 0.0  // density at i toward right coupling
             d[i] = cmDt + gL + gR
             b[i] = cmDt * V[i] + cm * deriv2[vIdx[i]] - iAxial[i]
         }
 
-        // ── Forward elimination ───────────────────────────────────────────────
-        // Row i: subtract (g[i-1]/d[i-1]) × row (i-1) to eliminate V[i-1].
-        // Because the sub-diagonal of row i is -g[i-1] and the pivot of row i-1
-        // is d[i-1], the multiplier is w = g[i-1]/d[i-1].
-        // This gives:
-        //   d_new[i] = d[i] − w·g[i-1]
-        //   b_new[i] = b[i] + w·b[i-1]
+        // ── Asymmetric Thomas forward elimination ─────────────────────────────
+        //
+        // Row i-1 (after elimination): d'[i-1]·V[i-1] − gF[i-1]·V[i] = b'[i-1]
+        // Row i: −gB[i-1]·V[i-1] + d[i]·V[i] − gF[i]·V[i+1] = b[i]
+        //
+        // Multiplier w = gB[i-1] / d'[i-1]
+        //   d'[i]   = d[i]   − w·gF[i-1]        (pivot update)
+        //   b'[i]   = b[i]   + w·b'[i-1]         (RHS update)
+        //
+        // Note: for equal-diameter compartments gB[i-1] == gF[i-1] == g,
+        // so the formula reduces to the standard symmetric Thomas:
+        //   d'[i] = d[i] − g²/d'[i-1]  ✓
         for i in 1..<N {
-            let w = g[i - 1] / d[i - 1]
-            d[i] = d[i] - w * g[i - 1]
+            let w = gB[i - 1] / d[i - 1]
+            d[i] = d[i] - w * gF[i - 1]
             b[i] = b[i] + w * b[i - 1]
         }
 
         // ── Back substitution ─────────────────────────────────────────────────
+        // Row i (after forward): d'[i]·V[i] − gF[i]·V[i+1] = b'[i]
         var V_new = [Double](repeating: 0.0, count: N)
         V_new[N - 1] = b[N - 1] / d[N - 1]
         for i in stride(from: N - 2, through: 0, by: -1) {
-            V_new[i] = (b[i] + g[i] * V_new[i + 1]) / d[i]
+            V_new[i] = (b[i] + gF[i] * V_new[i + 1]) / d[i]
         }
 
         // Write back to global state vector.
