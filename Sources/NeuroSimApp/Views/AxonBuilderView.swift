@@ -4,41 +4,33 @@
 //
 //  Constructeur d'axone multi-compartiment.
 //
-//  Génère soit un axone uniforme sans myéline (N segments HH en chaîne),
-//  soit un axone myélinisé avec des nœuds de Ranvier (HH) séparés par des
-//  internodes passifs à faible capacitance.
+//  L'axone est **attaché au neurone sélectionné** dans l'éditeur (neurone ou
+//  compartiment soma). Les nouveaux compartiments sont ajoutés au neurone
+//  existant via des couplages axiaux — aucun stimulus n'est nécessaire car
+//  les PA se propagent depuis le soma.
+//
+//  Workflow
+//  ────────
+//  1. Sélectionner un neurone (ou compartiment soma) dans l'éditeur
+//  2. Ouvrir le constructeur (icône câble dans la palette)
+//  3. Régler longueur / diamètre / myéline
+//  4. Cliquer « Attacher »
 //
 //  ─── Physique des couplages axiaux ──────────────────────────────────────────
 //
-//  Le couplage axial entre deux compartiments adjacents i et j est calculé
-//  avec le modèle demi-longueur (ρ_a = 100 Ω·cm) :
-//
-//      R_a  = ρ_a × (L_i/2 + L_j/2) / A_cross        [Ω]
-//      G_a  = 1 / R_a                                   [mS]
-//      g_ij = G_a / A_comp                              [mS/cm²]
-//
-//  où A_comp = π × d² × 1e-8 cm² (modèle sphère de NeuroSim).
-//
-//  En développant (avec L_i, L_j, d en µm) :
+//  Modèle demi-longueur (ρ_a = 100 Ω·cm) :
 //
 //      g_ij = 50 000 / (L_i + L_j)   [mS/cm²]
 //
-//  — formule indépendante du diamètre une fois normalisée par l'aire sphère.
+//  Application soma↔axone[0] :
+//      L_i = soma.length   (µm)
+//      L_j = dx            (longueur du premier segment axonal)
 //
 //  ─── Correction d'aire pour les compartiments allongés ──────────────────────
 //
-//  NeuroSim calcule l'aire comme une sphère (π·d²·1e-8 cm²), ce qui est exact
-//  seulement si d = L.  Pour les compartiments où L ≠ d, on compense :
+//  NeuroSim calcule l'aire comme une sphère (π·d²·1e-8 cm²).
+//  Pour les cylindres où L ≠ d, on multiplie les densités par (L / d).
 //
-//      C_m_param  = C_m_vrai  × (L / d)
-//      g_param    = g_vrai    × (L / d)
-//
-//  Cela garantit que la capacitance totale et la conductance totale du
-//  compartiment correspondent à la vraie surface latérale π·d·L·1e-8 cm².
-//  Les cinétiques membranaires (dV/dt = (-I_ionique + I_inj) / C_m) restent
-//  correctes car numérateur et dénominateur sont scalés par le même facteur.
-//
-
 import SwiftUI
 import NeuroSimCore
 
@@ -51,7 +43,7 @@ struct AxonParams {
     // Myelinated-only
     var internodeLength: Double = 500     // µm  (≈ 100 × d)
     var nodeLength:      Double = 1.5     // µm
-    // Axial resistivity (Ω·cm)  — fixed, could be exposed later
+    // Axial resistivity (Ω·cm)
     var rhoA:            Double = 100.0
 }
 
@@ -63,10 +55,38 @@ struct AxonBuilderView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var p = AxonParams()
+    @State private var replaceExisting = true   // purge existing non-soma compartments
 
-    // MARK: Computed geometry
+    // MARK: - Attachment target
 
-    private var segDx: Double { p.diameter }   // for unmyelinated: segment spacing = d
+    /// Neuron + compartment to attach the axon to, derived from current selection.
+    private var target: (neuron: HHNeuron, soma: Compartment)? {
+        switch vm.selection {
+        case .neuron(let nid):
+            guard let n = vm.network.neurons.first(where: { $0.id == nid }),
+                  let soma = n.compartments.first(where: { $0.id == n.somaCompartmentID })
+            else { return nil }
+            return (n, soma)
+        case .compartment(let cid):
+            guard let n = vm.network.neurons.first(where: { n in
+                n.compartments.contains(where: { $0.id == cid })
+            }),
+                  let soma = n.compartments.first(where: { $0.id == cid })
+            else { return nil }
+            return (n, soma)
+        default:
+            return nil
+        }
+    }
+
+    private var hasExistingAxon: Bool {
+        guard let t = target else { return false }
+        return t.neuron.compartments.count > 1
+    }
+
+    // MARK: - Computed geometry
+
+    private var segDx: Double { p.diameter }    // segment length = d for unmyelinated
 
     private var nSegUnmyel: Int {
         max(2, Int((p.totalLength / segDx).rounded()))
@@ -75,8 +95,8 @@ struct AxonBuilderView: View {
     private var nInternodesMyel: Int {
         max(1, Int((p.totalLength / (p.nodeLength + p.internodeLength)).rounded()))
     }
-    private var nNodesMyel: Int   { nInternodesMyel + 1 }
-    private var nCompsMyel: Int   { nNodesMyel + nInternodesMyel }
+    private var nNodesMyel: Int { nInternodesMyel + 1 }
+    private var nCompsMyel: Int { nNodesMyel + nInternodesMyel }
 
     private var nCompartments: Int {
         p.myelinated ? nCompsMyel : nSegUnmyel
@@ -84,31 +104,26 @@ struct AxonBuilderView: View {
 
     // Space constant λ (µm) — unmyelinated
     private var lambda_um: Double {
-        // λ = sqrt( d_cm / (4 × ρ_a × g_L_S) ) × 1e4   [µm]
         let d_cm = p.diameter * 1e-4
-        let gL_S = 0.3e-3          // S/cm²  (HH leak)
+        let gL_S = 0.3e-3           // S/cm² (HH leak)
         return sqrt(d_cm / (4 * p.rhoA * gL_S)) * 1e4
     }
 
-    // Very rough Rushton conduction velocity estimate (m/s)
+    // Rushton conduction velocity estimate (m/s)
     private var vConduction: Double {
-        if p.myelinated {
-            // v ≈ 6 × (fibre diameter µm) → m/s;  fibre ≈ d / 0.7
-            return 6.0 * (p.diameter / 0.7) / 1000.0
-        } else {
-            // v ≈ k × √d, k ≈ 0.55 m·s⁻¹·µm^{-0.5}
-            return 0.55 * sqrt(p.diameter)
-        }
+        p.myelinated
+            ? 6.0 * (p.diameter / 0.7) / 1000.0
+            : 0.55 * sqrt(p.diameter)
     }
 
     private var tooMany: Bool { nCompartments > 500 }
 
-    // MARK: Body
+    // MARK: - Body
 
     var body: some View {
         VStack(spacing: 0) {
 
-            // ── Header ─────────────────────────────────────────────────────────
+            // ── Header ──────────────────────────────────────────────────────────
             HStack {
                 Image(systemName: "cable.connector.horizontal")
                     .foregroundStyle(.cyan)
@@ -128,7 +143,10 @@ struct AxonBuilderView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
 
-                    // ── Géométrie ───────────────────────────────────────────────
+                    // ── Cible d'attachement ────────────────────────────────────
+                    attachmentSection
+
+                    // ── Géométrie ──────────────────────────────────────────────
                     paramGroup("Géométrie") {
                         sliderRow("Longueur totale",   value: $p.totalLength,
                                   in: 50...10000, step: 50, fmt: "%.0f", unit: "µm")
@@ -136,25 +154,25 @@ struct AxonBuilderView: View {
                                   in: 0.5...20, step: 0.5, fmt: "%.1f", unit: "µm")
                     }
 
-                    // ── Myéline ─────────────────────────────────────────────────
+                    // ── Myéline ────────────────────────────────────────────────
                     paramGroup("Myélinisation") {
                         Toggle("Axone myélinisé", isOn: $p.myelinated)
                             .toggleStyle(.switch)
 
                         if p.myelinated {
-                            sliderRow("Long. internodale",  value: $p.internodeLength,
-                                      in: 20...3000, step: 20,  fmt: "%.0f", unit: "µm")
+                            sliderRow("Long. internodale",     value: $p.internodeLength,
+                                      in: 20...3000, step: 20, fmt: "%.0f", unit: "µm")
                             sliderRow("Long. nœud de Ranvier", value: $p.nodeLength,
-                                      in: 0.5...5, step: 0.5,   fmt: "%.1f", unit: "µm")
+                                      in: 0.5...5, step: 0.5,  fmt: "%.1f", unit: "µm")
                         }
                     }
 
-                    // ── Aperçu physique ─────────────────────────────────────────
+                    // ── Aperçu physique ────────────────────────────────────────
                     paramGroup("Aperçu physique") {
                         physicsGrid()
                     }
 
-                    // ── Diagramme ───────────────────────────────────────────────
+                    // ── Diagramme ──────────────────────────────────────────────
                     axonDiagram()
                         .frame(height: 56)
                 }
@@ -171,14 +189,13 @@ struct AxonBuilderView: View {
                 Spacer()
                 Button("Annuler") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Générer") {
-                    generate()
-                    dismiss()
+                Button("Attacher") {
+                    attachAxon()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.cyan)
                 .keyboardShortcut(.defaultAction)
-                .disabled(tooMany)
+                .disabled(target == nil || tooMany)
             }
             .padding(14)
         }
@@ -188,6 +205,73 @@ struct AxonBuilderView: View {
         }
         .onChange(of: p.myelinated) {
             if p.myelinated { p.internodeLength = min(3000, max(20, p.diameter * 100)) }
+        }
+    }
+
+    // MARK: - Attachment section
+
+    @ViewBuilder
+    private var attachmentSection: some View {
+        paramGroup("Attachement au neurone") {
+            if let t = target {
+                // ── Cible identifiée ──────────────────────────────────────────
+                HStack(spacing: 10) {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(t.neuron.name)
+                            .font(.callout.weight(.semibold))
+                        HStack(spacing: 4) {
+                            Text("Compartiment d'attache :")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(t.soma.name)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.cyan.opacity(0.9))
+                        }
+                    }
+                    Spacer()
+                    // Conductance soma↔axone[0]
+                    let dx = p.myelinated ? p.nodeLength : segDx
+                    let gSoma = 50_000.0 / (max(t.soma.length, dx) + dx)
+                    Text(String(format: "g = %.0f mS/cm²", gSoma))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                // Warning si l'axone existant sera remplacé
+                if hasExistingAxon {
+                    Divider()
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                        Text("Ce neurone a déjà \(t.neuron.compartments.count - 1) compartiment\(t.neuron.compartments.count > 2 ? "s" : "") non-soma.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle("Remplacer l'axone existant avant d'attacher",
+                           isOn: $replaceExisting)
+                        .toggleStyle(.switch)
+                        .font(.callout)
+                }
+
+            } else {
+                // ── Aucune sélection ──────────────────────────────────────────
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.left.circle")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Aucun neurone sélectionné")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.orange)
+                        Text("Sélectionnez un neurone ou un compartiment soma\ndans l'éditeur, puis revenez ici.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
 
@@ -224,7 +308,7 @@ struct AxonBuilderView: View {
     private func physicsGrid() -> some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
             GridRow {
-                Text("Compartiments").font(.caption).foregroundStyle(.secondary)
+                Text("Compartiments ajoutés").font(.caption).foregroundStyle(.secondary)
                 Text("\(nCompartments)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(tooMany ? .red : .primary)
@@ -284,34 +368,48 @@ struct AxonBuilderView: View {
         }
     }
 
-    // Mini-schéma de l'axone
+    // Mini-schéma de l'axone (soma à gauche + segments)
     @ViewBuilder
     private func axonDiagram() -> some View {
         Canvas { ctx, size in
-            let midY = size.height / 2
+            let midY  = size.height / 2
+            let somaR = size.height * 0.36
+            let somaX = somaR + 2           // centre du soma
+
+            // ── Cercle soma ──────────────────────────────────────────────────
+            let somaRect = CGRect(x: somaX - somaR, y: midY - somaR,
+                                  width: somaR * 2, height: somaR * 2)
+            ctx.fill(Path(ellipseIn: somaRect),
+                     with: .color(Color(red: 0.95, green: 0.75, blue: 0.25).opacity(0.9)))
+            ctx.draw(
+                Text("S").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.black),
+                at: CGPoint(x: somaX, y: midY)
+            )
+
+            // ── Segments axonaux à droite ────────────────────────────────────
+            let axonStart = somaX + somaR + 3
+            let axonWidth = size.width - axonStart - 4
 
             if p.myelinated {
                 let nodeW: CGFloat = 7
-                let nVisualNodes = min(nNodesMyel, 20)
+                let nVisualNodes     = min(nNodesMyel, 20)
                 let nVisualInternodes = min(nInternodesMyel, nVisualNodes - 1)
                 let totalNodeW = CGFloat(nVisualNodes) * nodeW
-                let usableW = size.width - totalNodeW
+                let usableW    = axonWidth - totalNodeW
                 let intW = nVisualInternodes > 0
                     ? usableW / CGFloat(nVisualInternodes)
                     : usableW
 
-                var x: CGFloat = 0
+                var x: CGFloat = axonStart
                 let items = nVisualNodes + nVisualInternodes
                 for i in 0..<items {
                     let isNode = (i % 2 == 0)
                     if isNode {
-                        // Nœud — pleine hauteur, orange
                         let r = CGRect(x: x, y: midY - size.height * 0.38,
                                        width: nodeW, height: size.height * 0.76)
                         ctx.fill(Path(r), with: .color(.orange.opacity(0.9)))
                         x += nodeW
                     } else {
-                        // Internode — large, bleuté + axone central gris
                         let w = min(intW, size.width - x - nodeW)
                         let outer = CGRect(x: x, y: midY - size.height * 0.46,
                                            width: w, height: size.height * 0.92)
@@ -323,20 +421,18 @@ struct AxonBuilderView: View {
                         x += w
                     }
                 }
-                // Points de suspension si trop de nœuds
                 if nNodesMyel > 20 {
                     ctx.draw(Text("…").foregroundColor(.white).font(.system(size: 11)),
                              at: CGPoint(x: size.width - 8, y: midY))
                 }
             } else {
-                // Axone uniforme : segments alternés cyan/cyan-foncé
                 let n = min(nSegUnmyel, 80)
-                let w = size.width / CGFloat(max(n, 1))
+                let w = axonWidth / CGFloat(max(n, 1))
                 for i in 0..<n {
-                    let x = CGFloat(i) * w
+                    let x = axonStart + CGFloat(i) * w
                     let r = CGRect(x: x + 0.5, y: midY - size.height * 0.32,
                                    width: w - 1, height: size.height * 0.64)
-                    let alpha = i % 2 == 0 ? 0.55 : 0.75
+                    let alpha: Double = i % 2 == 0 ? 0.55 : 0.75
                     ctx.fill(Path(r), with: .color(Color.cyan.opacity(alpha)))
                 }
                 if nSegUnmyel > 80 {
@@ -347,9 +443,8 @@ struct AxonBuilderView: View {
         }
         .background(Color.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
         .overlay(alignment: .bottomTrailing) {
-            let label = p.myelinated
-                ? "🟠 nœud  🟦 internode"
-                : "■ segment HH"
+            let label = p.myelinated ? "🟡 soma  🟠 nœud  🟦 internode"
+                                     : "🟡 soma  ■ segment HH"
             Text(label)
                 .font(.system(size: 8))
                 .foregroundStyle(.white.opacity(0.5))
@@ -360,78 +455,78 @@ struct AxonBuilderView: View {
 
     // MARK: - Generation
 
-    private func generate() {
-        p.myelinated ? buildMyelinated() : buildUnmyelinated()
+    private func attachAxon() {
+        guard let t = target else { return }
+        if p.myelinated {
+            attachMyelinated(neuron: t.neuron, soma: t.soma)
+        } else {
+            attachUnmyelinated(neuron: t.neuron, soma: t.soma)
+        }
+        dismiss()
     }
 
-    // ── Axone sans myéline ─────────────────────────────────────────────────────
+    // ── Sans myéline ───────────────────────────────────────────────────────────
 
-    private func buildUnmyelinated() {
+    private func attachUnmyelinated(neuron: HHNeuron, soma: Compartment) {
         let N  = nSegUnmyel
-        let dx = p.totalLength / Double(N)   // longueur de chaque segment (µm)
-
-        // Correction d'aire : pour un cylindre de diamètre d et longueur L,
-        // l'aire vraie est π·d·L·1e-8 cm², mais NeuroSim utilise π·d²·1e-8 cm².
-        // On corrige en multipliant les densités par (L / d).
-        let af = dx / p.diameter    // area-factor = L/d
+        let dx = p.totalLength / Double(N)
+        let af = dx / p.diameter       // area-factor = L / d
 
         var comps: [Compartment] = []
         for i in 0..<N {
             comps.append(Compartment(
-                name:        i == 0 ? "axone[trigger]" : "axone[\(i+1)]",
+                name:        "axone[\(i+1)/\(N)]",
                 capacitance: 1.0 * af,
                 diameter:    p.diameter,
                 length:      dx,
                 channels: [
-                    SodiumChannel  (gMax:  120.0 * af, reversal:  50.0),
+                    SodiumChannel  (gMax: 120.0 * af, reversal:  50.0),
                     PotassiumChannel(gMax:  36.0 * af, reversal: -77.0),
                     LeakChannel    (gMax:   0.3 * af, reversal: -54.4)
                 ]
             ))
         }
 
-        buildNeuron(name: "Axone sans myéline (\(Int(p.totalLength)) µm)",
-                    comps: comps, stimComp: comps[0])
+        var newCouplings: [AxialCoupling] = []
+        // Soma → axone[0] : longueur effective du soma = max(soma.length, dx)
+        let somaL = max(soma.length, dx)
+        newCouplings.append(AxialCoupling(
+            between: soma.id, and: comps[0].id,
+            conductance: 50_000.0 / (somaL + dx)
+        ))
+        // Chaîne axonale
+        let gChain = 50_000.0 / (dx + dx)
+        for i in 0..<(N - 1) {
+            newCouplings.append(AxialCoupling(
+                between: comps[i].id, and: comps[i + 1].id,
+                conductance: gChain
+            ))
+        }
+
+        applyToNeuron(id: neuron.id, comps: comps, couplings: newCouplings)
     }
 
-    // ── Axone myélinisé ────────────────────────────────────────────────────────
-    //
-    //  Séquence : nœud — internode — nœud — internode — … — nœud
-    //
-    //  Nœud de Ranvier :
-    //    • Canaux HH standard (Na 120, K 36, Leak 0.3 mS/cm²)
-    //    • C_m = 1.0 µF/cm² (membrane nue)
-    //    • Correction d'aire : af_node = L_node / d
-    //
-    //  Internode :
-    //    • Leak seul, très faible (myéline = isolant)
-    //    • C_m_myeline = 0.005 µF/cm²  (≈ 200 couches de myéline)
-    //    • g_L_myeline = 0.005 mS/cm²
-    //    • Correction d'aire : af_int = L_int / d  (internode long >> d)
+    // ── Myélinisé ─────────────────────────────────────────────────────────────
 
-    private func buildMyelinated() {
-        let afNode = p.nodeLength     / p.diameter   // area-factor nœud
-        let afInt  = p.internodeLength / p.diameter  // area-factor internode
-
-        let cmMyelin = 0.005    // µF/cm² — capacitance myéline vraie
-        let gLMyelin = 0.005    // mS/cm² — conductance myéline vraie
+    private func attachMyelinated(neuron: HHNeuron, soma: Compartment) {
+        let afNode = p.nodeLength      / p.diameter
+        let afInt  = p.internodeLength / p.diameter
+        let cmMyelin = 0.005
+        let gLMyelin = 0.005
 
         var comps: [Compartment] = []
-
         for i in 0..<nNodesMyel {
-            // Nœud
             comps.append(Compartment(
                 name:        "nœud[\(i+1)]",
                 capacitance: 1.0 * afNode,
                 diameter:    p.diameter,
                 length:      p.nodeLength,
                 channels: [
-                    SodiumChannel  (gMax:  120.0 * afNode, reversal:  50.0),
+                    SodiumChannel  (gMax: 120.0 * afNode, reversal:  50.0),
                     PotassiumChannel(gMax:  36.0 * afNode, reversal: -77.0),
                     LeakChannel    (gMax:   0.3  * afNode, reversal: -54.4)
                 ]
             ))
-            // Internode (sauf après le dernier nœud)
             if i < nInternodesMyel {
                 comps.append(Compartment(
                     name:        "internode[\(i+1)]",
@@ -445,41 +540,40 @@ struct AxonBuilderView: View {
             }
         }
 
-        buildNeuron(name: "Axone myélinisé (\(nNodesMyel) nœuds, \(Int(p.internodeLength)) µm)",
-                    comps: comps, stimComp: comps[0])
-    }
-
-    // ── Assemblage et injection dans le réseau ─────────────────────────────────
-
-    private func buildNeuron(name: String,
-                              comps: [Compartment],
-                              stimComp: Compartment) {
-        // Couplages axiaux : modèle demi-longueur, ρ_a = 100 Ω·cm
-        //   g_ij = 50 000 / (L_i + L_j)   [mS/cm²]
-        var couplings: [AxialCoupling] = []
+        var newCouplings: [AxialCoupling] = []
+        // Soma → premier nœud
+        let somaL = max(soma.length, p.nodeLength)
+        newCouplings.append(AxialCoupling(
+            between: soma.id, and: comps[0].id,
+            conductance: 50_000.0 / (somaL + p.nodeLength)
+        ))
+        // Chaîne nœud/internode
         for i in 0..<(comps.count - 1) {
             let g = 50_000.0 / (comps[i].length + comps[i + 1].length)
-            couplings.append(AxialCoupling(between: comps[i].id,
-                                           and: comps[i + 1].id,
-                                           conductance: g))
+            newCouplings.append(AxialCoupling(
+                between: comps[i].id, and: comps[i + 1].id,
+                conductance: g
+            ))
         }
 
-        let neuron = HHNeuron(name: name,
-                              compartments: comps,
-                              couplings: couplings,
-                              soma: comps[0].id)
-        // Position arbitraire sur le canvas
-        neuron.positionX = 300
-        neuron.positionY = 300
+        applyToNeuron(id: neuron.id, comps: comps, couplings: newCouplings)
+    }
 
-        vm.network.addNeuron(neuron)
+    // ── Injection dans le neurone existant ────────────────────────────────────
 
-        // Stimulus déclencheur : impulsion courte et intense sur le premier compartiment
-        vm.network.setStimulus(
-            PulseStimulus(start: 5.0, duration: 0.5, amplitude: 500.0),
-            onCompartment: stimComp.id
-        )
-
+    private func applyToNeuron(id: UUID,
+                               comps: [Compartment],
+                               couplings: [AxialCoupling]) {
+        vm.network.updateNeuron(id: id) { n in
+            if replaceExisting && n.compartments.count > 1 {
+                let somaID = n.somaCompartmentID
+                n.compartments.removeAll(where: { $0.id != somaID })
+                n.axialCouplings.removeAll()
+            }
+            for c in comps    { n.compartments.append(c) }
+            for c in couplings { n.axialCouplings.append(c) }
+        }
+        vm.network.notifyStructuralChange()
         vm.rebuildSimulatorPublic()
     }
 }
