@@ -43,6 +43,9 @@ final class SimulationViewModel: ObservableObject {
     @Published var showNetworkBuilder = false
     @Published var networkBuilderInitialTab: Int = 0
 
+    // MARK: - Axon builder sheet
+    @Published var showAxonBuilder = false
+
     // MARK: - Neuron canvas color mode
 
     /// Quantity used to colour neuron circles on the canvas.

@@ -83,6 +83,10 @@ struct NetworkEditorView: View {
                                     selectedTab: vm.networkBuilderInitialTab)
                     .environmentObject(vm)
             }
+            .sheet(isPresented: $vm.showAxonBuilder) {
+                AxonBuilderView()
+                    .environmentObject(vm)
+            }
     }
 
     // MARK: - Canvas

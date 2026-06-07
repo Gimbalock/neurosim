@@ -69,7 +69,7 @@ struct ToolPaletteView: View {
 
             // ── RÉSERVÉ ──────────────────────────────────────────────────────
             sectionLabel("RÉSERVÉ")
-            reservedButton(icon: "map",                  label: "Carte de connectivité")
+            axonBuilderButton
             reservedButton(icon: "waveform.path.badge.plus", label: "Générateur de patterns")
             reservedButton(icon: "cube.transparent",     label: "Vue 3D")
 
@@ -252,6 +252,25 @@ struct ToolPaletteView: View {
         .buttonStyle(.plain)
         .help(label)
         .accessibilityLabel(label)
+    }
+
+    // MARK: - Axon builder action button
+
+    private var axonBuilderButton: some View {
+        Button { vm.showAxonBuilder = true } label: {
+            Image(systemName: "cable.connector.horizontal")
+                .font(.system(size: 15, weight: .regular))
+                .frame(width: 32, height: 32)
+                .foregroundStyle(Color.cyan.opacity(0.85))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.cyan.opacity(0.12))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Constructeur d'axone multi-compartiment")
+        .accessibilityLabel("Constructeur d'axone")
     }
 
     // MARK: - Reserved placeholder
