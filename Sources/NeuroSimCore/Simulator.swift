@@ -143,6 +143,9 @@ public final class Simulator {
                             deriv: &buf1, deriv2: &buf2)
         case .rk45:
             RK45.step(provider: network, state: &state, time: time, dt: dt)
+        case .hines:
+            HinesCable.step(network: network, state: &state, time: time, dt: dt,
+                            deriv: &buf1, deriv2: &buf2)
         }
         time += dt
         dispatchSpikes()

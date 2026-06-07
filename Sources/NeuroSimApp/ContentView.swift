@@ -121,15 +121,16 @@ struct ContentView: View {
 
                 Spacer()
 
-                // Cable stability auto-dt notice
+                // Cable stability auto-dt notice (only with explicit methods)
                 if let eDt = vm.cableStabilityDt {
                     Label(String(format: "dt câble auto → %.4f ms", eDt),
                           systemImage: "cable.connector.horizontal")
                         .font(.caption2)
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(.orange)
                         .lineLimit(1)
-                        .help("Le couplage axial impose un dt réduit pour la stabilité numérique. " +
-                              "Réduisez le nombre de segments ou la longueur de l'axone pour accélérer la simulation.")
+                        .help("Méthode \(vm.integrationMethod.rawValue) : le couplage axial impose dt ≤ \(String(format: "%.4f", eDt)) ms " +
+                              "pour rester stable (simulation ~\(Int((vm.dt / eDt).rounded()))× plus lente). " +
+                              "Passez à « Hines (câble implicite) » dans l'Inspecteur pour éliminer cette contrainte.")
                 }
 
                 if let err = vm.divergenceError {

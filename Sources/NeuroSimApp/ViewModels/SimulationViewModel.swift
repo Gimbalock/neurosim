@@ -754,9 +754,12 @@ final class SimulationViewModel: ObservableObject {
         return dtMin * 0.4     // 40 % safety margin
     }
 
-    /// The dt actually fed to the simulator — never larger than the cable-stability
-    /// limit and never smaller than 1 ns (hard floor to avoid infinite loops).
+    /// The dt actually fed to the simulator.
+    /// - For Hines (implicit cable): the user's dt is used as-is — the algorithm
+    ///   is unconditionally stable so no reduction is needed.
+    /// - For explicit methods: capped to the cable-stability limit to prevent divergence.
     private var effectiveDt: Double {
+        if integrationMethod == .hines { return dt }
         guard let limit = stableDtForCable() else { return dt }
         return min(dt, max(limit, 1e-6))
     }
@@ -767,8 +770,22 @@ final class SimulationViewModel: ObservableObject {
         // Topology changed → state-vector layout changed → warm state is stale.
         savedFinalState = nil
         hasWarmState    = false
+
+        // Auto-switch to Hines when cable neurons are present and the user
+        // is still on the default Rush-Larsen method. Hines is unconditionally
+        // stable for any dt, while Rush-Larsen's explicit voltage step diverges
+        // for the large coupling conductances typical of axonal segments.
+        let hasCableNeurons = network.neurons.contains {
+            $0.compartments.count > 1 && !$0.axialCouplings.isEmpty
+        }
+        if hasCableNeurons && integrationMethod == .rushLarsen {
+            integrationMethod = .hines   // didSet fires but old simulator is about to be replaced
+        }
+
         let eDt = effectiveDt
-        cableStabilityDt = (eDt < dt * 0.99) ? eDt : nil
+        // cableStabilityDt is only non-nil for explicit methods under a stability constraint.
+        // Hines is unconditionally stable → always nil.
+        cableStabilityDt = (integrationMethod != .hines && eDt < dt * 0.99) ? eDt : nil
         simulator = Simulator(network: network, dt: eDt)
         simulationTime = 0
         rebuildAxonProfiles()

@@ -14,11 +14,12 @@ public enum IntegrationMethod: String, CaseIterable, Codable, Identifiable, Send
     case rk4         = "RK4"
     case rushLarsen  = "Rush-Larsen"
     case rk45        = "RK45 adaptatif"
+    case hines       = "Hines (câble implicite)"
 
     public var id: String { rawValue }
 
     /// Maximum dt (ms) beyond which instability is likely for standard HH.
-    /// RK45 is adaptive so its threshold is the max output interval.
+    /// RK45 and Hines are unconditionally stable — threshold = max output interval.
     public var maxSafeDt: Double {
         switch self {
         case .euler:      return 0.01
@@ -26,6 +27,7 @@ public enum IntegrationMethod: String, CaseIterable, Codable, Identifiable, Send
         case .rk4:        return 0.05
         case .rushLarsen: return 0.5
         case .rk45:       return 1.0
+        case .hines:      return 1.0   // unconditionally stable for cable; practical limit ≈ 1 ms
         }
     }
 
@@ -37,6 +39,7 @@ public enum IntegrationMethod: String, CaseIterable, Codable, Identifiable, Send
         case .rk4:        return 4
         case .rushLarsen: return 2   // 1 for gates (analytical) + 1 reeval for V
         case .rk45:       return 6   // per sub-step (Dormand-Prince)
+        case .hines:      return 2   // same as Rush-Larsen + O(N) Thomas solve
         }
     }
 
@@ -52,6 +55,8 @@ public enum IntegrationMethod: String, CaseIterable, Codable, Identifiable, Send
             return "Standard neuroscience — gates analytiques, stable jusqu'à ~0.5 ms."
         case .rk45:
             return "Dormand-Prince adaptatif — erreur contrôlée automatiquement."
+        case .hines:
+            return "Câble implicite (Thomas) — inconditionnellement stable pour axones multi-segments. Recommandé dès qu'un axone est attaché."
         }
     }
 }
