@@ -36,6 +36,7 @@ private enum AnalysisTab: String, CaseIterable {
     case modelSweep  = "Model Sweep"
     case mutualInfo  = "Info Mut."
     case energy      = "Énergie"
+    case propagation = "Propagation"
 }
 
 struct ResultsWindowView: View {
@@ -102,6 +103,7 @@ struct ResultsWindowView: View {
             case .modelSweep:   ModelSweepView()
             case .mutualInfo:   MutualInfoView()
             case .energy:       EnergyView()
+            case .propagation:  PropagationView()
             }
         }
         .frame(minWidth: 640, minHeight: 480)

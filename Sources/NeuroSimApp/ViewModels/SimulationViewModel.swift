@@ -126,6 +126,31 @@ final class SimulationViewModel: ObservableObject {
     /// Chart cards observe this to trigger autoscale.
     @Published private(set) var autoscaleGeneration: Int = 0
 
+    // MARK: - Axon propagation — V(x, t)
+
+    /// One voltage snapshot across all compartments of an axonal neuron.
+    struct PropagationSlice {
+        let time:     Double
+        let voltages: [Double]   // one per compartment, in compartment-array order
+    }
+
+    /// Live kymograph data for one multi-compartment neuron.
+    struct AxonProfile: Identifiable {
+        var id: UUID { neuronID }
+        let neuronID:       UUID
+        let neuronName:     String
+        let compartmentIDs: [UUID]    // in chain order (= compartments[] order)
+        let positions:      [Double]  // cumulative µm from first compartment centre
+        var history:        [PropagationSlice]
+
+        /// Maximum number of slices retained (≈ 500 × 33 ms ≈ 16 s of history).
+        static let maxSlices = 500
+    }
+
+    /// Kymograph profiles for every axonal neuron (≥ 2 compartments, ≥ 1 coupling).
+    /// Rebuilt when the network topology changes; history flushed at each play().
+    @Published var axonProfiles: [AxonProfile] = []
+
     // MARK: - Optimisation settings (persisted with the network document)
 
     @Published var optimSettings: NetworkDocument.OptimSettingsDoc? = nil
@@ -704,8 +729,29 @@ final class SimulationViewModel: ObservableObject {
         hasWarmState    = false
         simulator = Simulator(network: network, dt: dt)
         simulationTime = 0
+        rebuildAxonProfiles()
         seedTraces()
         if wasRunning { play() }
+    }
+
+    /// Rebuild the metadata (compartment IDs, positions) for every axonal neuron.
+    /// Does NOT clear history — call seedTraces() / play() for that.
+    private func rebuildAxonProfiles() {
+        axonProfiles = network.neurons.compactMap { n in
+            guard n.compartments.count >= 2, !n.axialCouplings.isEmpty else { return nil }
+            // Use the compartment-array order (guaranteed by the AxonBuilder and
+            // preserved by NetworkDocument round-trips).
+            let ids = n.compartments.map(\.id)
+            // Cumulative positions: centre of compartment i = sum of lengths 0…i-1 + L_i/2
+            var pos: [Double] = []
+            var cum = 0.0
+            for comp in n.compartments {
+                pos.append(cum + comp.length / 2)
+                cum += comp.length
+            }
+            return AxonProfile(neuronID: n.id, neuronName: n.name,
+                               compartmentIDs: ids, positions: pos, history: [])
+        }
     }
 
     private func seedTraces() {
@@ -720,6 +766,8 @@ final class SimulationViewModel: ObservableObject {
         energyTraces        = et
         pendingEnergyTraces = et
         pendingSimTime      = 0
+        // Clear kymograph history so each run starts fresh.
+        for i in axonProfiles.indices { axonProfiles[i].history.removeAll() }
     }
 
     // MARK: - Run / pause / reset
@@ -778,6 +826,25 @@ final class SimulationViewModel: ObservableObject {
             var st = signalTraces
             for j in st.indices { st[j].points = pendingSignalPoints[j] }
             signalTraces = st   // single @Published write → one SwiftUI re-render
+        }
+
+        // ── Kymograph: sample V from every compartment of every axonal neuron ────
+        // Safe because flushPendingDisplay() is always called on the main actor
+        // AFTER the background simulation step has finished (frameInFlight = false).
+        if !axonProfiles.isEmpty {
+            let t  = simulator.time
+            let st = simulator.state
+            for i in axonProfiles.indices {
+                let vs = axonProfiles[i].compartmentIDs.compactMap { cid -> Double? in
+                    guard let idx = network.voltageIndex(ofCompartment: cid),
+                          st.indices.contains(idx) else { return nil }
+                    return st[idx]
+                }
+                guard vs.count == axonProfiles[i].compartmentIDs.count else { continue }
+                axonProfiles[i].history.append(PropagationSlice(time: t, voltages: vs))
+                let excess = axonProfiles[i].history.count - AxonProfile.maxSlices
+                if excess > 0 { axonProfiles[i].history.removeFirst(excess) }
+            }
         }
     }
 
