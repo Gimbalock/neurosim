@@ -199,16 +199,16 @@ public final class HHNeuron: Identifiable {
             cursor += compartments[i].stateCount
         }
 
-        // 2. Axial currents. Linear search for compartment indices is
-        //    negligible for typical compartment counts (2-5).
+        // 2. Axial currents.  O(N + M) with a single-pass index map.
+        //    (The old O(N×M) double-loop was fine for 2-5 dendrites but
+        //    scales catastrophically for 100-200 axon segments.)
+        var idToIdx = [UUID: Int](minimumCapacity: n)
+        for i in 0..<n { idToIdx[compartments[i].id] = i }
+
         var iAxial = [Double](repeating: 0, count: n)
         for coup in axialCouplings {
-            var iA = -1, iB = -1
-            for i in 0..<n {
-                if compartments[i].id == coup.compartmentA { iA = i }
-                else if compartments[i].id == coup.compartmentB { iB = i }
-            }
-            guard iA >= 0, iB >= 0 else { continue }
+            guard let iA = idToIdx[coup.compartmentA],
+                  let iB = idToIdx[coup.compartmentB] else { continue }
             let diff = coup.conductance * (voltages[iB] - voltages[iA])
             iAxial[iA] += diff
             iAxial[iB] -= diff

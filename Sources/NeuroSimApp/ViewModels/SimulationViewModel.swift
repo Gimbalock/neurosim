@@ -291,13 +291,16 @@ final class SimulationViewModel: ObservableObject {
     /// Simulated ms advanced per wall-clock ms (>1 = faster than real-time).
     @Published private(set) var simToWallRatio: Double = 0
     @Published var dt: Double = 0.05 {
-        didSet { simulator.dt = dt }
+        didSet { simulator.dt = effectiveDt }
     }
     @Published var integrationMethod: IntegrationMethod = .rushLarsen {
         didSet { simulator.method = integrationMethod }
     }
     /// Non-nil when the simulation was halted due to numerical divergence.
     @Published private(set) var divergenceError: String? = nil
+    /// Non-nil when dt has been auto-reduced for cable numerical stability.
+    /// Value is the dt actually used by the simulator (ms).
+    @Published private(set) var cableStabilityDt: Double? = nil
     @Published var realtimeFactor: Double = 1.0  // 1.0 = real-time; >1 = accelerated
 
     /// Resting voltage (mV) used when initialising/resetting the simulator.
@@ -721,13 +724,52 @@ final class SimulationViewModel: ObservableObject {
     /// state-vector layout.
     func rebuildSimulatorPublic() { rebuildSimulator() }
 
+    // ── Cable numerical-stability helpers ────────────────────────────────────
+
+    /// Minimum dt [ms] required for explicit-cable stability given the network's
+    /// axial couplings.  Returns nil when there are no multi-compartment neurons.
+    ///
+    /// Stability condition (Von Neumann, uniform chain):
+    ///   dt  <  Cm_i / Σ_j g_ij   for every compartment i
+    /// with Cm in µF/cm² and g in mS/cm²  →  ratio in ms.
+    /// A safety factor of 0.4 is applied.
+    private func stableDtForCable() -> Double? {
+        var dtMin = Double.infinity
+        for neuron in network.neurons {
+            guard neuron.compartments.count > 1 else { continue }
+            // Accumulate total coupling conductance per compartment.
+            var gSum = [UUID: Double]()
+            for comp in neuron.compartments { gSum[comp.id] = 0 }
+            for coup in neuron.axialCouplings {
+                gSum[coup.compartmentA, default: 0] += coup.conductance
+                gSum[coup.compartmentB, default: 0] += coup.conductance
+            }
+            for comp in neuron.compartments {
+                guard let g = gSum[comp.id], g > 0 else { continue }
+                // µF/cm² ÷ mS/cm² = µF/mS = ms  ✓
+                dtMin = min(dtMin, comp.capacitance / g)
+            }
+        }
+        guard dtMin.isFinite else { return nil }
+        return dtMin * 0.4     // 40 % safety margin
+    }
+
+    /// The dt actually fed to the simulator — never larger than the cable-stability
+    /// limit and never smaller than 1 ns (hard floor to avoid infinite loops).
+    private var effectiveDt: Double {
+        guard let limit = stableDtForCable() else { return dt }
+        return min(dt, max(limit, 1e-6))
+    }
+
     private func rebuildSimulator() {
         let wasRunning = isRunning
         if wasRunning { pause() }
         // Topology changed → state-vector layout changed → warm state is stale.
         savedFinalState = nil
         hasWarmState    = false
-        simulator = Simulator(network: network, dt: dt)
+        let eDt = effectiveDt
+        cableStabilityDt = (eDt < dt * 0.99) ? eDt : nil
+        simulator = Simulator(network: network, dt: eDt)
         simulationTime = 0
         rebuildAxonProfiles()
         seedTraces()
@@ -790,7 +832,7 @@ final class SimulationViewModel: ObservableObject {
 
         isRunning = true
         frameInFlight = false
-        simulator.dt = dt
+        simulator.dt = effectiveDt          // respects cable stability limit
         simulator.method = integrationMethod
         lastDisplayFlush  = .now
         lastKickStartTime = .now   // reset so first frame uses a clean baseline
@@ -954,7 +996,14 @@ final class SimulationViewModel: ObservableObject {
                 for (_, vIdx) in neuronIdx {
                     let v = capturedSim.state[vIdx]
                     if v.isNaN || v.isInfinite || abs(v) > 1_000 {
-                        divergeMsg = "Divergence numérique détectée à t=\(String(format: "%.2f", capturedSim.time)) ms. Réduisez dt (recommandé : ≤ 0.05 ms pour HH+RK4)."
+                        let gMax = capturedNet.neurons
+                            .flatMap { $0.axialCouplings }.map { $0.conductance }.max() ?? 0
+                        if gMax > 0 {
+                            let dtNeeded = String(format: "%.4f", 0.4 / gMax)
+                            divergeMsg = "Divergence câble à t=\(String(format: "%.2f", capturedSim.time)) ms — couplage axial g=\(Int(gMax)) mS/cm² requiert dt ≤ \(dtNeeded) ms. Réduisez le nombre de segments ou utilisez un axone plus court."
+                        } else {
+                            divergeMsg = "Divergence numérique détectée à t=\(String(format: "%.2f", capturedSim.time)) ms. Réduisez dt (recommandé : ≤ 0.05 ms pour HH+RK4)."
+                        }
                         break outer
                     }
                 }

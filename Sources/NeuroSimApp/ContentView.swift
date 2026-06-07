@@ -121,6 +121,17 @@ struct ContentView: View {
 
                 Spacer()
 
+                // Cable stability auto-dt notice
+                if let eDt = vm.cableStabilityDt {
+                    Label(String(format: "dt câble auto → %.4f ms", eDt),
+                          systemImage: "cable.connector.horizontal")
+                        .font(.caption2)
+                        .foregroundStyle(.cyan)
+                        .lineLimit(1)
+                        .help("Le couplage axial impose un dt réduit pour la stabilité numérique. " +
+                              "Réduisez le nombre de segments ou la longueur de l'axone pour accélérer la simulation.")
+                }
+
                 if let err = vm.divergenceError {
                     Label(err, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption2)
