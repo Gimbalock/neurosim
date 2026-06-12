@@ -64,17 +64,15 @@ struct TracePreviewCanvas: View {
         Canvas { ctx, size in
             guard !refPts.isEmpty || !simPts.isEmpty else { return }
 
-            // ── Voltage range: anchored to the REFERENCE trace so the Y-axis is
-            // stable across iterations.  The candidate is drawn in this same scale
-            // (it may clip if it spikes harder/less than the reference — intentional).
-            // Using the combined range would cause the reference to visually compress
-            // or stretch every time a new candidate with different excursion is shown.
+            // ── Voltage range: union of both traces so APs from the candidate are
+            // never clipped.  The reference range sets the minimum extent; the sim
+            // can expand it upward/downward but never shrink it.  This keeps both
+            // waveforms fully visible regardless of excursion differences.
             let anchor = refPts.isEmpty ? simPts : refPts
             var vMin = anchor[0].v, vMax = anchor[0].v
-            for p in anchor {
-                if p.v < vMin { vMin = p.v }; if p.v > vMax { vMax = p.v }
-            }
-            let margin = max((vMax - vMin) * 0.08, 2.0)
+            for p in anchor { if p.v < vMin { vMin = p.v }; if p.v > vMax { vMax = p.v } }
+            for p in simPts { if p.v < vMin { vMin = p.v }; if p.v > vMax { vMax = p.v } }
+            let margin = max((vMax - vMin) * 0.06, 2.0)
             vMin -= margin; vMax += margin
             let vSpan = max(vMax - vMin, 1e-6)
 

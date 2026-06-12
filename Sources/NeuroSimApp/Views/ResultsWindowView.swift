@@ -59,6 +59,17 @@ struct ResultsWindowView: View {
     /// All charts share this zoom; nil = full view.
     @State private var xZoom: ClosedRange<Double>? = nil
 
+    /// Tabs that have been opened at least once. Their views are kept alive
+    /// (hidden via opacity) so their @State / @StateObject — imported traces,
+    /// optimizer config, sweep results — survives tab switches. Lazily grown:
+    /// a tab is only instantiated on first visit, never recreated afterwards
+    /// unless explicitly reset.
+    @State private var visitedTabs: Set<AnalysisTab> = [.traces]
+
+    /// Per-tab identity token. Bumping a tab's token forces SwiftUI to discard
+    /// and rebuild that single tab's view tree — the "reset this tab" action.
+    @State private var resetTokens: [AnalysisTab: Int] = [:]
+
 /// Chart groups in user-defined display order.
     private var orderedGroups: [(id: UUID, traces: [SimulationViewModel.SignalTrace])] {
         let map = Dictionary(grouping: vm.signalTraces, by: \.chartGroupID)
@@ -80,33 +91,44 @@ struct ResultsWindowView: View {
             controlBar
             Divider()
             // Tab selector
-            Picker("", selection: $selectedTab) {
-                ForEach(AnalysisTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
+            HStack(spacing: 8) {
+                Picker("", selection: $selectedTab) {
+                    ForEach(AnalysisTab.allCases, id: \.self) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 860)
+
+                Button(action: resetCurrentTab) {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Réinitialiser l'onglet « \(selectedTab.rawValue) » (efface ses réglages, garde les autres onglets)")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 860)
             .padding(.horizontal, 16)
             .padding(.vertical, 5)
             Divider()
-            // Tab content
-            switch selectedTab {
-            case .traces:       tracesContent
-            case .raster:       RasterView()
-            case .isi:          ISIView()
-            case .phase:        PhaseView()
-            case .density:      TrajectoryDensityView()
-            case .clamp:        VoltageClampView()
-            case .bifurcation:  BifurcationView()
-            case .heatmap:      HeatmapView()
-            case .modelSweep:   ModelSweepView()
-            case .mutualInfo:   MutualInfoView()
-            case .energy:       EnergyView()
-            case .propagation:  PropagationView()
+            // Tab content — all visited tabs stay alive (hidden via opacity) so
+            // their local state survives switching. Only the selected tab receives
+            // hits and sits on top.
+            ZStack {
+                ForEach(AnalysisTab.allCases, id: \.self) { tab in
+                    if visitedTabs.contains(tab) {
+                        tabContent(tab)
+                            .id(resetTokens[tab, default: 0])
+                            .opacity(selectedTab == tab ? 1 : 0)
+                            .allowsHitTesting(selectedTab == tab)
+                            .zIndex(selectedTab == tab ? 1 : 0)
+                    }
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .onChange(of: selectedTab) { _, tab in visitedTabs.insert(tab) }
+        .onAppear { visitedTabs.insert(selectedTab) }
         .frame(minWidth: 640, minHeight: 480)
         .onChange(of: vm.autoscaleGeneration) { _, _ in xZoom = nil }
         // Reset zoom whenever the simulation starts — the chart scrolls while
@@ -126,6 +148,32 @@ struct ResultsWindowView: View {
                 vm.requestedResultsTab = nil
             }
         }
+    }
+
+    /// The view for a single analysis tab. Pure mapping — no side effects, so it
+    /// can be instantiated inside the keep-alive ZStack.
+    @ViewBuilder
+    private func tabContent(_ tab: AnalysisTab) -> some View {
+        switch tab {
+        case .traces:       tracesContent
+        case .raster:       RasterView()
+        case .isi:          ISIView()
+        case .phase:        PhaseView()
+        case .density:      TrajectoryDensityView()
+        case .clamp:        VoltageClampView()
+        case .bifurcation:  BifurcationView()
+        case .heatmap:      HeatmapView()
+        case .modelSweep:   ModelSweepView()
+        case .mutualInfo:   MutualInfoView()
+        case .energy:       EnergyView()
+        case .propagation:  PropagationView()
+        }
+    }
+
+    /// Discard the selected tab's view tree and rebuild it fresh, clearing its
+    /// local state. Other tabs are untouched.
+    private func resetCurrentTab() {
+        resetTokens[selectedTab, default: 0] += 1
     }
 
     private var tracesContent: some View {

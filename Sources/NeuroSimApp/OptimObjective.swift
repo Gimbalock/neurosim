@@ -202,17 +202,33 @@ extension OptimObjective {
                 var pts:   [(v: Double, dvdt: Double)] = []
                 var trace: [(t: Double, v: Double)]    = []
                 pts.reserveCapacity(expectedPts)
+                trace.reserveCapacity(6_200)
                 var step = 0
                 // Central-difference rolling buffer: keep the two previous samples
                 // so we can compute dV/dt[i] = (V[i+1] − V[i−1]) / (t[i+1] − t[i−1])
                 // and place the point at V[i] (the centre sample).
                 var pp: (t: Double, v: Double)? = nil   // i−1
                 var pv: (t: Double, v: Double)? = nil   // i
+                // Min/max pooling for the display trace: track the lowest and highest
+                // V within each traceEvery window and emit both (chronological order).
+                // Naive subsampling (1 sample per window) would drop the 1–2 sample AP
+                // peaks, truncating spike amplitude in the V(t) preview.
+                var winMin: (t: Double, v: Double)? = nil
+                var winMax: (t: Double, v: Double)? = nil
                 sim.run(duration: duration) { sample in
                     step += 1
                     guard let v = sample.voltages[neuronID] else { return }
-                    // Low-res display trace
-                    if step % traceEvery == 0 { trace.append((t: sample.time, v: v)) }
+                    // Low-res display trace — min/max pooled
+                    let s = (t: sample.time, v: v)
+                    if winMin == nil || v < winMin!.v { winMin = s }
+                    if winMax == nil || v > winMax!.v { winMax = s }
+                    if step % traceEvery == 0 {
+                        if let mn = winMin, let mx = winMax {
+                            if mn.t <= mx.t { trace.append(mn); trace.append(mx) }
+                            else            { trace.append(mx); trace.append(mn) }
+                        }
+                        winMin = nil; winMax = nil
+                    }
                     // Phase-plane central differences
                     guard step % every == 0 else { return }
                     let cur = (t: sample.time, v: v)

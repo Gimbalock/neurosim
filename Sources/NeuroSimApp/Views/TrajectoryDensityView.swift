@@ -997,9 +997,9 @@ struct TrajectoryDensityView: View {
                             frozenRefTrace = imp.rawTrace
                         } else if let refID = resolvedLeft,
                                   let trace = vm.traces[refID], !trace.isEmpty {
-                            let st = max(1, trace.count / 3_000)
-                            frozenRefTrace = Swift.stride(from: 0, to: trace.count, by: st)
-                                .map { (t: trace[$0].t, v: trace[$0].v) }
+                            // Full resolution — min/max pooling in the canvas preserves
+                            // AP peaks. Stride subsampling would truncate sharp spikes.
+                            frozenRefTrace = trace.map { (t: $0.t, v: $0.v) }
                         } else {
                             frozenRefTrace = []
                         }
@@ -1045,9 +1045,7 @@ struct TrajectoryDensityView: View {
                         if !frozenRefTrace.isEmpty { return frozenRefTrace }
                         guard let id = resolvedLeft,
                               let trace = vm.traces[id], !trace.isEmpty else { return [] }
-                        let st = max(1, trace.count / 3_000)
-                        return Swift.stride(from: 0, to: trace.count, by: st)
-                                   .map { (t: trace[$0].t, v: trace[$0].v) }
+                        return trace.map { (t: $0.t, v: $0.v) }   // full res — canvas pools min/max
                     }()
                     if !refRaw.isEmpty {
                         TracePreviewCanvas(
@@ -1161,10 +1159,11 @@ struct TrajectoryDensityView: View {
             importedTrace = nil
             return
         }
-        // Downsample rawTrace to ≤3000 pts for the preview (same ratio used for live traces)
-        let st = max(1, rawTrace.count / 3_000)
-        let rawTraceDown = Swift.stride(from: 0, to: rawTrace.count, by: st).map { rawTrace[$0] }
-        importedTrace = ImportedTrace(name: name, points: pts, rawTrace: rawTraceDown)
+        // Keep the rawTrace at FULL resolution. Naive stride downsampling would
+        // miss the 1–2 sample peaks of sharp APs, truncating their amplitude in
+        // the preview. TracePreviewCanvas does min/max pooling, which preserves
+        // peaks regardless of point count, so we let it handle the reduction.
+        importedTrace = ImportedTrace(name: name, points: pts, rawTrace: rawTrace)
         useImportLeft = true
     }
 
