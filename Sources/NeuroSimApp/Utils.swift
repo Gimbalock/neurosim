@@ -44,7 +44,12 @@ func phasePlanePoints(
 
 /// A compact canvas that overlays a reference V(t) trace (blue) and a candidate
 /// V(t) trace (orange) for live visual comparison during sweeps / optimisation.
-/// Both traces are auto-scaled to a shared Y range.
+///
+/// **Y axis**: shared voltage range across both traces — amplitudes are directly comparable.
+/// **X axis**: each trace is independently normalised to [0, width] on its own time span,
+/// so a 500 ms simulation and a 1000 ms reference both fill the full canvas width.
+/// This prevents the shorter trace from being compressed into a sub-region when the
+/// simulation duration doesn't match the reference recording duration.
 /// Uses min/max pooling so action potential peaks are never missed even at
 /// high compression ratios.
 struct TracePreviewCanvas: View {
@@ -57,20 +62,38 @@ struct TracePreviewCanvas: View {
 
     var body: some View {
         Canvas { ctx, size in
-            let all = refPts + simPts
-            guard all.count >= 2 else { return }
+            guard !refPts.isEmpty || !simPts.isEmpty else { return }
 
-            var tMin = all[0].t, tMax = all[0].t
-            var vMin = all[0].v, vMax = all[0].v
-            for p in all {
-                if p.t < tMin { tMin = p.t }; if p.t > tMax { tMax = p.t }
+            // ── Voltage range: anchored to the REFERENCE trace so the Y-axis is
+            // stable across iterations.  The candidate is drawn in this same scale
+            // (it may clip if it spikes harder/less than the reference — intentional).
+            // Using the combined range would cause the reference to visually compress
+            // or stretch every time a new candidate with different excursion is shown.
+            let anchor = refPts.isEmpty ? simPts : refPts
+            var vMin = anchor[0].v, vMax = anchor[0].v
+            for p in anchor {
                 if p.v < vMin { vMin = p.v }; if p.v > vMax { vMax = p.v }
             }
-            let tSpan = max(tMax - tMin, 1e-6)
+            let margin = max((vMax - vMin) * 0.08, 2.0)
+            vMin -= margin; vMax += margin
             let vSpan = max(vMax - vMin, 1e-6)
 
-            func xy(_ t: Double, _ v: Double) -> CGPoint {
-                CGPoint(x: (t - tMin) / tSpan * size.width,
+            // ── Time range: INDEPENDENT per trace.
+            // Each trace is normalized to [0, size.width] on its own time axis so
+            // that a 500 ms simulation and a 1000 ms reference both fill the full
+            // canvas and can be compared visually even when durations differ.
+            func tBounds(_ pts: [(t: Double, v: Double)]) -> (origin: Double, span: Double) {
+                guard !pts.isEmpty else { return (0, 1) }
+                var lo = pts[0].t, hi = pts[0].t
+                for p in pts { if p.t < lo { lo = p.t }; if p.t > hi { hi = p.t } }
+                return (lo, max(hi - lo, 1e-6))
+            }
+            let (refT0, refTSpan) = tBounds(refPts)
+            let (simT0, simTSpan) = tBounds(simPts)
+
+            func xyFor(_ t: Double, _ v: Double,
+                       tOrig: Double, tSpan: Double) -> CGPoint {
+                CGPoint(x: (t - tOrig) / tSpan * size.width,
                         y: (1.0 - (v - vMin) / vSpan) * size.height)
             }
 
@@ -96,20 +119,23 @@ struct TracePreviewCanvas: View {
                 return out
             }
 
-            func draw(_ raw: [(t: Double, v: Double)], color: Color, width: CGFloat) {
+            func draw(_ raw: [(t: Double, v: Double)], color: Color, width: CGFloat,
+                      tOrig: Double, tSpan: Double) {
                 guard raw.count >= 2 else { return }
                 let pts = pooled(raw, n: buckets)
                 var path = Path()
                 var moved = false
                 for p in pts {
-                    let c = xy(p.t, p.v)
+                    let c = xyFor(p.t, p.v, tOrig: tOrig, tSpan: tSpan)
                     if !moved { path.move(to: c); moved = true } else { path.addLine(to: c) }
                 }
                 ctx.stroke(path, with: .color(color), lineWidth: width)
             }
 
-            draw(refPts, color: Color(red: 0.35, green: 0.65, blue: 1.0).opacity(0.85), width: 1.0)
-            draw(simPts, color: Color(red: 1.00, green: 0.50, blue: 0.10).opacity(0.95), width: 1.0)
+            draw(refPts, color: Color(red: 0.35, green: 0.65, blue: 1.0).opacity(0.85), width: 1.0,
+                 tOrig: refT0, tSpan: refTSpan)
+            draw(simPts, color: Color(red: 1.00, green: 0.50, blue: 0.10).opacity(0.95), width: 1.0,
+                 tOrig: simT0, tSpan: simTSpan)
         }
         .background(Color.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 4))
         .overlay(alignment: .bottomTrailing) {

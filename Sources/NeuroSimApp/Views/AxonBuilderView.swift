@@ -86,14 +86,27 @@ struct AxonBuilderView: View {
 
     // MARK: - Computed geometry
 
-    private var segDx: Double { p.diameter }    // segment length = d for unmyelinated
+    /// Nombre maximum de compartiments acceptés.
+    static let maxCompartments = 500
 
+    /// Nombre de segments pour un axone non-myélinisé, plafonné à `maxCompartments`.
+    /// La longueur idéale d'un segment = diamètre (1 segment/λ électrotonique optimal),
+    /// mais si cela dépasse la limite, dx est automatiquement agrandi.
     private var nSegUnmyel: Int {
-        max(2, Int((p.totalLength / segDx).rounded()))
+        let ideal = Int((p.totalLength / p.diameter).rounded())
+        return max(2, min(Self.maxCompartments, ideal))
     }
 
+    /// Longueur effective d'un segment (µm).
+    /// = totalLength / N, ce qui peut être > diamètre si auto-plafonnement actif.
+    private var segDx: Double { p.totalLength / Double(nSegUnmyel) }
+
+    /// Vrai si dx a été agrandi par rapport au diamètre (auto-plafonnement actif).
+    private var isAutoCoarsened: Bool { segDx > p.diameter * 1.05 }
+
     private var nInternodesMyel: Int {
-        max(1, Int((p.totalLength / (p.nodeLength + p.internodeLength)).rounded()))
+        let ideal = max(1, Int((p.totalLength / (p.nodeLength + p.internodeLength)).rounded()))
+        return min(ideal, (Self.maxCompartments - 1) / 2)   // plafonne aussi le myélinisé
     }
     private var nNodesMyel: Int { nInternodesMyel + 1 }
     private var nCompsMyel: Int { nNodesMyel + nInternodesMyel }
@@ -116,7 +129,13 @@ struct AxonBuilderView: View {
             : 0.55 * sqrt(p.diameter)
     }
 
-    private var tooMany: Bool { nCompartments > 500 }
+    /// Temps estimé pour qu'un PA traverse tout l'axone (ms).
+    private var traversalTime_ms: Double {
+        let v_um_per_ms = vConduction * 1e6   // m/s → µm/ms
+        return p.totalLength / v_um_per_ms
+    }
+
+    private var tooMany: Bool { nCompartments > Self.maxCompartments }
 
     // MARK: - Body
 
@@ -315,8 +334,14 @@ struct AxonBuilderView: View {
             }
             if !p.myelinated {
                 GridRow {
-                    Text("Longueur de segment").font(.caption).foregroundStyle(.secondary)
-                    Text(String(format: "%.1f µm", segDx)).font(.caption.monospacedDigit())
+                    Text("Longueur de segment dx").font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text(String(format: "%.2f µm", segDx)).font(.caption.monospacedDigit())
+                        if isAutoCoarsened {
+                            Text("(auto, max 500 comp.)")
+                                .font(.caption2).foregroundStyle(.cyan)
+                        }
+                    }
                 }
                 GridRow {
                     Text("Constante d'espace λ").font(.caption).foregroundStyle(.secondary)
@@ -350,6 +375,20 @@ struct AxonBuilderView: View {
                 Text(String(format: "%.2f m/s", vConduction)).font(.caption.monospacedDigit())
             }
             GridRow {
+                Text("Temps traversée axone").font(.caption).foregroundStyle(.secondary)
+                // Highlight: traversal >> 1 ms → visible in kymograph; << 1 ms → invisible
+                let t = traversalTime_ms
+                let color: Color = t >= 5 ? .green : t >= 1 ? .orange : .red
+                Text(String(format: "%.2f ms", t))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(color)
+                + Text(t < 1 ? "  ← trop court pour voir la propagation"
+                             : t < 5 ? "  ← propagation visible"
+                             : "  ← propagation bien visible")
+                    .font(.caption2)
+                    .foregroundStyle(color.opacity(0.8))
+            }
+            GridRow {
                 Text("Couplage axial g₁₂").font(.caption).foregroundStyle(.secondary)
                 let g = p.myelinated
                     ? 50000.0 / (p.nodeLength + p.internodeLength)
@@ -359,7 +398,7 @@ struct AxonBuilderView: View {
             if tooMany {
                 GridRow {
                     Text("").gridCellUnsizedAxes(.horizontal)
-                    Text("⚠ Trop de compartiments (max 500)")
+                    Text("⚠ Trop de compartiments (max \(Self.maxCompartments))")
                         .font(.caption)
                         .foregroundStyle(.red)
                         .gridCellColumns(2)

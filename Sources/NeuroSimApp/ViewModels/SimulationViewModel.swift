@@ -155,6 +155,12 @@ final class SimulationViewModel: ObservableObject {
 
     @Published var optimSettings: NetworkDocument.OptimSettingsDoc? = nil
 
+    // MARK: - Results window navigation
+
+    /// Set to non-nil to request a one-shot tab switch in ResultsWindowView.
+    /// The view consumes the value (resets to nil) after navigating.
+    @Published var requestedResultsTab: AnalysisTab? = nil
+
     // MARK: - Parameter snapshots ("freeze states")
 
     /// Named parameter snapshots — each one is a frozen copy of the full

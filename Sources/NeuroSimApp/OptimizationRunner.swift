@@ -2,136 +2,18 @@
 //  OptimizationRunner.swift
 //  NeuroSimApp
 //
-//  @MainActor class that drives DE or CMA-ES optimization.
+//  @MainActor class that drives DE, CMA-ES and ABC optimization.
 //  Yields between individual candidate evaluations so the UI stays
 //  responsive (each eval is ~5-30 ms depending on simDuration).
+//
+//  EvalDensityGrid, buildEvalGrid, buildEvalGridInRange, ssdNormalized and
+//  chiSquaredFast live in NeuroSimCore/DensityScore.swift so they can be
+//  used from the test target without duplication.
 //
 
 import Foundation
 import SwiftUI
 import NeuroSimCore
-
-// MARK: - Density grid (shared between reference pre-compute and eval)
-
-// MARK: - Density grid
-//
-// `weights` accumulates arc-length mass rather than raw point counts so that
-// each segment of the phase-plane trajectory contributes proportionally to
-// its length in (V, dV/dt) space — not to the time spent there.
-// This prevents slow-oscillation regimes (long dwell, small arc) from
-// drowning out fast action-potential bursts (short dwell, large arc).
-//
-// `outFraction` tracks the fraction of candidate points that fell outside the
-// reference bounding box (see `buildEvalGridInRange`).
-
-struct EvalDensityGrid {
-    let weights:     [Double]   // arc-length-weighted bin masses
-    let nV:          Int
-    let nDvdt:       Int
-    let vMin:        Double; let vMax:        Double
-    let dvdtMin:     Double; let dvdtMax:     Double
-    let outFraction: Double     // fraction of pts outside reference range (0 for ref grid)
-    var totalWeight: Double { weights.reduce(0, +) }
-}
-
-func buildEvalGrid(_ pts: [(v: Double, dvdt: Double)], nV: Int, nD: Int) -> EvalDensityGrid? {
-    guard !pts.isEmpty else { return nil }
-    let vs = pts.map(\.v); let ds = pts.map(\.dvdt)
-    guard let vMn = vs.min(), let vMx = vs.max(), vMx > vMn,
-          let dMn = ds.min(), let dMx = ds.max(), dMx > dMn else { return nil }
-    let vPad = (vMx - vMn) * 0.04; let dPad = (dMx - dMn) * 0.04
-    return buildEvalGridInRange(pts,
-                                vLo: vMn - vPad, vHi: vMx + vPad,
-                                dLo: dMn - dPad, dHi: dMx + dPad,
-                                nV: nV, nD: nD)
-}
-
-/// Build a weighted density grid within a fixed (V, dV/dt) bounding box.
-///
-/// Each point `pts[i]` receives a weight equal to the average arc-length of
-/// its two adjacent phase-plane segments:
-///
-///   w_i = ( ‖pts[i] − pts[i−1]‖ + ‖pts[i+1] − pts[i]‖ ) / 2
-///
-/// with boundary corrections for the first and last points.
-/// Points outside [vLo, vHi] × [dLo, dHi] are counted in `outFraction` but
-/// not binned (their arc-length contribution is forfeit — this acts as an
-/// implicit penalty for trajectories that escape the reference domain).
-func buildEvalGridInRange(_ pts: [(v: Double, dvdt: Double)],
-                          vLo: Double, vHi: Double,
-                          dLo: Double, dHi: Double,
-                          nV: Int, nD: Int) -> EvalDensityGrid {
-    var weights  = [Double](repeating: 0, count: nV * nD)
-    var outCount = 0
-    let n        = pts.count
-
-    /// Euclidean distance in (V, dV/dt) space between two consecutive points.
-    @inline(__always)
-    func segLen(_ i: Int, _ j: Int) -> Double {
-        let dv = pts[j].v    - pts[i].v
-        let dd = pts[j].dvdt - pts[i].dvdt
-        return max(sqrt(dv*dv + dd*dd), 1e-12)   // never exactly zero
-    }
-
-    for i in 0..<n {
-        // Arc-length weight: half-sum of adjacent segment lengths
-        let w: Double
-        switch (i, n) {
-        case (_, 1):        w = 1.0                              // single point
-        case (0, _):        w = segLen(0, 1)                    // first point
-        case (_, _) where i == n - 1: w = segLen(n-2, n-1)     // last point
-        default:            w = (segLen(i-1, i) + segLen(i, i+1)) * 0.5
-        }
-
-        let p = pts[i]
-        guard p.v    >= vLo, p.v    <= vHi,
-              p.dvdt >= dLo, p.dvdt <= dHi else { outCount += 1; continue }
-
-        let ci = min(Int((p.v    - vLo) / (vHi - vLo) * Double(nV)), nV - 1)
-        let ri = min(Int((p.dvdt - dLo) / (dHi - dLo) * Double(nD)), nD - 1)
-        weights[ri * nV + ci] += w
-    }
-
-    let outFrac = n > 0 ? Double(outCount) / Double(n) : 0.0
-    return EvalDensityGrid(weights: weights, nV: nV, nDvdt: nD,
-                           vMin: vLo, vMax: vHi,
-                           dvdtMin: dLo, dvdtMax: dHi,
-                           outFraction: outFrac)
-}
-
-/// χ² distance between two arc-length-weighted density grids, plus an
-/// out-of-range penalty for the candidate (`b`).
-///
-/// χ²(p, q) = Σ_i (p_i − q_i)² / (p_i + q_i + ε)
-///
-/// Advantages over plain SSD:
-/// · Automatically up-weights sparse regions (AP peaks, burst transitions)
-///   where a mismatch matters most diagnostically.
-/// · Bounded ≈ [0, 2] for normalised distributions, so it scales predictably
-///   regardless of bin count.
-///
-/// Out-of-range penalty:
-/// · Each fraction of candidate points that lands outside the reference domain
-///   adds up to 2.0 to the score (matching the maximum χ² value).
-///   Convention: `a` = reference (outFraction ≈ 0), `b` = candidate.
-func ssdNormalized(_ a: EvalDensityGrid, _ b: EvalDensityGrid) -> Double {
-    let tA = max(1e-10, a.totalWeight)
-    let tB = max(1e-10, b.totalWeight)
-    var dist = 0.0
-    let n = min(a.weights.count, b.weights.count)
-    for i in 0..<n {
-        let pA = a.weights[i] / tA
-        let pB = b.weights[i] / tB
-        let denom = pA + pB
-        if denom > 1e-20 {
-            let diff = pA - pB
-            dist += diff * diff / denom
-        }
-    }
-    // Out-of-range penalty: up to +2.0 when all candidate points are out of bounds
-    dist += b.outFraction * 2.0
-    return dist
-}
 
 // MARK: - Param info (published for the view)
 
@@ -155,12 +37,13 @@ final class OptimizationRunner: ObservableObject {
 
     // Live feedback
     @Published var lastBestPoints: [(v: Double, dvdt: Double)] = []
-    @Published var lastCandidateTrace: [(t: Double, v: Double)] = []   // V(t) preview
+    @Published var lastCandidateTrace: [(t: Double, v: Double)] = []        // V(t) preview
+    /// Phase-plane points of the **most recently evaluated** candidate.
+    /// Published so the density overlay refreshes on every evaluation,
+    /// not only when a new global best is found.
+    @Published var lastCandidatePhasePts: [(v: Double, dvdt: Double)] = []
     @Published var paramSnapshots: [(iteration: Int, values: [Double])] = []
     @Published var activeParamInfo: [ActiveParamInfo] = []
-
-    // Pts captured by the last evalFn call (written synchronously on main actor)
-    private var _lastEvalPts: [(v: Double, dvdt: Double)] = []
     // Stored so updateBest can trigger a re-eval of best params
     private var _evalFn: (([Double]) -> Double)?
 
@@ -186,6 +69,8 @@ final class OptimizationRunner: ObservableObject {
     private enum SavedOptState {
         case de(DifferentialEvolution)
         case cmaes(CMAES)
+        case abc(ArtificialBeeColony)
+        case bayesian(BayesianOptimizer)
     }
     private struct PausedState {
         let context:  StartContext
@@ -224,8 +109,10 @@ final class OptimizationRunner: ObservableObject {
         bestError       = .infinity
         bestParams      = []
         errorHistory    = []
-        lastBestPoints  = []
-        paramSnapshots  = []
+        lastBestPoints          = []
+        lastCandidatePhasePts   = []
+        lastCandidateTrace      = []
+        paramSnapshots          = []
         activeParamInfo = active.map { ActiveParamInfo(label: $0.label,
                                                        lo: $0.minBound, hi: $0.maxBound) }
         status          = "Démarrage…"
@@ -284,7 +171,8 @@ final class OptimizationRunner: ObservableObject {
         let sim    = Simulator(network: vm.network, dt: 0.025)
         sim.method = .rushLarsen
         let scorer = ctx.objective.makeScorer(neuronID: ctx.neuronID,
-                                              duration: ctx.config.simDuration)
+                                              duration: ctx.config.simDuration,
+                                              config:   ctx.config)
         let evalFn: ([Double]) -> Double = { [weak vm] candidate in
             guard let vm else { return .infinity }
             for (i, param) in ctx.active.enumerated() {
@@ -292,7 +180,7 @@ final class OptimizationRunner: ObservableObject {
                                 neuronID: ctx.neuronID, network: vm.network)
             }
             let (score, pts, tracePts) = scorer(sim)
-            self._lastEvalPts       = pts
+            self.lastCandidatePhasePts       = pts
             self.lastCandidateTrace = tracePts   // @Published, safe on main actor
             return score
         }
@@ -313,6 +201,18 @@ final class OptimizationRunner: ObservableObject {
                                     resumeFrom: optState.flatMap {
                                         if case .cmaes(let c) = $0 { return c } else { return nil }
                                     })
+            case .beeColony:
+                await self.runABC(evalFn: evalFn, bounds: ctx.bounds,
+                                  config: ctx.config,
+                                  resumeFrom: optState.flatMap {
+                                      if case .abc(let a) = $0 { return a } else { return nil }
+                                  })
+            case .bayesian:
+                await self.runBO(evalFn: evalFn, bounds: ctx.bounds,
+                                 config: ctx.config,
+                                 resumeFrom: optState.flatMap {
+                                     if case .bayesian(let b) = $0 { return b } else { return nil }
+                                 })
             }
             // Task finished normally (not paused) — apply best and clean up.
             guard !self.isPaused else { return }
@@ -354,7 +254,7 @@ final class OptimizationRunner: ObservableObject {
                 initFitness[i] = evalFn(c)
                 if initFitness[i] < bestInitErr {
                     bestInitErr = initFitness[i]
-                    bestInitPts = _lastEvalPts
+                    bestInitPts = lastCandidatePhasePts
                 }
                 await Task.yield()
             }
@@ -394,7 +294,7 @@ final class OptimizationRunner: ObservableObject {
                 errors[i] = evalFn(t)
                 if errors[i] < bestGenErr {
                     bestGenErr = errors[i]
-                    bestGenPts = _lastEvalPts
+                    bestGenPts = lastCandidatePhasePts
                 }
                 await Task.yield()
             }
@@ -447,7 +347,7 @@ final class OptimizationRunner: ObservableObject {
                 errors[i] = evalFn(o.x)
                 if errors[i] < bestGenErr {
                     bestGenErr = errors[i]
-                    bestGenPts = _lastEvalPts
+                    bestGenPts = lastCandidatePhasePts
                 }
                 await Task.yield()
             }
@@ -456,6 +356,163 @@ final class OptimizationRunner: ObservableObject {
                        gen: result.generation,
                        pts: result.bestError < bestError ? bestGenPts : nil)
             if result.bestError < config.targetError { break }
+        }
+    }
+
+    // MARK: - ABC loop
+
+    private func runABC(evalFn:     ([Double]) -> Double,
+                        bounds:     [(lo: Double, hi: Double)],
+                        config:     OptimConfig,
+                        resumeFrom: ArtificialBeeColony? = nil) async {
+
+        var abc = resumeFrom ?? ArtificialBeeColony(
+            bounds:         bounds,
+            colonySize:     config.abcColonySize,
+            tabuEnabled:    config.abcTabuEnabled,
+            tabuStagnation: config.abcTabuStagnation
+        )
+
+        if resumeFrom == nil {
+            // Fresh start — evaluate initial food sources
+            status = "ABC — init (\(abc.colonySize) sources)…"
+            let initCands  = abc.initialCandidates()
+            var initFitness = [Double](repeating: .infinity, count: abc.colonySize)
+            var bestInitErr = Double.infinity
+            var bestInitPts: [(v: Double, dvdt: Double)] = []
+            for (i, c) in initCands.enumerated() {
+                guard !Task.isCancelled else { isRunning = false; return }
+                initFitness[i] = evalFn(c)
+                if initFitness[i] < bestInitErr {
+                    bestInitErr = initFitness[i]
+                    bestInitPts = lastCandidatePhasePts
+                }
+                await Task.yield()
+            }
+            abc.setInitialFitness(initFitness)
+            let bi = initFitness.indices.min(by: { initFitness[$0] < initFitness[$1] })!
+            updateBest(params: abc.sources[bi], error: initFitness[bi],
+                       gen: 0, pts: bestInitPts)
+        } else {
+            status = String(format: "ABC — reprise gen. %d…", abc.generation)
+        }
+
+        for _ in 0..<config.maxIterations {
+            guard !Task.isCancelled else { break }
+
+            // ── Pause check ────────────────────────────────────────────────
+            if shouldPause {
+                shouldPause = false
+                if let ctx = startContext {
+                    pausedState = PausedState(context: ctx, optState: .abc(abc))
+                }
+                isRunning = false
+                isPaused  = true
+                status = String(format: "⏸  En pause — gen. %d  E = %.3e  " +
+                                        "(Reprendre pour continuer, ou lancez la sim. pour voir le résultat)",
+                                abc.generation, bestError)
+                return
+            }
+            // ──────────────────────────────────────────────────────────────
+
+            var bestGenErr = Double.infinity
+            var bestGenPts: [(v: Double, dvdt: Double)] = []
+
+            // ── Employed bee phase ─────────────────────────────────────────
+            let empCands = abc.employedCandidates()
+            for (si, cand) in empCands {
+                guard !Task.isCancelled else { break }
+                let err = evalFn(cand)
+                abc.applyEmployed(sourceIdx: si, candidate: cand, error: err)
+                if err < bestGenErr { bestGenErr = err; bestGenPts = lastCandidatePhasePts }
+                await Task.yield()
+            }
+
+            // ── Onlooker bee phase (uses updated fitness from employed) ────
+            let oolCands = abc.onlookerCandidates()
+            for (si, cand) in oolCands {
+                guard !Task.isCancelled else { break }
+                let err = evalFn(cand)
+                abc.applyOnlooker(sourceIdx: si, candidate: cand, error: err)
+                if err < bestGenErr { bestGenErr = err; bestGenPts = lastCandidatePhasePts }
+                await Task.yield()
+            }
+
+            // ── Scout + tabu + finalise ────────────────────────────────────
+            let prevBest = bestError
+            let result   = abc.finishGeneration(
+                globalBestImproved: bestGenErr < prevBest,
+                bestParams:         bestParams.isEmpty ? (abc.sources.first ?? []) : bestParams
+            )
+            updateBest(params: result.bestParams, error: result.bestError,
+                       gen: result.generation,
+                       pts: result.bestError < bestError ? bestGenPts : nil)
+            if result.bestError < config.targetError { break }
+        }
+    }
+
+    // MARK: - GP-BO loop
+
+    private func runBO(evalFn:     ([Double]) -> Double,
+                       bounds:     [(lo: Double, hi: Double)],
+                       config:     OptimConfig,
+                       resumeFrom: BayesianOptimizer? = nil) async {
+
+        var bo = resumeFrom ?? BayesianOptimizer(
+            bounds:             bounds,
+            warmupCount:        config.boWarmup,
+            refitEvery:         5,
+            acquisitionSamples: 2000
+        )
+
+        let startEval = bo.observationCount
+        let budget    = config.maxIterations
+
+        if resumeFrom == nil {
+            status = "GP-BO — préchauffage (\(config.boWarmup) pts LHS)…"
+        } else {
+            status = String(format: "GP-BO — reprise eval %d/%d  E = %.3e",
+                            startEval, budget, bo.bestError)
+        }
+
+        for eval in startEval..<budget {
+            guard !Task.isCancelled else { break }
+
+            // ── Pause check ────────────────────────────────────────────────
+            if shouldPause {
+                shouldPause = false
+                if let ctx = startContext {
+                    pausedState = PausedState(context: ctx, optState: .bayesian(bo))
+                }
+                isRunning = false
+                isPaused  = true
+                status = String(format:
+                    "⏸  En pause — eval %d/%d  E = %.3e  " +
+                    "(Reprendre pour continuer, ou lancez la sim. pour voir le résultat)",
+                    eval, budget, bo.isInWarmup ? Double.infinity : bo.bestError)
+                return
+            }
+            // ──────────────────────────────────────────────────────────────
+
+            // Update status label: warm-up vs BO phase
+            if bo.isInWarmup {
+                status = String(format: "GP-BO — préchauffage %d/%d…",
+                                eval + 1, config.boWarmup)
+            } else {
+                status = String(format: "GP-BO — eval %d/%d  E = %.3e",
+                                eval + 1, budget, bo.bestError)
+            }
+
+            let candidate = bo.nextCandidate()
+            let error     = evalFn(candidate)
+            bo.addObservation(x: candidate, y: error)
+
+            updateBest(params: bo.bestParams, error: bo.bestError,
+                       gen: eval + 1,
+                       pts: bo.bestError < bestError ? lastCandidatePhasePts : nil)
+
+            if bo.bestError < config.targetError { break }
+            await Task.yield()
         }
     }
 

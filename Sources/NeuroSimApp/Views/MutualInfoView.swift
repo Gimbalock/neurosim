@@ -291,18 +291,21 @@ struct MutualInfoView: View {
             if availableNeurons.isEmpty {
                 emptyState
             } else {
-                VStack(spacing: 0) {
+                VSplitView {
+                    // Top: raster strips for neurons A and B
                     HStack(spacing: 0) {
                         rasterPanel(id: resolvedA, label: "A")
                         Divider()
                         rasterPanel(id: resolvedB, label: "B")
                     }
-                    .frame(height: 100)
-                    Divider()
+                    .frame(minHeight: 60, maxHeight: .infinity)
+
+                    // Bottom: MI and TE charts side-by-side
                     HSplitView {
                         miChartView.frame(minWidth: 200)
                         teChartView.frame(minWidth: 200)
                     }
+                    .frame(minHeight: 80)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

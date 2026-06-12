@@ -24,7 +24,8 @@ import NeuroSimCore
 
 fileprivate struct ImportedTrace {
     let name: String
-    let points: [(v: Double, dvdt: Double)]
+    let points:   [(v: Double, dvdt: Double)]
+    let rawTrace: [(t: Double, v: Double)]    // original V(t) for the preview canvas
 }
 
 fileprivate struct DensityGrid {
@@ -52,6 +53,10 @@ struct TrajectoryDensityView: View {
     @State private var leftDvdtMax:  Double = 500
     @State private var rightDvdtMax: Double = 500
 
+    /// Snapshot of the reference V(t) trace taken at the moment optimisation starts.
+    /// Frozen so that the preview doesn't drift as the live simulation keeps running.
+    @State private var frozenRefTrace: [(t: Double, v: Double)] = []
+
     // Optimizable parameters (built from the Modèle neuron)
     @State private var optimParams: [OptimParam] = []
 
@@ -72,9 +77,11 @@ struct TrajectoryDensityView: View {
     @State private var burstTargetAPs:      Double  = 12.5
     @State private var burstTargetPeriodMs: Double  = 1000.0
 
-    // Grid resolution (higher → finer detail)
-    private let nBinsV    = 180
-    private let nBinsDvdt = 140
+    // Grid resolution — shared by both the display canvas and the optimizer.
+    // nBinsDvdt is locked at 7/9 of nBinsV to maintain the phase-plane aspect ratio.
+    // Rule of thumb: keep nBinsV*nBinsDvdt ≤ leftPoints.count/5 for stable χ² estimates.
+    @State private var nBinsV: Int = 80
+    private var nBinsDvdt: Int { max(20, nBinsV * 7 / 9) }
 
     // Density threshold — bins below this fraction of maxCount are hidden
     @State private var leftThreshold:  Double = 0.005   // 0.5 %
@@ -235,32 +242,34 @@ struct TrajectoryDensityView: View {
     // MARK: - Body
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
+        // HSplitView / VSplitView give native macOS draggable dividers.
+        // Each child's minWidth / minHeight sets the collapse limit;
+        // NSSplitView autosaves panel sizes under the hood.
+        HSplitView {
+            VSplitView {
+                // ── Top row : reference (left) + candidate (right) ──────────
+                HSplitView {
                     leftPanelView
-                        .frame(maxWidth: .infinity)
-                    Divider()
+                        .frame(minWidth: 150, minHeight: 120)
                     rightPanelView
-                        .frame(maxWidth: .infinity)
+                        .frame(minWidth: 150, minHeight: 120)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minHeight: 120)
 
-                Divider().opacity(0.3)
-
-                HStack(spacing: 0) {
+                // ── Bottom row : error curve + param evolution ───────────────
+                HSplitView {
                     errorChartView
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    Divider().opacity(0.2)
+                        .frame(minWidth: 150, minHeight: 80)
                     paramEvolutionView
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 150, minHeight: 80)
                 }
+                .frame(minHeight: 80)
             }
+            .frame(minWidth: 300)
 
-            Divider()
-
+            // ── Right sidebar ─────────────────────────────────────────────
             sidebarView
-                .frame(width: 190)
+                .frame(minWidth: 220, maxWidth: 480)
         }
         .background(.black)
         .onAppear {
@@ -384,9 +393,14 @@ struct TrajectoryDensityView: View {
             Divider().opacity(0.25)
             Group {
                 let pts: [(v: Double, dvdt: Double)] = {
-                    if runner.isRunning && !runner.lastBestPoints.isEmpty {
-                        return runner.lastBestPoints
+                    // During optimisation: prefer the most recently evaluated candidate
+                    // (updates every eval) so the density refreshes continuously.
+                    // Falls back to lastBestPoints when the runner is paused, then
+                    // to the recorded simulation trace when idle.
+                    if runner.isRunning, !runner.lastCandidatePhasePts.isEmpty {
+                        return runner.lastCandidatePhasePts
                     }
+                    if !runner.lastBestPoints.isEmpty { return runner.lastBestPoints }
                     if let id = resolvedRight { return pointsFromNeuron(id) }
                     return []
                 }()
@@ -701,6 +715,72 @@ struct TrajectoryDensityView: View {
                     .disabled(runner.isRunning || runner.isPaused)
                 }
 
+                // GP-BO specific controls
+                if optimConfig.algorithm == .bayesian {
+                    HStack(spacing: 4) {
+                        Text("Préchauffage")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white.opacity(0.4))
+                        Slider(value: Binding(
+                            get: { Double(optimConfig.boWarmup) },
+                            set: { optimConfig.boWarmup = max(3, min(20, Int($0))) }
+                        ), in: 3...20, step: 1)
+                        .frame(maxWidth: .infinity)
+                        .tint(.white.opacity(0.4))
+                        .disabled(runner.isRunning || runner.isPaused)
+                        Text("\(optimConfig.boWarmup) pts")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .frame(width: 36)
+                    }
+                }
+
+                // ABC-specific controls
+                if optimConfig.algorithm == .beeColony {
+                    HStack(spacing: 4) {
+                        Text("Sources")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white.opacity(0.4))
+                        Slider(value: Binding(
+                            get: { Double(optimConfig.abcColonySize) },
+                            set: { optimConfig.abcColonySize = max(4, min(60, Int($0))) }
+                        ), in: 4...60, step: 1)
+                        .frame(maxWidth: .infinity)
+                        .tint(.white.opacity(0.4))
+                        .disabled(runner.isRunning || runner.isPaused)
+                        Text("\(optimConfig.abcColonySize)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .frame(width: 20)
+                    }
+                    HStack(spacing: 4) {
+                        Toggle("", isOn: $optimConfig.abcTabuEnabled)
+                            .toggleStyle(.checkbox)
+                            .scaleEffect(0.75)
+                            .disabled(runner.isRunning || runner.isPaused)
+                        Text("Tabu")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white.opacity(0.4))
+                        Spacer()
+                        if optimConfig.abcTabuEnabled {
+                            Text("stagnation")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white.opacity(0.3))
+                            Slider(value: Binding(
+                                get: { Double(optimConfig.abcTabuStagnation) },
+                                set: { optimConfig.abcTabuStagnation = max(5, min(100, Int($0))) }
+                            ), in: 5...100, step: 5)
+                            .frame(maxWidth: .infinity)
+                            .tint(.white.opacity(0.4))
+                            .disabled(runner.isRunning || runner.isPaused)
+                            Text("\(optimConfig.abcTabuStagnation)g")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.55))
+                                .frame(width: 28)
+                        }
+                    }
+                }
+
                 // Simulation duration per eval
                 HStack(spacing: 4) {
                     Text("Durée sim")
@@ -714,6 +794,129 @@ struct TrajectoryDensityView: View {
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.55))
                         .frame(width: 44)
+                }
+
+                // Grid resolution — density mode only
+                // Optimal: nBinsV*nBinsDvdt ≈ nRefPts/5 (≥5 pts/cellule pour χ² stable)
+                if objectiveMode == .density {
+                    let nPts = leftPoints.count
+                    // Recommended nBinsV: nV such that nV*(7/9*nV) ≈ nPts/5
+                    // → nV = sqrt(nPts * 9 / 35), rounded to nearest 5, clamped [30,150]
+                    let recRaw = nPts > 0 ? sqrt(Double(nPts) * 9.0 / 35.0) : 71.0
+                    let recV   = max(30, min(150, (Int(recRaw) / 5) * 5))
+                    let recD   = max(20, recV * 7 / 9)
+                    let onTarget = abs(nBinsV - recV) <= 5
+
+                    HStack(spacing: 4) {
+                        Text("Grille")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white.opacity(0.4))
+                        Slider(value: Binding(
+                            get: { Double(nBinsV) },
+                            set: { nBinsV = max(30, min(200, Int($0))) }
+                        ), in: 30...200, step: 5)
+                        .frame(maxWidth: .infinity)
+                        .tint(.white.opacity(0.4))
+                        .disabled(runner.isRunning || runner.isPaused)
+                        Text("\(nBinsV)×\(nBinsDvdt)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .frame(width: 48)
+                    }
+                    // Recommendation row — tap to apply
+                    HStack(spacing: 0) {
+                        if nPts == 0 {
+                            Text("Chargez une trace de référence")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.white.opacity(0.2))
+                        } else if onTarget {
+                            Label(
+                                "\(nBinsV * nBinsDvdt) cellules · ~\(max(1, nPts / max(1, nBinsV * nBinsDvdt))) pts/cell  ✓",
+                                systemImage: "checkmark.circle"
+                            )
+                            .font(.system(size: 8))
+                            .foregroundStyle(.green.opacity(0.55))
+                        } else {
+                            Button {
+                                nBinsV = recV
+                            } label: {
+                                Label(
+                                    "Recommandé \(recV)×\(recD) (\(recV * recD) cellules)",
+                                    systemImage: "arrow.right.circle"
+                                )
+                                .font(.system(size: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.orange.opacity(0.7))
+                            .disabled(runner.isRunning || runner.isPaused)
+                        }
+                        Spacer()
+                    }
+
+                    // Scoring options (lambdaISI + grid smoothing)
+                    DisclosureGroup {
+                        VStack(spacing: 6) {
+                            // ── Firing-rate mismatch term ─────────────────
+                            HStack(spacing: 4) {
+                                Toggle("", isOn: Binding(
+                                    get: { optimConfig.scoringLambdaISI > 0 },
+                                    set: { optimConfig.scoringLambdaISI = $0 ? 0.30 : 0.0 }
+                                ))
+                                .toggleStyle(.checkbox)
+                                .scaleEffect(0.75)
+                                .disabled(runner.isRunning || runner.isPaused)
+                                Text("Taux de décharge")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.white.opacity(0.4))
+                                Spacer()
+                                if optimConfig.scoringLambdaISI > 0 {
+                                    Slider(value: $optimConfig.scoringLambdaISI,
+                                           in: 0.05...0.80, step: 0.05)
+                                        .frame(maxWidth: .infinity)
+                                        .tint(.white.opacity(0.4))
+                                        .disabled(runner.isRunning || runner.isPaused)
+                                    Text(String(format: "λ=%.2f",
+                                                optimConfig.scoringLambdaISI))
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle(.white.opacity(0.55))
+                                        .frame(width: 40)
+                                }
+                            }
+                            // ── Gaussian grid smoothing ───────────────────
+                            HStack(spacing: 4) {
+                                Toggle("", isOn: Binding(
+                                    get: { optimConfig.scoringGridSmoothing > 0 },
+                                    set: { optimConfig.scoringGridSmoothing = $0 ? 2 : 0 }
+                                ))
+                                .toggleStyle(.checkbox)
+                                .scaleEffect(0.75)
+                                .disabled(runner.isRunning || runner.isPaused)
+                                Text("Lissage grille")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.white.opacity(0.4))
+                                Spacer()
+                                if optimConfig.scoringGridSmoothing > 0 {
+                                    Stepper("", value: Binding(
+                                        get: { optimConfig.scoringGridSmoothing },
+                                        set: { optimConfig.scoringGridSmoothing =
+                                            max(1, min(5, $0)) }
+                                    ), in: 1...5)
+                                    .labelsHidden()
+                                    .scaleEffect(0.75)
+                                    .disabled(runner.isRunning || runner.isPaused)
+                                    Text("r=\(optimConfig.scoringGridSmoothing)")
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle(.white.opacity(0.55))
+                                        .frame(width: 28)
+                                }
+                            }
+                        }
+                        .padding(.leading, 8)
+                    } label: {
+                        Text("Scoring")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white.opacity(0.35))
+                    }
                 }
 
                 // Max iterations
@@ -755,7 +958,7 @@ struct TrajectoryDensityView: View {
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                             .tint(.orange)
-                        Button("Arrêter") { runner.stop() }
+                        Button("Arrêter") { runner.stop(); frozenRefTrace = [] }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                             .tint(.red)
@@ -772,7 +975,7 @@ struct TrajectoryDensityView: View {
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                             .tint(.yellow)
-                        Button("Stop") { runner.stop() }
+                        Button("Stop") { runner.stop(); frozenRefTrace = [] }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                             .tint(.red)
@@ -785,6 +988,22 @@ struct TrajectoryDensityView: View {
                     // ── Idle: Lancer ─────────────────────────────────────
                     Button("Lancer") {
                         guard let id = resolvedRight else { return }
+
+                        // Freeze the reference V(t) trace before optimisation starts.
+                        // Priority: imported CSV rawTrace → live neuron snapshot.
+                        // Using the imported trace ensures the preview shows the actual
+                        // experimental recording rather than the live model trace.
+                        if useImportLeft, let imp = importedTrace, !imp.rawTrace.isEmpty {
+                            frozenRefTrace = imp.rawTrace
+                        } else if let refID = resolvedLeft,
+                                  let trace = vm.traces[refID], !trace.isEmpty {
+                            let st = max(1, trace.count / 3_000)
+                            frozenRefTrace = Swift.stride(from: 0, to: trace.count, by: st)
+                                .map { (t: trace[$0].t, v: trace[$0].v) }
+                        } else {
+                            frozenRefTrace = []
+                        }
+
                         switch objectiveMode {
                         case .density:
                             runner.start(
@@ -818,10 +1037,13 @@ struct TrajectoryDensityView: View {
                 }
 
                 // ── V(t) comparison preview ──────────────────────────────
+                // refPts: use the frozen snapshot (captured at "Lancer") so the
+                // reference line doesn't drift while optimisation mutates vm.network.
+                // Falls back to the live trace when optimisation is idle.
                 if !runner.lastCandidateTrace.isEmpty {
-                    let refID = resolvedLeft
                     let refRaw: [(t: Double, v: Double)] = {
-                        guard let id = refID,
+                        if !frozenRefTrace.isEmpty { return frozenRefTrace }
+                        guard let id = resolvedLeft,
                               let trace = vm.traces[id], !trace.isEmpty else { return [] }
                         let st = max(1, trace.count / 3_000)
                         return Swift.stride(from: 0, to: trace.count, by: st)
@@ -909,8 +1131,12 @@ struct TrajectoryDensityView: View {
             }
         }
 
-        var pts: [(v: Double, dvdt: Double)] = []
-        if hasTwoColumns, rawT.count == rawV.count {
+        var pts:      [(v: Double, dvdt: Double)] = []
+        var rawTrace: [(t: Double, v: Double)]   = []
+        if hasTwoColumns, rawT.count == rawV.count, rawT.count >= 2 {
+            // Two-column file: explicit timestamps
+            rawTrace.reserveCapacity(rawT.count)
+            for i in 0..<rawT.count { rawTrace.append((t: rawT[i], v: rawV[i])) }
             for i in 1..<rawT.count {
                 let dt = rawT[i] - rawT[i-1]
                 guard dt > 0, dt < 10 else { continue }
@@ -918,8 +1144,11 @@ struct TrajectoryDensityView: View {
                 guard abs(dvdt) < 5000 else { continue }
                 pts.append((v: rawV[i-1], dvdt: dvdt))
             }
-        } else {
-            let dt = 0.1  // assume 10 kHz
+        } else if rawV.count >= 2 {
+            // Single-column file: assume 10 kHz sampling (dt = 0.1 ms)
+            let dt = 0.1
+            rawTrace.reserveCapacity(rawV.count)
+            for (i, v) in rawV.enumerated() { rawTrace.append((t: Double(i) * dt, v: v)) }
             for i in 1..<rawV.count {
                 let dvdt = (rawV[i] - rawV[i-1]) / dt
                 guard abs(dvdt) < 5000 else { continue }
@@ -927,8 +1156,15 @@ struct TrajectoryDensityView: View {
             }
         }
 
-        guard !pts.isEmpty else { return }
-        importedTrace = ImportedTrace(name: name, points: pts)
+        guard !pts.isEmpty else {
+            // Nothing parseable — show an error instead of crashing silently
+            importedTrace = nil
+            return
+        }
+        // Downsample rawTrace to ≤3000 pts for the preview (same ratio used for live traces)
+        let st = max(1, rawTrace.count / 3_000)
+        let rawTraceDown = Swift.stride(from: 0, to: rawTrace.count, by: st).map { rawTrace[$0] }
+        importedTrace = ImportedTrace(name: name, points: pts, rawTrace: rawTraceDown)
         useImportLeft = true
     }
 

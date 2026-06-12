@@ -93,6 +93,21 @@ struct HeatmapView: View {
     private var xParam: OptimParam? { optimParams[safe: xParamIdx] }
     private var yParam: OptimParam? { optimParams[safe: yParamIdx] }
 
+    /// V(t) trace shown in the preview panel.
+    /// Prioritises the stored trace for the selected cell; falls back to the
+    /// last trace evaluated during the sweep (live update while running).
+    private var previewTrace: [(t: Double, v: Double)] {
+        if let sc = selectedCell, let t = runner.cellTraces[sc] { return t }
+        return runner.lastCandidateTrace
+    }
+
+    /// True when the preview is showing a selected cell's trace
+    /// (as opposed to the most-recently-evaluated one).
+    private var previewIsSelectedCell: Bool {
+        guard let sc = selectedCell else { return false }
+        return runner.cellTraces[sc] != nil
+    }
+
     private var refPoints: [(v: Double, dvdt: Double)] {
         switch refSource {
         case .csv:
@@ -328,17 +343,45 @@ struct HeatmapView: View {
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
 
+                // Réinitialiser — disponible dès qu'une heatmap existe
+                if runner.result != nil {
+                    Button {
+                        runner.reset()
+                        selectedCell = nil
+                        hoveredCell  = nil
+                    } label: {
+                        Label("Réinitialiser la heatmap", systemImage: "arrow.counterclockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                    .help("Efface la heatmap actuelle et toutes les traces stockées " +
+                          "pour permettre un nouveau sweep")
+                }
+
                 // ── V(t) comparison preview ───────────────────────────
-                if !runner.lastCandidateTrace.isEmpty || !refTraceForPreview.isEmpty {
+                if !previewTrace.isEmpty || !refTraceForPreview.isEmpty {
                     GroupBox {
                         TracePreviewCanvas(
                             refPts: refTraceForPreview,
-                            simPts: runner.lastCandidateTrace
+                            simPts: previewTrace
                         )
                         .frame(height: 110)
                     } label: {
-                        Label("Aperçu V(t)", systemImage: "waveform")
-                            .font(.caption.bold())
+                        HStack(spacing: 4) {
+                            Label("Aperçu V(t)", systemImage: "waveform")
+                                .font(.caption.bold())
+                            Spacer()
+                            if previewIsSelectedCell {
+                                Label("cellule ★", systemImage: "cursorarrow.click")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.yellow)
+                            } else if runner.isRunning {
+                                Label("en cours…", systemImage: "circle.dotted")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
 
@@ -455,14 +498,24 @@ struct HeatmapView: View {
                 ctx.stroke(star, with: .color(.black.opacity(0.6)), lineWidth: 1.5)
             }
 
-            // Hover cell border
-            if let hc = hoveredCell, hc < r.errors.count {
+            // Selected cell border (yellow, thick — persists after click)
+            if let sc = selectedCell, sc < r.errors.count {
+                let ix = r.col(ofFlat: sc)
+                let iy = r.row(ofFlat: sc)
+                let x = margin + CGFloat(ix) * cellW
+                let y = margin + CGFloat(r.nY - 1 - iy) * cellH
+                let rect = CGRect(x: x, y: y, width: cellW, height: cellH)
+                ctx.stroke(Path(rect), with: .color(.yellow), lineWidth: 3)
+            }
+
+            // Hover cell border (white, thinner — follows the cursor)
+            if let hc = hoveredCell, hc < r.errors.count, hc != selectedCell {
                 let ix = r.col(ofFlat: hc)
                 let iy = r.row(ofFlat: hc)
                 let x = margin + CGFloat(ix) * cellW
                 let y = margin + CGFloat(r.nY - 1 - iy) * cellH
                 let rect = CGRect(x: x, y: y, width: cellW, height: cellH)
-                ctx.stroke(Path(rect), with: .color(.white), lineWidth: 2)
+                ctx.stroke(Path(rect), with: .color(.white.opacity(0.8)), lineWidth: 1.5)
             }
 
             // X axis labels (every nX/5 ticks)
@@ -491,7 +544,8 @@ struct HeatmapView: View {
                     let cell = cellAt(pos: val.location, r: r,
                                       margin: margin, cellW: cellW, cellH: cellH)
                     if let c = cell, !r.errors[c].isNaN {
-                        selectedCell = c
+                        // Toggle: click same cell again to deselect
+                        selectedCell = (selectedCell == c) ? nil : c
                     }
                 }
         )
@@ -542,17 +596,42 @@ struct HeatmapView: View {
             } else if let sc = selectedCell, let r = runner.result, !r.errors[sc].isNaN {
                 let ix = r.col(ofFlat: sc)
                 let iy = r.row(ofFlat: sc)
-                Text("Sélection: X=\(formatVal(r.xValues[ix]))  Y=\(formatVal(r.yValues[iy]))  E=\(String(format: "%.3e", r.errors[sc]))")
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.primary)
-
-                Button("Appliquer ce point") {
-                    if let n = selectedNeuron {
-                        runner.applyCell(flatIndex: sc, to: vm, neuronID: n.id)
-                    }
+                // Cell info
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("★ Sélection — X=\(formatVal(r.xValues[ix]))  Y=\(formatVal(r.yValues[iy]))")
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(.yellow)
+                    Text("Erreur = \(String(format: "%.3e", r.errors[sc]))")
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+
+                // Action buttons
+                HStack(spacing: 6) {
+                    // Apply params only
+                    Button("Appliquer") {
+                        if let n = selectedNeuron {
+                            runner.applyCell(flatIndex: sc, to: vm, neuronID: n.id)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Applique les paramètres au modèle sans démarrer de simulation")
+
+                    // Apply params + run + switch to Traces tab
+                    Button {
+                        if let n = selectedNeuron {
+                            runner.applyCell(flatIndex: sc, to: vm, neuronID: n.id)
+                            vm.play()
+                            vm.requestedResultsTab = .traces
+                        }
+                    } label: {
+                        Label("Appliquer + Trace", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help("Applique les paramètres, lance la simulation et bascule vers l'onglet Traces")
+                }
             } else {
                 Text("Survolez la carte pour afficher les valeurs")
                     .font(.system(size: 11))

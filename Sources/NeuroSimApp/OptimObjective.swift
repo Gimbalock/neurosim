@@ -161,9 +161,14 @@ extension OptimObjective {
     /// - Parameters:
     ///   - neuronID: UUID of the neuron being optimised.
     ///   - duration: simulation duration (ms) — pass `config.simDuration`.
+    ///   - config:   optimizer/scoring config; controls `scoringLambdaISI`
+    ///               and `scoringGridSmoothing`.  Defaults to `OptimConfig()`
+    ///               so existing call sites that omit this parameter continue
+    ///               to work unchanged (lambda=0, smoothing=0).
     func makeScorer(
         neuronID: UUID,
-        duration: Double
+        duration: Double,
+        config:   OptimConfig = OptimConfig()
     ) -> (Simulator) -> (score: Double,
                          displayPts: [(v: Double, dvdt: Double)],
                          tracePts:   [(t: Double, v: Double)]) {
@@ -172,15 +177,31 @@ extension OptimObjective {
 
         // ── Density match ─────────────────────────────────────────────────
         case let .densityMatch(refPoints, nBinsV, nBinsDvdt):
-            guard let refGrid = buildEvalGrid(refPoints, nV: nBinsV, nD: nBinsDvdt) else {
+            let smoothR = config.scoringGridSmoothing
+            let lambdaI = config.scoringLambdaISI
+            guard let refGrid = buildEvalGrid(refPoints, nV: nBinsV, nD: nBinsDvdt,
+                                              smoothRadius: smoothR) else {
                 return { _ in (.infinity, [], []) }
             }
             let every      = max(1, Int(duration / 0.025 / 12_000))  // phase-plane stride
             let traceEvery = max(1, Int(duration / 0.025 / 3_000))  // display trace (~3000 pts — pooled later)
+
+            // Pre-normalise the REFERENCE grid once here — `a.weights[i] / tA` would
+            // otherwise be re-computed 4 800 times inside ssdNormalized for every
+            // candidate evaluation.  The normalised values are constant across all evals.
+            let refTotalW    = max(1e-10, refGrid.totalWeight)
+            let refNorm      = refGrid.weights.map { $0 / refTotalW }   // [Double], length nV×nD
+            let refSpikesCnt = refGrid.spikeCount
+
+            // Expected pts count for reserveCapacity
+            let nSteps      = Int(duration / 0.025)
+            let expectedPts = nSteps / max(1, every) + 2
+
             return { sim in
                 sim.reset()
                 var pts:   [(v: Double, dvdt: Double)] = []
                 var trace: [(t: Double, v: Double)]    = []
+                pts.reserveCapacity(expectedPts)
                 var step = 0
                 // Central-difference rolling buffer: keep the two previous samples
                 // so we can compute dV/dt[i] = (V[i+1] − V[i−1]) / (t[i+1] − t[i−1])
@@ -207,8 +228,12 @@ extension OptimObjective {
                 let cg = buildEvalGridInRange(pts,
                                               vLo: refGrid.vMin, vHi: refGrid.vMax,
                                               dLo: refGrid.dvdtMin, dHi: refGrid.dvdtMax,
-                                              nV: nBinsV, nD: nBinsDvdt)
-                return (ssdNormalized(refGrid, cg), pts, trace)
+                                              nV: nBinsV, nD: nBinsDvdt,
+                                              smoothRadius: smoothR)
+                // `chiSquaredScore` = axis-normalised χ² + progressive OOB penalty
+                // + optional ISI term (lambdaI = 0 → identical to chiSquaredFast).
+                return (chiSquaredScore(refNorm: refNorm, refSpikeCount: refSpikesCnt,
+                                        cg: cg, lambdaISI: lambdaI), pts, trace)
             }
 
         // ── Burst counting ────────────────────────────────────────────────

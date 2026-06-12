@@ -58,27 +58,23 @@ struct PropagationView: View {
             if vm.axonProfiles.isEmpty {
                 emptyState
             } else if let prof = profile {
-                GeometryReader { geo in
-                    VStack(spacing: 0) {
-                        // Top half: V(x) live + legend
-                        HStack(alignment: .top, spacing: 0) {
-                            VxSnapshotView(profile: prof)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: geo.size.height * 0.35)
-                                .background(Color.black)
-                            colorLegend
-                                .frame(width: 56)
-                                .frame(height: geo.size.height * 0.35)
-                                .background(Color(white: 0.05))
-                        }
-
-                        Divider().background(Color.gray.opacity(0.3))
-
-                        // Bottom: kymograph
-                        KymographView(profile: prof)
+                VSplitView {
+                    // Top panel: V(x) live snapshot + colour legend
+                    HStack(alignment: .top, spacing: 0) {
+                        VxSnapshotView(profile: prof)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Color.black)
+                        colorLegend
+                            .frame(width: 56)
+                            .frame(maxHeight: .infinity)
+                            .background(Color(white: 0.05))
                     }
+                    .frame(minHeight: 80)
+
+                    // Bottom panel: kymograph (space-time plot)
+                    KymographView(profile: prof)
+                        .frame(maxWidth: .infinity, minHeight: 80)
+                        .background(Color.black)
                 }
             }
         }

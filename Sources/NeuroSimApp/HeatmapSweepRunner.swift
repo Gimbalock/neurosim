@@ -61,6 +61,19 @@ final class HeatmapSweepRunner: ObservableObject {
     @Published var result:    HeatmapResult? = nil
     /// Downsampled V(t) trace of the last evaluated candidate — for the live preview.
     @Published var lastCandidateTrace: [(t: Double, v: Double)] = []
+    /// Downsampled V(t) traces stored per grid cell (flat index).
+    /// Populated progressively during the sweep; persists after completion
+    /// so the user can inspect any cell by selecting it on the heatmap.
+    /// Each trace is capped at 2 000 points to limit memory usage.
+    ///
+    /// NOT `@Published`: mutations happen ~N² times per sweep and do NOT need
+    /// to trigger a SwiftUI redraw by themselves — the view reads these only
+    /// when the user taps a cell.  We publish `cellTracesVersion` as a cheap
+    /// "something changed" signal instead.
+    private(set) var cellTraces: [Int: [(t: Double, v: Double)]] = [:]
+    /// Incremented once when the sweep finishes, so views can react once
+    /// instead of once per cell evaluation.
+    @Published var cellTracesVersion: Int = 0
 
     private var sweepTask: Task<Void, Never>?
 
@@ -92,12 +105,13 @@ final class HeatmapSweepRunner: ObservableObject {
                                xValues: xValues, yValues: yValues,
                                errors: [Double](repeating: .nan, count: nTotal))
 
-        isRunning  = true
-        doneEvals  = 0
-        totalEvals = nTotal
-        progress   = 0
-        result     = r
-        status     = "Démarrage (\(nTotal) simulations)…"
+        isRunning   = true
+        doneEvals   = 0
+        totalEvals  = nTotal
+        progress    = 0
+        result      = r
+        cellTraces  = [:]   // clear previous run's traces
+        status      = "Démarrage (\(nTotal) simulations)…"
 
         // Validate that reference points produce a non-empty grid
         guard buildEvalGrid(refPoints, nV: nBinsV, nD: nBinsDvdt) != nil else {
@@ -139,7 +153,12 @@ final class HeatmapSweepRunner: ObservableObject {
                     let (err, _, candidateTrace) = scorer(sim)
                     self.lastCandidateTrace = candidateTrace
 
+                    // Downsample and store per-cell trace (≤2 000 pts to cap memory)
                     let flatIdx = iy * nX + ix
+                    let trStride = max(1, candidateTrace.count / 2_000)
+                    self.cellTraces[flatIdx] = Swift.stride(from: 0, to: candidateTrace.count, by: trStride)
+                        .map { candidateTrace[$0] }
+
                     r.errors[flatIdx] = err
                     self.result     = r
                     self.doneEvals += 1
@@ -151,8 +170,9 @@ final class HeatmapSweepRunner: ObservableObject {
                 }
             }
 
-            self.isRunning = false
-            self.status    = "Terminé — \(nTotal) points évalués"
+            self.isRunning        = false
+            self.status           = "Terminé — \(nTotal) points évalués"
+            self.cellTracesVersion += 1   // notify views once, not once per cell
         }
     }
 
@@ -162,6 +182,24 @@ final class HeatmapSweepRunner: ObservableObject {
         isRunning = false
         status    = "Arrêté"
         lastCandidateTrace = []
+        // cellTraces is intentionally NOT cleared on stop — the user may
+        // still want to inspect individual cells after pausing the sweep.
+    }
+
+    /// Fully reset the runner: cancel any running sweep, clear results and
+    /// all stored traces so a fresh sweep can be started from scratch.
+    func reset() {
+        sweepTask?.cancel()
+        sweepTask    = nil
+        isRunning    = false
+        result       = nil
+        cellTraces   = [:]
+        cellTracesVersion += 1   // invalidate any cached read
+        lastCandidateTrace = []
+        doneEvals    = 0
+        totalEvals   = 0
+        progress     = 0
+        status       = "Prêt"
     }
 
     /// Apply the best grid point's parameter values to the live network.

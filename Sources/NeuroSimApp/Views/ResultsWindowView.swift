@@ -24,7 +24,8 @@ private let kTraceColors: [Color] = kTracePalette
 
 // MARK: - Root view
 
-private enum AnalysisTab: String, CaseIterable {
+/// Tabs in the Results window. Not private so SimulationViewModel can request navigation.
+enum AnalysisTab: String, CaseIterable {
     case traces      = "Traces"
     case raster      = "Raster"
     case isi         = "ISI"
@@ -118,6 +119,13 @@ struct ResultsWindowView: View {
         }
         .onChange(of: liveGroupIDs) { _, newIDs in syncOrder(with: newIDs) }
         .onAppear { syncOrder(with: liveGroupIDs) }
+        // One-shot tab navigation requested externally (e.g. HeatmapView "Apply + Trace" button)
+        .onChange(of: vm.requestedResultsTab) { _, tab in
+            if let tab {
+                selectedTab = tab
+                vm.requestedResultsTab = nil
+            }
+        }
     }
 
     private var tracesContent: some View {
