@@ -341,6 +341,13 @@ final class SimulationViewModel: ObservableObject {
     /// Parallel to `signalTraces`; only the `.points` array is maintained here.
     private var pendingSignalPoints: [[PlotPoint]]             = []
     private var pendingSimTime:      Double                    = 0
+    /// Perf-HUD values staged here every frame; flushed to their @Published
+    /// counterparts (frameComputeMs / simToWallRatio) only at the 30 fps display
+    /// flush. Writing them every frame would fire objectWillChange far faster than
+    /// 30 fps, forcing every vm-observing view to re-render and defeating the
+    /// throttle that protects the rest of the UI.
+    private var pendingFrameComputeMs: Double                  = 0
+    private var pendingSimToWallRatio: Double                  = 0
     /// Wall-clock instant of the last display flush (used to throttle to ≤30 fps).
     private var lastDisplayFlush: ContinuousClock.Instant      = .now
     /// Wall-clock instant at the start of the most recent kickFrame() call.
@@ -885,6 +892,8 @@ final class SimulationViewModel: ObservableObject {
     /// SwiftUI redraw.  Called by the display-throttle inside kickFrame and by pause().
     private func flushPendingDisplay() {
         simulationTime = pendingSimTime
+        frameComputeMs = pendingFrameComputeMs
+        simToWallRatio = pendingSimToWallRatio
         traces         = pendingTraces
         if !pendingEnergyTraces.isEmpty { energyTraces = pendingEnergyTraces }
         if !pendingSignalPoints.isEmpty && pendingSignalPoints.count == signalTraces.count {
@@ -1075,10 +1084,13 @@ final class SimulationViewModel: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.frameInFlight = false
-                self.frameComputeMs = wallMs
-                self.simToWallRatio = ratio
+                // Stage perf-HUD values — flushed at 30 fps, not every frame.
+                self.pendingFrameComputeMs = wallMs
+                self.pendingSimToWallRatio = ratio
 
                 if let msg = fDivergeMsg {
+                    self.frameComputeMs = wallMs   // final values visible on halt
+                    self.simToWallRatio = ratio
                     self.divergenceError = msg
                     self.pause()
                     return   // don't reschedule

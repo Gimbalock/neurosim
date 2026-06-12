@@ -76,8 +76,12 @@ struct TracePreviewCanvas: View {
             vMin -= margin; vMax += margin
             let vSpan = max(vMax - vMin, 1e-6)
 
+            // ── Left gutter reserved for mV axis labels; traces start after it.
+            let gutterW: CGFloat = 30
+            let plotW = max(1, size.width - gutterW)
+
             // ── Time range: INDEPENDENT per trace.
-            // Each trace is normalized to [0, size.width] on its own time axis so
+            // Each trace is normalized to [0, plotW] on its own time axis so
             // that a 500 ms simulation and a 1000 ms reference both fill the full
             // canvas and can be compared visually even when durations differ.
             func tBounds(_ pts: [(t: Double, v: Double)]) -> (origin: Double, span: Double) {
@@ -89,11 +93,37 @@ struct TracePreviewCanvas: View {
             let (refT0, refTSpan) = tBounds(refPts)
             let (simT0, simTSpan) = tBounds(simPts)
 
+            func yFor(_ v: Double) -> CGFloat { (1.0 - (v - vMin) / vSpan) * size.height }
             func xyFor(_ t: Double, _ v: Double,
                        tOrig: Double, tSpan: Double) -> CGPoint {
-                CGPoint(x: (t - tOrig) / tSpan * size.width,
-                        y: (1.0 - (v - vMin) / vSpan) * size.height)
+                CGPoint(x: gutterW + (t - tOrig) / tSpan * plotW, y: yFor(v))
             }
+
+            // ── Y axis: gridlines + mV labels at "nice" voltages, 0 mV emphasised.
+            // Pick a 1/2/5×10ᵏ step targeting ~5 ticks across the range.
+            let rough = vSpan / 5
+            let mag   = pow(10, floor(log10(rough)))
+            let norm  = rough / mag
+            let step  = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag
+            var tick  = (vMin / step).rounded(.up) * step
+            while tick <= vMax {
+                let y = yFor(tick)
+                let isZero = abs(tick) < step * 0.5
+                var line = Path()
+                line.move(to: CGPoint(x: gutterW, y: y))
+                line.addLine(to: CGPoint(x: size.width, y: y))
+                ctx.stroke(line,
+                           with: .color(.white.opacity(isZero ? 0.30 : 0.08)),
+                           style: StrokeStyle(lineWidth: isZero ? 1.0 : 0.5,
+                                              dash: isZero ? [] : [2, 3]))
+                let label = Text("\(Int(tick.rounded()))")
+                    .font(.system(size: 7, design: .monospaced))
+                    .foregroundColor(.white.opacity(isZero ? 0.55 : 0.32))
+                ctx.draw(label, at: CGPoint(x: gutterW - 4, y: y), anchor: .trailing)
+                tick += step
+            }
+            ctx.draw(Text("mV").font(.system(size: 7)).foregroundColor(.white.opacity(0.35)),
+                     at: CGPoint(x: 3, y: 7), anchor: .leading)
 
             /// Min/max pooling: each of the `n` buckets keeps the sample with the
             /// lowest V and the sample with the highest V, in chronological order.

@@ -429,4 +429,27 @@ public struct BayesianOptimizer: Sendable {
     public var isInWarmup:       Bool { _xsNorm.count < warmupCount }
     public var bestParams:   [Double] { _bestX }
     public var bestError:     Double  { _bestY }
+
+    // MARK: - ARD identifiability
+
+    /// True once the GP surrogate has been fitted at least once (post warm-up),
+    /// so the length scales below reflect the data rather than the prior.
+    public var hasFittedGP: Bool { _gpFitted }
+
+    /// Per-parameter ARD length scales in normalised input space ([0,1] per dim).
+    /// Shorter ⇒ the objective changes rapidly along that parameter ⇒ the
+    /// parameter is well constrained.  Longer (≳1) ⇒ a near-flat ("sloppy")
+    /// direction the data cannot pin down.  Meaningful only when `hasFittedGP`.
+    public var lengthScales: [Double] { _hyp.ls }
+
+    /// Relative parameter relevance derived from ARD: (1/lₖ) normalised so the
+    /// most influential parameter = 1.0.  High ⇒ the objective is sensitive to
+    /// this parameter (identifiable); low ⇒ a flat direction the fit cannot
+    /// constrain.  Empty until the GP is fitted.
+    public var parameterRelevance: [Double] {
+        guard _gpFitted, !_hyp.ls.isEmpty else { return [] }
+        let inv = _hyp.ls.map { 1.0 / max($0, 1e-9) }
+        let mx  = inv.max() ?? 1.0
+        return mx > 1e-12 ? inv.map { $0 / mx } : inv
+    }
 }

@@ -44,6 +44,10 @@ final class OptimizationRunner: ObservableObject {
     @Published var lastCandidatePhasePts: [(v: Double, dvdt: Double)] = []
     @Published var paramSnapshots: [(iteration: Int, values: [Double])] = []
     @Published var activeParamInfo: [ActiveParamInfo] = []
+    /// ARD identifiability report (GP-BO only): per active parameter, relative
+    /// relevance in [0,1] (1 = most influential / best constrained). Empty until
+    /// the GP surrogate is fitted past warm-up.
+    @Published var paramRelevance: [(label: String, relevance: Double)] = []
     // Stored so updateBest can trigger a re-eval of best params
     private var _evalFn: (([Double]) -> Double)?
 
@@ -113,6 +117,7 @@ final class OptimizationRunner: ObservableObject {
         lastCandidatePhasePts   = []
         lastCandidateTrace      = []
         paramSnapshots          = []
+        paramRelevance          = []
         activeParamInfo = active.map { ActiveParamInfo(label: $0.label,
                                                        lo: $0.minBound, hi: $0.maxBound) }
         status          = "Démarrage…"
@@ -510,6 +515,16 @@ final class OptimizationRunner: ObservableObject {
             updateBest(params: bo.bestParams, error: bo.bestError,
                        gen: eval + 1,
                        pts: bo.bestError < bestError ? lastCandidatePhasePts : nil)
+
+            // ARD identifiability: surface per-parameter relevance once the GP
+            // has been fitted (post warm-up). `nextCandidate()` fits the GP, so
+            // the length scales here reflect the most recent fit.
+            let rel = bo.parameterRelevance
+            if rel.count == activeParamInfo.count, !rel.isEmpty {
+                paramRelevance = zip(activeParamInfo, rel).map {
+                    (label: $0.label, relevance: $1)
+                }
+            }
 
             if bo.bestError < config.targetError { break }
             await Task.yield()

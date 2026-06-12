@@ -1057,6 +1057,11 @@ struct TrajectoryDensityView: View {
                     }
                 }
 
+                // ── ARD identifiability report (GP-BO only) ──────────────────
+                if !runner.paramRelevance.isEmpty {
+                    identifiabilityReport
+                }
+
                 Text("\(optimParams.filter(\.isActive).count) param(s)  •  \(runner.iteration) iter.")
                     .font(.system(size: 9))
                     .foregroundStyle(.white.opacity(0.25))
@@ -1065,6 +1070,55 @@ struct TrajectoryDensityView: View {
             .padding(.vertical, 8)
         }
         .background(.black)
+    }
+
+    /// Per-parameter ARD relevance bars from the GP-BO surrogate. Long bar =
+    /// the objective is sensitive to this parameter (well identifiable); short
+    /// bar = a flat direction the data cannot constrain (sloppy parameter).
+    private var identifiabilityReport: some View {
+        let rows = runner.paramRelevance.sorted { $0.relevance > $1.relevance }
+        return DisclosureGroup {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(rows, id: \.label) { row in
+                    HStack(spacing: 6) {
+                        Text(row.label)
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .lineLimit(1)
+                            .frame(width: 110, alignment: .leading)
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(.white.opacity(0.08))
+                                Capsule()
+                                    .fill(relevanceColor(row.relevance))
+                                    .frame(width: max(2, geo.size.width * row.relevance))
+                            }
+                        }
+                        .frame(height: 6)
+                        Text(String(format: "%.0f%%", row.relevance * 100))
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.4))
+                            .frame(width: 32, alignment: .trailing)
+                    }
+                }
+                Text("Longueur de corrélation ARD du GP — barre longue = paramètre bien contraint, courte = direction plate (peu identifiable).")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.white.opacity(0.3))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 4)
+        } label: {
+            Text("Identifiabilité (ARD)")
+                .font(.system(size: 9))
+                .foregroundStyle(.white.opacity(0.35))
+        }
+    }
+
+    private func relevanceColor(_ r: Double) -> Color {
+        // Green (well constrained) → amber → red (sloppy)
+        if r > 0.66 { return Color(red: 0.30, green: 0.78, blue: 0.40) }
+        if r > 0.33 { return Color(red: 0.95, green: 0.70, blue: 0.20) }
+        return Color(red: 0.90, green: 0.40, blue: 0.30)
     }
 
     @ViewBuilder
